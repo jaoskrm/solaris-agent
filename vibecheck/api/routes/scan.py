@@ -239,14 +239,63 @@ async def cancel_scan(scan_id: str) -> dict[str, str]:
     
     Only pending or running scans can be cancelled.
     """
-    # TODO: Implement scan cancellation
-    # This would update the scan status in Supabase and
-    # signal the worker to stop processing
-    
-    return {
-        "scan_id": scan_id,
-        "message": "Scan cancellation requested",
-    }
+    try:
+        supabase = get_supabase_client()
+        
+        # Get current scan status
+        scan_data = await supabase.get_scan_status(scan_id)
+        
+        if not scan_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Scan not found: {scan_id}",
+            )
+        
+        current_status = scan_data.get("status", "")
+        
+        # Check if scan can be cancelled
+        if current_status not in ("pending", "running"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot cancel scan with status: {current_status}",
+            )
+        
+        # Update scan status to cancelled
+        success = await supabase.update_scan_status(
+            scan_id=scan_id,
+            status="cancelled",
+            error_message="Scan cancelled by user request",
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to cancel scan",
+            )
+        
+        # Publish cancellation event for workers
+        redis_bus = get_redis_bus()
+        await redis_bus.publish(
+            "scan_cancellations",
+            {"scan_id": scan_id, "timestamp": datetime.now(timezone.utc).isoformat()},
+        )
+        
+        logger.info(f"Scan cancelled: {scan_id}")
+        
+        return {
+            "scan_id": scan_id,
+            "message": "Scan cancelled successfully",
+            "previous_status": current_status,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to cancel scan: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel scan: {str(e)}",
+        )
 
 
 # -------------------------------------------

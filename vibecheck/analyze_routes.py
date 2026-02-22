@@ -1,22 +1,48 @@
-"""Analyze server.ts AST to understand route patterns."""
+"""Analyze source code AST to understand route patterns.
+
+This is a development/debugging utility for understanding Tree-Sitter AST structure.
+Set the ANALYZE_FILE environment variable to analyze a different file.
+"""
+import os
+import sys
+from pathlib import Path
+
 import tree_sitter_python
 import tree_sitter_javascript
 import tree_sitter_typescript
 from tree_sitter import Language, Parser, Node, QueryCursor
 
-# Read server.ts
-with open("../vibecoded-test-app/targets/juice-shop-source/server.ts", "rb") as f:
+# Default file to analyze - can be overridden via environment variable
+DEFAULT_FILE = Path(__file__).parent.parent / "vibecoded-test-app" / "targets" / "juice-shop-source" / "server.ts"
+ANALYZE_FILE = Path(os.environ.get("ANALYZE_FILE", DEFAULT_FILE))
+
+# Read source file
+if not ANALYZE_FILE.exists():
+    print(f"File not found: {ANALYZE_FILE}")
+    print("Set ANALYZE_FILE environment variable to specify a file to analyze.")
+    sys.exit(1)
+
+with open(ANALYZE_FILE, "rb") as f:
     source = f.read()
 
-# Parse with TypeScript
+# Parse with appropriate language based on file extension
 PY_LANGUAGE = Language(tree_sitter_python.language())
 JS_LANGUAGE = Language(tree_sitter_javascript.language())
 TS_LANGUAGE = Language(tree_sitter_typescript.language_typescript())
 
-parser = Parser(TS_LANGUAGE)
+# Select parser based on file extension
+ext = ANALYZE_FILE.suffix.lower()
+if ext == ".py":
+    parser = Parser(PY_LANGUAGE)
+elif ext in [".ts", ".tsx"]:
+    parser = Parser(TS_LANGUAGE)
+else:
+    parser = Parser(JS_LANGUAGE)
+
 tree = parser.parse(source)
 root = tree.root_node
 
+print(f"Analyzing: {ANALYZE_FILE}")
 print(f"Root: {root.type}, children: {len(root.children)}")
 
 # Look for route patterns - app.get, app.post, router.get, etc.

@@ -22,6 +22,7 @@ Week 2 Exit Criteria:
 """
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -212,8 +213,10 @@ class ScanWorker:
         logger.info(f"  Repository: {repo_url}")
         logger.info(f"  Triggered by: {triggered_by}")
         
-        # Generate scan ID
-        scan_id = str(uuid4())
+        # Use scan_id from message if provided (from API), otherwise generate new one
+        # This ensures vulnerabilities are saved with the same ID created in Supabase
+        scan_id = data.get("scan_id") or str(uuid4())
+        logger.info(f"  Scan ID: {scan_id}")
         
         try:
             # Clone the repository
@@ -262,12 +265,21 @@ class ScanWorker:
             # Week 3: Semgrep Static Analysis (Stage 5a)
             # ========================================
             logger.info("Running Semgrep static analysis...")
-            semgrep_findings = await run_semgrep(str(clone_dir), scan_id)
+            semgrep_findings = run_semgrep(str(clone_dir), scan_id)
             logger.info(f"Semgrep found {len(semgrep_findings)} raw findings")
             
             # Convert Semgrep findings to parsed nodes
             semgrep_nodes = semgrep_to_parsed_nodes(semgrep_findings, scan_id)
             logger.info(f"Converted {len(semgrep_nodes)} Semgrep findings to parsed nodes")
+            
+            # Extract unique file paths from Semgrep findings for targeted semantic lifting
+            semgrep_target_files: set[str] = set()
+            for node in semgrep_nodes:
+                if isinstance(node, dict):
+                    file_path = node.get("file_path", "")
+                    if file_path:
+                        semgrep_target_files.add(file_path)
+            logger.info(f"Identified {len(semgrep_target_files)} unique files with Semgrep findings for semantic lifting")
             
             # ========================================
             # Week 3: Semantic Lifting (Stage 5b)
@@ -278,6 +290,7 @@ class ScanWorker:
                 str(clone_dir),
                 nodes,  # All parsed nodes from Tree-Sitter
                 str(semantic_clone_dir),
+                target_files=semgrep_target_files if semgrep_target_files else None,
             )
             logger.info(f"Generated {len(semantic_summaries)} semantic summaries")
             
@@ -292,6 +305,10 @@ class ScanWorker:
             
             # Add N+1 candidates for verification
             for candidate in n_plus_ones:
+                # Defensive type check
+                if not isinstance(candidate, dict):
+                    logger.warning(f"Skipping non-dict N+1 candidate: {type(candidate)}")
+                    continue
                 all_candidates.append({
                     "vuln_type": "n_plus_1",
                     "rule_id": "falkordb-n-plus-1-detection",
@@ -305,6 +322,10 @@ class ScanWorker:
             
             # Add Semgrep findings for verification
             for node in semgrep_nodes:
+                # Defensive type check
+                if not isinstance(node, dict):
+                    logger.warning(f"Skipping non-dict semgrep node: {type(node)}")
+                    continue
                 all_candidates.append({
                     "vuln_type": node.get("vuln_type", "unknown"),
                     "rule_id": node.get("rule_id", "semgrep"),
@@ -317,13 +338,79 @@ class ScanWorker:
                 })
             
             logger.info(f"Verifying {len(all_candidates)} vulnerability candidates...")
+            logger.info(f"  - N+1 candidates: {len(n_plus_ones)}")
+            logger.info(f"  - Semgrep candidates: {len(semgrep_nodes)}")
+            
+            # Log first few candidates for debugging
+            if all_candidates:
+                logger.info("=" * 80)
+                logger.info("SAMPLE CANDIDATES (first 5):")
+                for i, c in enumerate(all_candidates[:5]):
+                    logger.info(f"  [{i}] Type: {c.get('vuln_type', 'unknown')}")
+                    logger.info(f"      File: {c.get('file_path', 'unknown')}:{c.get('line_start', 0)}")
+                    logger.info(f"      Rule: {c.get('rule_id', 'unknown')}")
+                    logger.info(f"      Snippet (first 100 chars): {str(c.get('code_snippet', ''))[:100]}...")
+                logger.info("=" * 80)
+            
             verified_vulns = []
-            for candidate in all_candidates:
+            verification_results = []  # Track all verification results for debugging
+            
+            for idx, candidate in enumerate(all_candidates):
                 try:
+                    # Defensive type check for candidate
+                    if not isinstance(candidate, dict):
+                        logger.warning(f"Skipping non-dict candidate: {type(candidate)}")
+                        continue
+                    
+                    logger.info("")
+                    logger.info("=" * 80)
+                    logger.info(f"VERIFYING CANDIDATE {idx + 1}/{len(all_candidates)}")
+                    logger.info(f"  File: {candidate.get('file_path', 'unknown')}:{candidate.get('line_start', 0)}")
+                    logger.info(f"  Type: {candidate.get('vuln_type', 'unknown')}")
+                    logger.info(f"  Rule: {candidate.get('rule_id', 'unknown')}")
+                    logger.info("=" * 80)
+                    
                     verified = await verify_candidate(candidate)
+                    
+                    # Defensive type check for verified result
+                    if verified is None:
+                        logger.warning(f"verify_candidate returned None for {candidate.get('file_path', 'unknown')}")
+                        verification_results.append({
+                            "file": candidate.get('file_path', 'unknown'),
+                            "line": candidate.get('line_start', 0),
+                            "status": "ERROR",
+                            "reason": "verify_candidate returned None"
+                        })
+                        continue
+                    
+                    if not isinstance(verified, dict):
+                        logger.warning(f"verify_candidate returned non-dict: {type(verified)}")
+                        verification_results.append({
+                            "file": candidate.get('file_path', 'unknown'),
+                            "line": candidate.get('line_start', 0),
+                            "status": "ERROR",
+                            "reason": f"verify_candidate returned {type(verified)}"
+                        })
+                        continue
+                    
+                    # Log the verification result
+                    verification_results.append({
+                        "file": verified.get('file_path', 'unknown'),
+                        "line": verified.get('line_start', 0),
+                        "type": verified.get('vuln_type', 'unknown'),
+                        "confirmed": verified.get('confirmed', False),
+                        "confidence": verified.get('confidence', 'unknown'),
+                        "reason": verified.get('verification_reason', 'no reason'),
+                        "is_test_fixture": verified.get('is_test_fixture', False)
+                    })
+                    
                     if verified.get("confirmed"):
                         verified_vulns.append(verified)
-                        logger.info(f"Confirmed vulnerability: {verified.get('vuln_type')} in {verified.get('file_path')}")
+                        logger.info(f"*** CONFIRMED VULNERABILITY ***")
+                        logger.info(f"    Type: {verified.get('vuln_type')}")
+                        logger.info(f"    File: {verified.get('file_path')}:{verified.get('line_start')}")
+                        logger.info(f"    Confidence: {verified.get('confidence')}")
+                        logger.info(f"    Reason: {verified.get('verification_reason')}")
                         
                         # ========================================
                         # Week 3: Pattern Propagation (Stage 5d)
@@ -335,35 +422,87 @@ class ScanWorker:
                         )
                         if similar_funcs:
                             logger.info(f"Pattern propagation found {len(similar_funcs)} similar functions")
+                    else:
+                        logger.info(f"NOT CONFIRMED: {verified.get('verification_reason', 'no reason')}")
+                        
                 except Exception as e:
-                    logger.warning(f"Failed to verify candidate: {e}")
+                    logger.warning(f"Failed to verify candidate: {e}", exc_info=True)
+                    verification_results.append({
+                        "file": candidate.get('file_path', 'unknown') if isinstance(candidate, dict) else 'unknown',
+                        "line": candidate.get('line_start', 0) if isinstance(candidate, dict) else 0,
+                        "status": "EXCEPTION",
+                        "reason": str(e)
+                    })
             
-            logger.info(f"Verified {len(verified_vulns)} confirmed vulnerabilities")
+            # Log summary of all verification results
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("VERIFICATION SUMMARY:")
+            logger.info(f"  Total candidates: {len(all_candidates)}")
+            logger.info(f"  Confirmed vulnerabilities: {len(verified_vulns)}")
+            logger.info(f"  Verification results count: {len(verification_results)}")
             
-            # Save all vulnerabilities to Supabase
-            if verified_vulns:
-                logger.info("Saving verified vulnerabilities to Supabase...")
+            # Count by status
+            confirmed_count = sum(1 for r in verification_results if r.get('confirmed') == True)
+            not_confirmed_count = sum(1 for r in verification_results if r.get('confirmed') == False)
+            error_count = sum(1 for r in verification_results if r.get('status') in ['ERROR', 'EXCEPTION'])
+            
+            logger.info(f"  Confirmed: {confirmed_count}")
+            logger.info(f"  Not confirmed: {not_confirmed_count}")
+            logger.info(f"  Errors: {error_count}")
+            
+            # Log all results for debugging
+            for r in verification_results:
+                logger.info(f"    - {r.get('file', 'unknown')}:{r.get('line', 0)} | confirmed={r.get('confirmed', 'N/A')} | {r.get('reason', r.get('status', 'unknown'))}")
+            logger.info("=" * 80)
+            
+            # ========================================
+            # Save ALL candidates to Supabase (not just verified)
+            # This ensures we capture findings even if LLM verification fails
+            # ========================================
+            logger.info(f"Total candidates to save: {len(all_candidates)}")
+            
+            if all_candidates:
+                logger.info("Saving ALL vulnerability candidates to Supabase...")
                 supabase = get_supabase_client()
                 
-                # Convert verified vulnerabilities to records
+                # Convert all candidates to records
                 vulns = []
-                for v in verified_vulns:
+                for v in all_candidates:
+                    # Defensive type check
+                    if not isinstance(v, dict):
+                        logger.warning(f"Skipping non-dict candidate: {type(v)}")
+                        continue
+                    
                     vuln = {
                         "type": v.get("vuln_type", "unknown"),
-                        "severity": self._map_severity(v.get("vuln_type", "unknown")),
-                        "title": f"{v.get('vuln_type', 'Unknown')}: {v.get('function_name', '')}",
-                        "description": v.get("verification_reason", "LLM-verified vulnerability"),
-                        "file_path": v.get("file_path", ""),
-                        "line_number": v.get("line_start", 0),
-                        "details": v,
+                        "severity": v.get("severity", self._map_severity(v.get("vuln_type", "unknown"))),
+                        "category": v.get("rule_id", ""),
+                        "title": f"{v.get('vuln_type', 'Unknown')}: {v.get('function_name', v.get('rule_id', 'unknown'))}",
+                        "description": v.get("message", "Candidate vulnerability"),
+                        "file_path": v.get("file_path", "") or "",
+                        "line_start": v.get("line_start", 0),
+                        "line_end": v.get("line_end", 0),
+                        "code_snippet": v.get("code_snippet", ""),
+                        "confirmed": v.get("confirmed", False),
+                        "confidence_score": 0.80 if v.get("confirmed") else 0.50,
+                        "details": json.loads(json.dumps(v, default=str)),
                     }
                     vulns.append(vuln)
                 
-                await supabase.insert_vulnerabilities_batch(scan_id, vulns)
-                logger.info(f"Saved {len(vulns)} verified vulnerabilities")
+                logger.info(f"Prepared {len(vulns)} vulnerability records for insert")
+                
+                try:
+                    result = await supabase.insert_vulnerabilities_batch(scan_id, vulns)
+                    logger.info(f"Supabase insert result: {result}")
+                    logger.info(f"Saved {len(vulns)} vulnerability candidates to Supabase")
+                except Exception as insert_error:
+                    logger.error(f"Failed to insert vulnerabilities: {insert_error}", exc_info=True)
+            else:
+                logger.warning("No candidates to save - all_candidates is empty!")
             
             # Print file tree and save report (Week 1 exit criteria - kept for reference)
-            report_path = await self.print_file_tree(clone_dir, scan_id, repo_url)
+            report_path = await self.print_file_tree(clone_dir, scan_id, repo_url, verified_vulns=verified_vulns)
             
             # Acknowledge the message
             await self.redis_bus.ack_message(
@@ -415,7 +554,14 @@ class ScanWorker:
             logger.error(f"Failed to clone repository: {e}")
             raise RuntimeError(f"Failed to clone repository: {e}")
     
-    async def print_file_tree(self, repo_path: Path, scan_id: str, repo_url: str, max_depth: int = 3) -> Path:
+    async def print_file_tree(
+        self,
+        repo_path: Path,
+        scan_id: str,
+        repo_url: str,
+        max_depth: int = 3,
+        verified_vulns: list[dict[str, Any]] | None = None,
+    ) -> Path:
         """
         Print the file tree of a repository and save to a report file.
         
@@ -427,6 +573,7 @@ class ScanWorker:
             scan_id: Unique scan identifier
             repo_url: Repository URL
             max_depth: Maximum depth to traverse
+            verified_vulns: List of verified vulnerabilities to include in report
             
         Returns:
             Path to the generated report file
@@ -517,7 +664,51 @@ class ScanWorker:
         report_lines.append(f"- **Total files:** {total_files}")
         report_lines.append(f"- **Total directories:** {total_dirs}")
         report_lines.append(f"- **Max depth traversed:** {max_depth}")
-        report_lines.append("")
+        
+        # Add vulnerabilities section if provided
+        if verified_vulns:
+            report_lines.append("")
+            report_lines.append("## Vulnerabilities Found")
+            report_lines.append("")
+            report_lines.append(f"**Total vulnerabilities:** {len(verified_vulns)}")
+            report_lines.append("")
+            
+            # Group by severity
+            severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+            for vuln in verified_vulns:
+                severity = vuln.get("severity", "medium").lower()
+                if severity in severity_counts:
+                    severity_counts[severity] += 1
+            
+            report_lines.append("### By Severity")
+            report_lines.append("")
+            report_lines.append(f"- **Critical:** {severity_counts['critical']}")
+            report_lines.append(f"- **High:** {severity_counts['high']}")
+            report_lines.append(f"- **Medium:** {severity_counts['medium']}")
+            report_lines.append(f"- **Low:** {severity_counts['low']}")
+            report_lines.append("")
+            
+            # List each vulnerability
+            report_lines.append("### Details")
+            report_lines.append("")
+            for i, vuln in enumerate(verified_vulns, 1):
+                vuln_type = vuln.get("vuln_type", "unknown")
+                file_path = vuln.get("file_path", "unknown")
+                line_start = vuln.get("line_start", 0)
+                severity = vuln.get("severity", "medium")
+                reason = vuln.get("verification_reason", "No description available")
+                function_name = vuln.get("function_name", "")
+                
+                report_lines.append(f"#### {i}. {vuln_type}")
+                report_lines.append("")
+                report_lines.append(f"- **File:** `{file_path}`")
+                if function_name:
+                    report_lines.append(f"- **Function:** `{function_name}`")
+                report_lines.append(f"- **Line:** {line_start}")
+                report_lines.append(f"- **Severity:** {severity}")
+                report_lines.append(f"- **Description:** {reason}")
+                report_lines.append("")
+        
         report_lines.append("---")
         report_lines.append("*Generated by VibeCheck MVP Week 2*")
         
@@ -532,17 +723,35 @@ class ScanWorker:
         
         return report_path
     
-    async def _store_function_summaries(self, summaries: list[dict[str, Any]]) -> None:
+    async def _store_function_summaries(self, summaries: list[dict[str, Any] | str]) -> None:
         """
         Store function summaries in Qdrant for pattern matching.
         
         Args:
             summaries: List of function summary dicts from semantic lifting
+                       Note: lift_directory() returns list[str] (file paths),
+                       so this method skips storage if strings are passed.
         """
         from qdrant_client.http import models
         
+        # Skip if summaries is a list of strings (file paths from lift_directory)
+        # The semantic files are already written to disk, so Qdrant storage is optional
+        if not summaries:
+            return
+            
+        # Check if first item is a string (file path) instead of dict
+        if isinstance(summaries[0], str):
+            logger.info("Semantic summaries are file paths (not dicts), skipping Qdrant storage")
+            return
+        
         try:
+            stored_count = 0
             for summary in summaries:
+                # Defensive type check
+                if not isinstance(summary, dict):
+                    logger.warning(f"Skipping non-dict summary: {type(summary)}")
+                    continue
+                    
                 # Get embedding for the summary
                 summary_text = summary.get("summary", "")
                 if not summary_text:
@@ -570,8 +779,9 @@ class ScanWorker:
                     collection_name="function_summaries",
                     points=[point],
                 )
+                stored_count += 1
             
-            logger.info(f"Stored {len(summaries)} function summaries in Qdrant")
+            logger.info(f"Stored {stored_count} function summaries in Qdrant")
             
         except Exception as e:
             logger.error(f"Failed to store function summaries: {e}")

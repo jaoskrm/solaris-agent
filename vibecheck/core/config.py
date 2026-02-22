@@ -54,12 +54,28 @@ class Settings(BaseSettings):
     # -------------------------------------------
     ollama_base_url: str = Field(default="http://localhost:11434", description="Ollama API URL")
     ollama_coder_model: str = Field(
-        default="qwen2.5-coder:7b-instruct",
+        default="deepseek-coder-v2:16b",
         description="Ollama model for code tasks",
     )
     ollama_embed_model: str = Field(
         default="nomic-embed-text",
         description="Ollama model for embeddings",
+    )
+
+    # -------------------------------------------
+    # OpenRouter LLM Configuration
+    # -------------------------------------------
+    openrouter_primary_model: str = Field(
+        default="qwen/qwen2.5-72b-instruct:free",
+        description="Primary OpenRouter model for verification",
+    )
+    openrouter_fallback_model: str = Field(
+        default="meta-llama/llama-3.2-3b-instruct:free",
+        description="Fallback OpenRouter model if primary fails",
+    )
+    openrouter_http_referer: str = Field(
+        default="https://vibecheck.local",
+        description="HTTP Referer header for OpenRouter API",
     )
 
     # -------------------------------------------

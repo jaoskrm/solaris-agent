@@ -266,13 +266,22 @@ ollama pull nomic-embed-text
 ollama list
 ```
 
-### Step 7: Create Python Virtual Environment
+### Step 7: Create Python Virtual Environments
+
+Project VibeCheck requires **two separate virtual environments** to avoid dependency conflicts:
+
+| Virtual Environment | Python Version | Purpose |
+|---------------------|----------------|---------|
+| `.venv/` | 3.10+ | Main application (FastAPI, workers, database clients) |
+| `.semgrep-venv/` | 3.14+ | Isolated Semgrep security scanner |
+
+#### 7.1 Create Main Application Virtual Environment
 
 ```bash
-# Navigate to the vibecheck directory
-cd /path/to/solaris-agent/vibecheck
+# Navigate to the project root directory
+cd /path/to/solaris-agent
 
-# Create virtual environment
+# Create main virtual environment (Python 3.10+)
 python -m venv .venv
 
 # Activate virtual environment
@@ -286,14 +295,56 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-### Step 8: Install Python Dependencies
+#### 7.2 Create Semgrep Virtual Environment
+
+Semgrep requires an isolated environment to avoid dependency conflicts with the main application.
 
 ```bash
-# Ensure virtual environment is activated
+# Navigate to the project root directory (if not already there)
+cd /path/to/solaris-agent
+
+# Ensure you have Python 3.14 installed
+# Windows: Download from python.org
+# macOS: brew install python@3.14
+# Linux: sudo apt-get install python3.14
+
+# Create Semgrep virtual environment (Python 3.14)
+# Windows:
+C:\Python314\python.exe -m venv .semgrep-venv
+
+# macOS/Linux:
+python3.14 -m venv .semgrep-venv
+
+# Activate Semgrep virtual environment
+# Windows (PowerShell):
+.\.semgrep-venv\Scripts\Activate.ps1
+
+# Windows (CMD):
+.\.semgrep-venv\Scripts\activate.bat
+
+# macOS/Linux:
+source .semgrep-venv/bin/activate
+```
+
+### Step 8: Install Python Dependencies
+
+#### 8.1 Install Main Application Dependencies
+
+```bash
+# Activate main virtual environment
+# Windows (PowerShell):
+.\.venv\Scripts\Activate.ps1
+
+# macOS/Linux:
+source .venv/bin/activate
+
 # You should see (.venv) in your terminal prompt
 
 # Upgrade pip
 pip install --upgrade pip
+
+# Navigate to vibecheck directory
+cd vibecheck
 
 # Install the package in editable mode
 pip install -e .
@@ -309,6 +360,40 @@ pip install -e ".[parser]"
 
 # Install security tools (optional)
 pip install -e ".[security]"
+```
+
+#### 8.2 Install Semgrep in Isolated Environment
+
+```bash
+# Activate Semgrep virtual environment
+# Windows (PowerShell):
+.\.semgrep-venv\Scripts\Activate.ps1
+
+# macOS/Linux:
+source .semgrep-venv/bin/activate
+
+# You should see (.semgrep-venv) in your terminal prompt
+
+# Upgrade pip
+pip install --upgrade pip
+
+# Install Semgrep
+pip install semgrep
+
+# Verify Semgrep installation
+semgrep --version
+```
+
+#### 8.3 Configure Semgrep Path
+
+Update your `.env` file to point to the Semgrep binary:
+
+```bash
+# Windows
+SEMGREP_BIN=d:/Projects/Prawin/solaris/solaris-agent/.semgrep-venv/Scripts/semgrep.exe
+
+# macOS/Linux
+SEMGREP_BIN=/path/to/solaris-agent/.semgrep-venv/bin/semgrep
 ```
 
 ### Step 9: Configure Environment Variables
@@ -404,6 +489,12 @@ API_PORT=8000
 MAX_CONCURRENT_SCANS=3
 REPO_CLONE_DIR=/tmp/vibecheck/repos
 MAX_REPO_SIZE_MB=500
+
+# Semgrep binary path (isolated venv to avoid dependency conflicts)
+# Windows:
+SEMGREP_BIN=d:/Projects/Prawin/solaris/solaris-agent/.semgrep-venv/Scripts/semgrep.exe
+# macOS/Linux:
+# SEMGREP_BIN=/path/to/solaris-agent/.semgrep-venv/bin/semgrep
 ```
 
 ### Configuration Details
@@ -453,6 +544,19 @@ MAX_REPO_SIZE_MB=500
 | `MAX_CONCURRENT_SCANS` | `3` | Maximum parallel scan jobs |
 | `REPO_CLONE_DIR` | `/tmp/vibecheck/repos` | Directory for cloned repositories |
 | `MAX_REPO_SIZE_MB` | `500` | Maximum repository size in MB |
+| `SEMGREP_BIN` | (auto-detect) | Path to Semgrep binary in isolated venv |
+
+#### Semgrep Configuration
+
+The `SEMGREP_BIN` variable must point to the Semgrep binary in the isolated virtual environment:
+
+```bash
+# Windows
+SEMGREP_BIN=d:/Projects/Prawin/solaris/solaris-agent/.semgrep-venv/Scripts/semgrep.exe
+
+# macOS/Linux
+SEMGREP_BIN=/path/to/solaris-agent/.semgrep-venv/bin/semgrep
+```
 
 ### Docker Service Ports
 
@@ -842,6 +946,79 @@ docker stats
 # Or use smaller models
 OLLAMA_CODER_MODEL=qwen2.5-coder:1.5b
 ```
+
+### Virtual Environment Issues
+
+#### Q: Which virtual environment should I activate?
+
+**A:** It depends on what you're doing:
+
+| Task | Virtual Environment | Activate Command |
+|------|---------------------|------------------|
+| Running API server | `.venv` | `.\.venv\Scripts\Activate.ps1` (Windows) |
+| Running scan worker | `.venv` | `.\.venv\Scripts\Activate.ps1` (Windows) |
+| Installing app dependencies | `.venv` | `.\.venv\Scripts\Activate.ps1` (Windows) |
+| Installing/updating Semgrep | `.semgrep-venv` | `.\.semgrep-venv\Scripts\Activate.ps1` (Windows) |
+
+#### Q: `Semgrep not found` or `SEMGREP_BIN` error
+
+**A:** Ensure Semgrep is installed in the isolated environment:
+
+```bash
+# Activate Semgrep virtual environment
+.\.semgrep-venv\Scripts\Activate.ps1  # Windows
+source .semgrep-venv/bin/activate     # macOS/Linux
+
+# Install Semgrep
+pip install semgrep
+
+# Verify installation
+semgrep --version
+
+# Update .env with correct path
+# Windows:
+SEMGREP_BIN=d:/Projects/Prawin/solaris/solaris-agent/.semgrep-venv/Scripts/semgrep.exe
+
+# macOS/Linux:
+SEMGREP_BIN=/path/to/solaris-agent/.semgrep-venv/bin/semgrep
+```
+
+#### Q: Python version mismatch between venvs
+
+**A:** Verify each virtual environment's Python version:
+
+```bash
+# Check main venv Python version
+.\.venv\Scripts\python.exe --version    # Windows
+.venv/bin/python --version              # macOS/Linux
+# Expected: Python 3.10.x
+
+# Check Semgrep venv Python version
+.\.semgrep-venv\Scripts\python.exe --version    # Windows
+.semgrep-venv/bin/python --version              # macOS/Linux
+# Expected: Python 3.14.x
+```
+
+If versions are incorrect, recreate the virtual environment:
+
+```bash
+# Remove incorrect venv
+rm -rf .venv  # macOS/Linux
+rmdir /s .venv  # Windows
+
+# Recreate with correct Python version
+python3.10 -m venv .venv          # Main venv
+python3.14 -m venv .semgrep-venv  # Semgrep venv
+```
+
+#### Q: Dependency conflicts between venvs
+
+**A:** This is expected - the separate virtual environments are designed to prevent conflicts:
+
+- **`.venv`** contains the main application dependencies (FastAPI, Redis, Qdrant clients, etc.)
+- **`.semgrep-venv`** contains only Semgrep and its dependencies
+
+Never mix dependencies between these environments. The worker calls Semgrep via subprocess using the `SEMGREP_BIN` path.
 
 ### Getting Help
 

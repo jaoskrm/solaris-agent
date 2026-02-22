@@ -12,7 +12,7 @@ Used for:
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from supabase import create_client, Client
@@ -111,9 +111,9 @@ class SupabaseClient:
         }
         
         if status == "running" and progress == 0:
-            update_data["started_at"] = datetime.utcnow().isoformat()
+            update_data["started_at"] = datetime.now(timezone.utc).isoformat()
         elif status in ("completed", "failed"):
-            update_data["completed_at"] = datetime.utcnow().isoformat()
+            update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
         
         if error_message:
             update_data["error_message"] = error_message
@@ -280,6 +280,7 @@ class SupabaseClient:
             List of created records
         """
         if not vulns:
+            logger.warning("No vulnerabilities to insert - vulns list is empty")
             return []
         
         client = self._get_client()
@@ -287,13 +288,25 @@ class SupabaseClient:
         # Add scan_id to each vulnerability
         vulns_data = [{**v, "scan_id": scan_id} for v in vulns]
         
-        result = (
-            client.table("vulnerabilities")
-            .insert(vulns_data)
-            .execute()
-        )
+        logger.info(f"Inserting {len(vulns_data)} vulnerabilities into Supabase for scan {scan_id}")
+        logger.debug(f"Sample vulnerability data: {vulns_data[0] if vulns_data else 'none'}")
         
-        return result.data if result and result.data else []
+        try:
+            result = (
+                client.table("vulnerabilities")
+                .insert(vulns_data)
+                .execute()
+            )
+            
+            if result and result.data:
+                logger.info(f"Successfully inserted {len(result.data)} vulnerabilities")
+                return result.data
+            else:
+                logger.warning(f"Insert returned no data. Result: {result}")
+                return []
+        except Exception as e:
+            logger.error(f"Failed to insert vulnerabilities: {e}", exc_info=True)
+            raise
 
     async def insert_vulnerabilities_batch(
         self,

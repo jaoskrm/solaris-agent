@@ -15,6 +15,8 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from core.supabase_client import get_supabase_client
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -103,26 +105,76 @@ async def get_report(scan_id: str) -> ReportResponse:
     
     Returns summary statistics and paginated vulnerabilities.
     """
-    # TODO: Query Supabase for scan details and vulnerabilities
-    # scan = await supabase.table("scan_queue").select("*").eq("id", scan_id).single()
-    # vulnerabilities = await supabase.table("vulnerabilities").select("*").eq("scan_id", scan_id)
-    
-    # Placeholder response for Week 1
-    return ReportResponse(
-        scan_id=scan_id,
-        project_name=None,
-        repo_url=None,
-        status="pending",
-        total_vulnerabilities=0,
-        critical_count=0,
-        high_count=0,
-        medium_count=0,
-        low_count=0,
-        confirmed_count=0,
-        created_at=datetime.now(timezone.utc),
-        completed_at=None,
-        vulnerabilities=[],
-    )
+    try:
+        supabase = get_supabase_client()
+        report_data = await supabase.get_report(scan_id)
+        
+        if not report_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Scan not found: {scan_id}",
+            )
+        
+        scan = report_data.get("scan", {})
+        vulnerabilities = report_data.get("vulnerabilities", [])
+        
+        # Calculate statistics
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        confirmed_count = 0
+        
+        vuln_models = []
+        for vuln in vulnerabilities:
+            severity = vuln.get("severity", "medium").lower()
+            if severity in severity_counts:
+                severity_counts[severity] += 1
+            
+            if vuln.get("confirmed", False):
+                confirmed_count += 1
+            
+            vuln_models.append(VulnerabilityModel(
+                id=str(vuln.get("id", "")),
+                scan_id=scan_id,
+                type=vuln.get("type", "unknown"),
+                severity=vuln.get("severity", "medium"),
+                category=vuln.get("category"),
+                file_path=vuln.get("file_path", ""),
+                line_start=vuln.get("line_start"),
+                line_end=vuln.get("line_end"),
+                title=vuln.get("title"),
+                description=vuln.get("description"),
+                code_snippet=vuln.get("code_snippet"),
+                confirmed=vuln.get("confirmed", False),
+                confidence_score=vuln.get("confidence_score"),
+                false_positive=vuln.get("false_positive", False),
+                fix_suggestion=vuln.get("fix_suggestion"),
+                reproduction_test=vuln.get("reproduction_test"),
+                created_at=vuln.get("created_at", datetime.now(timezone.utc)),
+            ))
+        
+        return ReportResponse(
+            scan_id=scan_id,
+            project_name=scan.get("project_name"),
+            repo_url=scan.get("repo_url"),
+            status=scan.get("status", "unknown"),
+            total_vulnerabilities=len(vulnerabilities),
+            critical_count=severity_counts["critical"],
+            high_count=severity_counts["high"],
+            medium_count=severity_counts["medium"],
+            low_count=severity_counts["low"],
+            confirmed_count=confirmed_count,
+            created_at=scan.get("created_at", datetime.now(timezone.utc)),
+            completed_at=scan.get("completed_at"),
+            vulnerabilities=vuln_models,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get report: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get report: {str(e)}",
+        )
 
 
 @router.get(
@@ -143,21 +195,61 @@ async def list_vulnerabilities(
     
     Supports filtering by severity and confirmation status.
     """
-    # TODO: Query Supabase with filters
-    # query = supabase.table("vulnerabilities").select("*").eq("scan_id", scan_id)
-    # if severity:
-    #     query = query.eq("severity", severity)
-    # if confirmed_only:
-    #     query = query.eq("confirmed", True)
-    # vulnerabilities = query.range((page-1)*page_size, page*page_size-1)
-    
-    # Placeholder response for Week 1
-    return VulnerabilityListResponse(
-        vulnerabilities=[],
-        total=0,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        supabase = get_supabase_client()
+        vulnerabilities = await supabase.get_vulnerabilities(scan_id)
+        
+        # Apply filters
+        filtered = []
+        for vuln in vulnerabilities:
+            if severity and vuln.get("severity", "").lower() != severity.lower():
+                continue
+            if confirmed_only and not vuln.get("confirmed", False):
+                continue
+            filtered.append(vuln)
+        
+        # Apply pagination
+        total = len(filtered)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated = filtered[start:end]
+        
+        vuln_models = [
+            VulnerabilityModel(
+                id=str(v.get("id", "")),
+                scan_id=scan_id,
+                type=v.get("type", "unknown"),
+                severity=v.get("severity", "medium"),
+                category=v.get("category"),
+                file_path=v.get("file_path", ""),
+                line_start=v.get("line_start"),
+                line_end=v.get("line_end"),
+                title=v.get("title"),
+                description=v.get("description"),
+                code_snippet=v.get("code_snippet"),
+                confirmed=v.get("confirmed", False),
+                confidence_score=v.get("confidence_score"),
+                false_positive=v.get("false_positive", False),
+                fix_suggestion=v.get("fix_suggestion"),
+                reproduction_test=v.get("reproduction_test"),
+                created_at=v.get("created_at", datetime.now(timezone.utc)),
+            )
+            for v in paginated
+        ]
+        
+        return VulnerabilityListResponse(
+            vulnerabilities=vuln_models,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to list vulnerabilities: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list vulnerabilities: {str(e)}",
+        )
 
 
 @router.get(
@@ -175,12 +267,82 @@ async def get_vulnerability_detail(
     
     Includes code snippet, reproduction test, and related vulnerabilities.
     """
-    # TODO: Query Supabase for vulnerability details
-    
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Vulnerability {vuln_id} not found in scan {scan_id}",
-    )
+    try:
+        supabase = get_supabase_client()
+        vulnerabilities = await supabase.get_vulnerabilities(scan_id)
+        
+        # Find the specific vulnerability
+        vuln = None
+        for v in vulnerabilities:
+            if str(v.get("id", "")) == vuln_id:
+                vuln = v
+                break
+        
+        if not vuln:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Vulnerability {vuln_id} not found in scan {scan_id}",
+            )
+        
+        vuln_model = VulnerabilityModel(
+            id=str(vuln.get("id", "")),
+            scan_id=scan_id,
+            type=vuln.get("type", "unknown"),
+            severity=vuln.get("severity", "medium"),
+            category=vuln.get("category"),
+            file_path=vuln.get("file_path", ""),
+            line_start=vuln.get("line_start"),
+            line_end=vuln.get("line_end"),
+            title=vuln.get("title"),
+            description=vuln.get("description"),
+            code_snippet=vuln.get("code_snippet"),
+            confirmed=vuln.get("confirmed", False),
+            confidence_score=vuln.get("confidence_score"),
+            false_positive=vuln.get("false_positive", False),
+            fix_suggestion=vuln.get("fix_suggestion"),
+            reproduction_test=vuln.get("reproduction_test"),
+            created_at=vuln.get("created_at", datetime.now(timezone.utc)),
+        )
+        
+        # Find related vulnerabilities (same type or same file)
+        related = []
+        for v in vulnerabilities:
+            if str(v.get("id", "")) == vuln_id:
+                continue
+            if v.get("type") == vuln.get("type") or v.get("file_path") == vuln.get("file_path"):
+                related.append(VulnerabilityModel(
+                    id=str(v.get("id", "")),
+                    scan_id=scan_id,
+                    type=v.get("type", "unknown"),
+                    severity=v.get("severity", "medium"),
+                    category=v.get("category"),
+                    file_path=v.get("file_path", ""),
+                    line_start=v.get("line_start"),
+                    line_end=v.get("line_end"),
+                    title=v.get("title"),
+                    description=v.get("description"),
+                    code_snippet=v.get("code_snippet"),
+                    confirmed=v.get("confirmed", False),
+                    confidence_score=v.get("confidence_score"),
+                    false_positive=v.get("false_positive", False),
+                    fix_suggestion=v.get("fix_suggestion"),
+                    reproduction_test=v.get("reproduction_test"),
+                    created_at=v.get("created_at", datetime.now(timezone.utc)),
+                ))
+        
+        return VulnerabilityDetailResponse(
+            vulnerability=vuln_model,
+            related_vulnerabilities=related[:5],  # Limit to 5 related
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get vulnerability detail: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get vulnerability detail: {str(e)}",
+        )
 
 
 @router.get(
@@ -242,20 +404,58 @@ async def get_statistics(scan_id: str) -> StatisticsResponse:
     
     Returns counts by severity, type, and confirmation status.
     """
-    # TODO: Query Supabase using the get_scan_stats function
-    
-    return StatisticsResponse(
-        scan_id=scan_id,
-        total_vulnerabilities=0,
-        by_severity={
-            "critical": 0,
-            "high": 0,
-            "medium": 0,
-            "low": 0,
-            "info": 0,
-        },
-        by_type={},
-        confirmed_count=0,
-        false_positive_count=0,
-        average_confidence=None,
-    )
+    try:
+        supabase = get_supabase_client()
+        vulnerabilities = await supabase.get_vulnerabilities(scan_id)
+        
+        # Calculate statistics
+        by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        by_type: dict[str, int] = {}
+        confirmed_count = 0
+        false_positive_count = 0
+        confidence_sum = 0.0
+        confidence_count = 0
+        
+        for vuln in vulnerabilities:
+            # Count by severity
+            severity = vuln.get("severity", "medium").lower()
+            if severity in by_severity:
+                by_severity[severity] += 1
+            else:
+                by_severity["info"] += 1
+            
+            # Count by type
+            vuln_type = vuln.get("type", "unknown")
+            by_type[vuln_type] = by_type.get(vuln_type, 0) + 1
+            
+            # Count confirmed
+            if vuln.get("confirmed", False):
+                confirmed_count += 1
+            
+            # Count false positives
+            if vuln.get("false_positive", False):
+                false_positive_count += 1
+            
+            # Sum confidence scores
+            if vuln.get("confidence_score") is not None:
+                confidence_sum += vuln["confidence_score"]
+                confidence_count += 1
+        
+        average_confidence = confidence_sum / confidence_count if confidence_count > 0 else None
+        
+        return StatisticsResponse(
+            scan_id=scan_id,
+            total_vulnerabilities=len(vulnerabilities),
+            by_severity=by_severity,
+            by_type=by_type,
+            confirmed_count=confirmed_count,
+            false_positive_count=false_positive_count,
+            average_confidence=average_confidence,
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to get statistics: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get statistics: {str(e)}",
+        )

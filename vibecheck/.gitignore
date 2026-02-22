@@ -68,3 +68,22 @@ Thumbs.db
 data/
 *.db
 *.sqlite3
+
+# Node.js / npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# Dashboard (Next.js)
+dashboard/.next/
+dashboard/out/
+dashboard/node_modules/
+
+# Cloned repositories (scanned code)
+repos/
+
+# Semgrep isolated venv
+.semgrep-venv/

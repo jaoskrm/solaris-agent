@@ -1,4 +1,10 @@
-"""Test script for Week 3 implementation."""
+"""Test script for Week 3 implementation.
+
+This script tests the Week 3 components with configurable paths.
+Set environment variables to customize:
+- TEST_SOURCE_DIR: Path to the repository to scan
+- QDRANT_URL: Qdrant server URL
+"""
 import asyncio
 import sys
 import os
@@ -9,8 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from worker.semgrep_runner import run_semgrep, semgrep_to_parsed_nodes
 from core.qdrant import QdrantClient
+from core.config import get_settings
 from worker.semantic_lifter import lift_directory
 from worker.llm_verifier import verify_candidate, embed_with_ollama
+
+# Default test directory - can be overridden via environment variable
+DEFAULT_TEST_DIR = Path(__file__).parent.parent / "vibecoded-test-app" / "targets" / "juice-shop-source"
+TEST_SOURCE_DIR = Path(os.environ.get("TEST_SOURCE_DIR", DEFAULT_TEST_DIR))
 
 
 async def test_semgrep():
@@ -19,9 +30,14 @@ async def test_semgrep():
     print("TEST 1: Semgrep Runner")
     print("="*60)
     
-    # Use absolute path
-    repo_path = Path(__file__).parent.parent / "vibecoded-test-app" / "targets" / "juice-shop-source"
+    # Use configurable path
+    repo_path = TEST_SOURCE_DIR
     scan_id = "test-scan-001"
+    
+    if not repo_path.exists():
+        print(f"[SKIP] Test source directory not found: {repo_path}")
+        print("Set TEST_SOURCE_DIR environment variable to specify a directory.")
+        return []
     
     print(f"Running Semgrep on: {repo_path}")
     try:
@@ -53,6 +69,7 @@ async def test_qdrant_patterns():
     print("="*60)
     
     try:
+        settings = get_settings()
         client = QdrantClient()
         print("[PASS] Qdrant client created")
         
@@ -60,9 +77,9 @@ async def test_qdrant_patterns():
         await client.seed_known_patterns(embed_with_ollama)
         print("[PASS] Patterns seeded")
         
-        # Check collection
+        # Check collection using configured URL
         from qdrant_client import QdrantClient as QC
-        qc = QC(url="http://localhost:6333")
+        qc = QC(url=settings.qdrant_url)
         result = qc.get_collection("known_vulnerable_patterns")
         point_count = result.points_count
         print(f"[PASS] known_vulnerable_patterns collection has {point_count} points")
@@ -169,6 +186,7 @@ async def main():
     print("\n" + "#"*60)
     print("# WEEK 3 IMPLEMENTATION TESTS")
     print("#"*60)
+    print(f"Test source directory: {TEST_SOURCE_DIR}")
     
     # Test 1: Semgrep
     findings = await test_semgrep()

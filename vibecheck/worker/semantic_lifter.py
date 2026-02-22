@@ -50,6 +50,8 @@ async def lift_file(
     Returns:
         Path to the generated .semantic.txt file, or None on error
     """
+    # Normalize output_dir to Path (in case string is passed)
+    output_dir = Path(output_dir) if isinstance(output_dir, str) else output_dir
     settings = get_settings()
 
     # Group nodes by type
@@ -229,7 +231,42 @@ Function: {func.name} in {file_path}
         return summary
 
     except httpx.HTTPStatusError as e:
+        # Ollama returned an error (e.g., 404 model not found)
+        # Try OpenRouter fallback if API key is configured
         logger.warning(f"Ollama API error for {func.name}: {e}")
+        
+        if settings.openrouter_api_key:
+            logger.info(f"Trying OpenRouter fallback for {func.name}...")
+            try:
+                # Use OpenRouter chat completions API
+                or_response = await client.post(
+                    f"{settings.openrouter_base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.openrouter_api_key}",
+                        "HTTP-Referer": settings.openrouter_http_referer,
+                        "X-Title": "VibeCheck Security Scanner",
+                    },
+                    json={
+                        "model": settings.openrouter_primary_model,
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 150,
+                        "temperature": 0.1,
+                    },
+                )
+                or_response.raise_for_status()
+                or_result = or_response.json()
+                summary = or_result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                
+                if summary:
+                    summary = " ".join(summary.split())
+                    logger.debug(f"OpenRouter fallback succeeded for {func.name}")
+                    return summary
+                    
+            except Exception as or_error:
+                logger.warning(f"OpenRouter fallback also failed for {func.name}: {or_error}")
+        
         return None
     except Exception as e:
         logger.warning(f"Failed to summarize {func.name}: {e}")
@@ -240,22 +277,49 @@ async def lift_directory(
     repo_path: Path,
     all_parsed_nodes: list,
     output_dir: Path,
-) -> Path:
+    target_files: set[str] | None = None,
+) -> list[str]:
     """
-    Lift all files in a repository to semantic representation.
+    Lift files in a repository to semantic representation.
 
     Args:
         repo_path: Path to the cloned repository
         all_parsed_nodes: List of all ParsedNode objects
         output_dir: Base output directory
+        target_files: Optional set of file paths to process. If provided, only these
+                      files will be lifted. If None, all files with parsed nodes are lifted.
 
     Returns:
-        Path to the semantic_clone directory
+        List of paths to the generated .semantic.txt files
     """
+    # Normalize paths to Path objects (in case strings are passed)
+    repo_path = Path(repo_path) if isinstance(repo_path, str) else repo_path
+    output_dir = Path(output_dir) if isinstance(output_dir, str) else output_dir
+    
     # Group nodes by file
     nodes_by_file: dict[str, list] = defaultdict(list)
     for node in all_parsed_nodes:
         nodes_by_file[node.file_path].append(node)
+
+    # Filter to target files if provided
+    if target_files is not None:
+        # Normalize target file paths for comparison
+        normalized_targets = set()
+        for tf in target_files:
+            # Handle both absolute and relative paths
+            normalized_targets.add(str(tf).replace("\\", "/"))
+            normalized_targets.add(Path(tf).name)
+        
+        # Filter nodes_by_file to only include target files
+        filtered_nodes_by_file = {}
+        for file_path, nodes in nodes_by_file.items():
+            normalized_fp = str(file_path).replace("\\", "/")
+            # Check if this file matches any target
+            if normalized_fp in normalized_targets or Path(file_path).name in normalized_targets:
+                filtered_nodes_by_file[file_path] = nodes
+        
+        nodes_by_file = filtered_nodes_by_file
+        logger.info(f"Filtered to {len(nodes_by_file)} target files from {len(target_files)} Semgrep findings")
 
     # Track unique files processed
     files_processed = 0
@@ -298,7 +362,9 @@ async def lift_directory(
             continue
 
     logger.info(f"Semantic lifting complete: {files_processed} files")
-    return semantic_dir
+    # Return list of semantic file paths (not the directory Path)
+    semantic_files = list(semantic_dir.glob("*.semantic.txt"))
+    return [str(f) for f in semantic_files]
 
 
 def get_semantic_clone_summary(semantic_dir: Path) -> dict[str, Any]:

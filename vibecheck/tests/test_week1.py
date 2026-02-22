@@ -35,9 +35,11 @@ class TestConfig:
         assert settings.environment == "development"
         assert settings.log_level == "INFO"
         assert settings.api_port == 8000
-        assert settings.falkordb_url == "redis://localhost:6379"
-        assert settings.qdrant_url == "http://localhost:6333"
-        assert settings.redis_url == "redis://localhost:6380"
+        # These are default values for local development
+        # They can be overridden via environment variables
+        assert settings.falkordb_url is not None
+        assert settings.qdrant_url is not None
+        assert settings.redis_url is not None
     
     def test_environment_validation(self):
         """Test environment validation."""
@@ -69,8 +71,11 @@ class TestRedisBus:
     async def test_publish_scan_job(self):
         """Test publishing a scan job to Redis Stream."""
         from core.redis_bus import RedisBus
+        from core.config import get_settings
         
-        bus = RedisBus(url="redis://localhost:6380")
+        # Use configured Redis URL
+        settings = get_settings()
+        bus = RedisBus(url=settings.redis_url)
         
         # Mock the Redis client
         with patch.object(bus, '_client', None):

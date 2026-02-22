@@ -118,6 +118,8 @@ class QdrantClient:
             embed_fn: Async function that takes text and returns embedding vector.
                       Should call Ollama nomic-embed-text model.
         """
+        import uuid
+
         # Check if already seeded
         info = self.get_collection_info(COLLECTION_KNOWN_PATTERNS)
         if info and info.points_count >= 6:
@@ -128,9 +130,11 @@ class QdrantClient:
             return
 
         # Known vulnerable patterns to seed
+        # Note: Qdrant requires UUID or integer IDs, so we generate deterministic UUIDs
         patterns = [
             {
-                "id": "n-plus-1-orm-in-loop",
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "n-plus-1-orm-in-loop")),
+                "name": "n-plus-1-orm-in-loop",
                 "code": "for (const id of ids) { const user = await User.findByPk(id); }",
                 "vuln_type": "n_plus_1",
                 "severity": "high",
@@ -138,7 +142,8 @@ class QdrantClient:
                 "description": "N+1 query pattern - ORM call inside loop",
             },
             {
-                "id": "sqli-string-concat",
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "sqli-string-concat")),
+                "name": "sqli-string-concat",
                 "code": "db.query('SELECT * FROM users WHERE id = ' + req.params.id)",
                 "vuln_type": "sql_injection",
                 "severity": "critical",
@@ -146,7 +151,8 @@ class QdrantClient:
                 "description": "SQL injection via string concatenation",
             },
             {
-                "id": "hardcoded-jwt-secret",
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "hardcoded-jwt-secret")),
+                "name": "hardcoded-jwt-secret",
                 "code": "jwt.sign(payload, 'mysecretkey123')",
                 "vuln_type": "hardcoded_secret",
                 "severity": "high",
@@ -154,7 +160,8 @@ class QdrantClient:
                 "description": "Hardcoded JWT secret key",
             },
             {
-                "id": "prototype-pollution",
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "prototype-pollution")),
+                "name": "prototype-pollution",
                 "code": "Object.assign(target, JSON.parse(req.body))",
                 "vuln_type": "prototype_pollution",
                 "severity": "high",
@@ -162,7 +169,8 @@ class QdrantClient:
                 "description": "Prototype pollution via Object.assign",
             },
             {
-                "id": "path-traversal",
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "path-traversal")),
+                "name": "path-traversal",
                 "code": "fs.readFile(path.join(__dirname, req.params.file))",
                 "vuln_type": "path_traversal",
                 "severity": "high",
@@ -170,7 +178,8 @@ class QdrantClient:
                 "description": "Path traversal via user input to file path",
             },
             {
-                "id": "unguarded-admin-route",
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "unguarded-admin-route")),
+                "name": "unguarded-admin-route",
                 "code": "app.get('/api/admin/users', (req, res) => { /* no auth check */ })",
                 "vuln_type": "missing_auth",
                 "severity": "critical",
@@ -192,6 +201,7 @@ class QdrantClient:
                     id=pattern["id"],
                     vector=vector,
                     payload={
+                        "name": pattern["name"],
                         "code": pattern["code"],
                         "vuln_type": pattern["vuln_type"],
                         "severity": pattern["severity"],
@@ -202,7 +212,7 @@ class QdrantClient:
                 points.append(point)
 
             except Exception as e:
-                logger.error(f"Failed to embed pattern {pattern['id']}: {e}")
+                logger.error(f"Failed to embed pattern {pattern['name']}: {e}")
                 continue
 
         # Upsert all patterns

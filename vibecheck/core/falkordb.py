@@ -21,6 +21,20 @@ from core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Allowed node types for Cypher queries (security: prevent injection)
+ALLOWED_NODE_TYPES = frozenset({
+    "Function",
+    "Endpoint", 
+    "Loop",
+    "ORMCall",
+    "SQLQuery",
+    "Module",
+    "Class",
+    "Method",
+    "Import",
+    "Variable",
+})
+
 
 class FalkorDBClient:
     """
@@ -158,6 +172,11 @@ class FalkorDBClient:
         
         # Run one UNWIND query per label
         for node_type, typed_nodes in nodes_by_type.items():
+            # Security: Validate node_type against allowlist to prevent Cypher injection
+            if node_type not in ALLOWED_NODE_TYPES:
+                logger.error(f"Invalid node type rejected: {node_type}")
+                raise ValueError(f"Invalid node type: {node_type}. Must be one of: {ALLOWED_NODE_TYPES}")
+            
             # Prepare node data for Cypher
             node_data = []
             for n in typed_nodes:

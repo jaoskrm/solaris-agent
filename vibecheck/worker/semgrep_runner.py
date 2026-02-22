@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +21,18 @@ logger = logging.getLogger(__name__)
 
 # Use isolated semgrep venv binary to avoid dependency conflicts with main project venv
 # The isolated venv is at .semgrep-venv in the project root
-_DEFAULT_SEMGREP = str(
-    Path(__file__).parent.parent.parent / ".semgrep-venv" / "Scripts" / "semgrep.exe"
-)
+# Platform-agnostic: Use Scripts/semgrep.exe on Windows, bin/semgrep on Unix
+import platform
+
+def _get_default_semgrep_path() -> str:
+    """Get the default semgrep binary path based on the platform."""
+    venv_dir = Path(__file__).parent.parent.parent / ".semgrep-venv"
+    if platform.system() == "Windows":
+        return str(venv_dir / "Scripts" / "semgrep.exe")
+    else:
+        return str(venv_dir / "bin" / "semgrep")
+
+_DEFAULT_SEMGREP = _get_default_semgrep_path()
 SEMGREP_BIN = os.environ.get("SEMGREP_BIN", _DEFAULT_SEMGREP)
 
 # Fallback to PATH if isolated venv binary doesn't exist
@@ -35,29 +43,16 @@ if not Path(SEMGREP_BIN).exists():
 # Semgrep timeout (seconds)
 SEMGREP_TIMEOUT = 120
 
-# Custom taint rule for Express.js
-EXPRESS_TAINT_RULE = """
-rules:
-  - id: express-request-to-sql-sink
-    mode: taint
-    pattern-sources:
-      - pattern: req.params.$X
-      - pattern: req.query.$X
-      - pattern: req.body.$X
-      - pattern: req.headers[$X]
-    pattern-sinks:
-      - pattern: $DB.query(...)
-      - pattern: $MODEL.findAll({ where: $X })
-      - pattern: $MODEL.findOne({ where: $X })
-      - pattern: sequelize.query(...)
-    pattern-sanitizers:
-      - pattern: $X.replace(...)
-      - pattern: escape($X)
-      - pattern: encodeURIComponent($X)
-    message: "User input from request flows to database query without proper sanitization"
-    severity: ERROR
-    languages: [javascript, typescript]
-"""
+# Custom taint rule for Express.js - loaded from external file
+# Path to the taint rule file (relative to this module)
+_TAINT_RULE_PATH = Path(__file__).parent.parent / "rules" / "express-taint.yaml"
+
+def _get_taint_rule_path() -> Path | None:
+    """Get the path to the Express.js taint rule file if it exists."""
+    if _TAINT_RULE_PATH.exists():
+        return _TAINT_RULE_PATH
+    logger.debug(f"Taint rule file not found at {_TAINT_RULE_PATH}")
+    return None
 
 # Mapping from Semgrep check_id to vulnerability type
 CHECK_ID_TO_VULN_TYPE = {
@@ -115,7 +110,6 @@ def run_semgrep(repo_path: Path, scan_id: str) -> list[dict[str, Any]]:
     - p/owasp-top-ten: OWASP Top 10 security rules
     - p/nodejs: Node.js specific rules
     - p/secrets: Hardcoded secrets detection
-    - Custom taint rule for Express.js
 
     Args:
         repo_path: Path to the repository to scan
@@ -124,75 +118,111 @@ def run_semgrep(repo_path: Path, scan_id: str) -> list[dict[str, Any]]:
     Returns:
         List of raw Semgrep findings
     """
-    logger.info(f"Running Semgrep on {repo_path}")
+    logger.info("=" * 80)
+    logger.info("SEMGREP RUNNER: Starting Semgrep scan")
+    logger.info(f"  Repo path: {repo_path}")
+    logger.info(f"  Scan ID: {scan_id}")
+    logger.info("=" * 80)
 
-    # Create temporary file for custom taint rule
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yaml", delete=False
-    ) as taint_rule_file:
-        taint_rule_file.write(EXPRESS_TAINT_RULE)
-        taint_rule_path = taint_rule_file.name
+    # Get custom taint rule path (if available)
+    taint_rule_path = _get_taint_rule_path()
+    logger.info(f"  Taint rule path: {taint_rule_path}")
 
     try:
         # Build Semgrep command using isolated binary
+        # Note: --no-git-ignore is required to scan files not tracked by git
+        # (e.g., extracted source code, downloaded repos without .git)
         cmd = [
             SEMGREP_BIN,
             "--config", "p/owasp-top-ten",
             "--config", "p/nodejs",
             "--config", "p/secrets",
-            "--config", taint_rule_path,
+        ]
+        
+        # Add custom taint rule if available
+        if taint_rule_path:
+            cmd.extend(["--config", str(taint_rule_path)])
+        
+        cmd.extend([
             "--json",
             "--quiet",
+            "--no-git-ignore",  # Scan all files, not just git-tracked
             "--timeout", str(60),  # Per-file timeout
             "--max-memory", "1024",  # Memory limit in MB
             str(repo_path),
-        ]
+        ])
 
-        logger.debug(f"Semgrep command: {' '.join(cmd)}")
+        logger.info(f"  Semgrep binary: {SEMGREP_BIN}")
+        logger.info(f"  Command: {' '.join(cmd)}")
 
-        # Run Semgrep
+        # Run Semgrep with UTF-8 encoding to handle special characters in source files
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
             timeout=SEMGREP_TIMEOUT,
+            encoding='utf-8',
+            errors='replace',  # Replace undecodable bytes instead of crashing
         )
+
+        logger.info(f"  Return code: {result.returncode}")
 
         # returncode 1 means findings exist (not an error)
         # returncode 0 means no findings
         # returncode > 1 is an error
         if result.returncode > 1:
-            logger.error(f"Semgrep failed with returncode {result.returncode}")
-            logger.error(f"stderr: {result.stderr}")
+            logger.error(f"  Semgrep FAILED with returncode {result.returncode}")
+            logger.error(f"  stderr: {result.stderr}")
             return []
+
+        # Log stderr for any warnings
+        if result.stderr:
+            logger.warning(f"  Semgrep stderr: {result.stderr[:500]}...")
 
         # Parse JSON output
         try:
             output = json.loads(result.stdout)
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Semgrep JSON output: {e}")
+            logger.error(f"  Failed to parse Semgrep JSON output: {e}")
+            logger.error(f"  stdout (first 500 chars): {result.stdout[:500]}...")
             return []
 
         findings = output.get("results", [])
-        logger.info(f"Semgrep found {len(findings)} raw findings")
+        logger.info(f"  Semgrep found {len(findings)} raw findings")
+        
+        # Log detailed findings for debugging
+        if findings:
+            logger.info("  SAMPLE FINDINGS (first 5):")
+            for i, f in enumerate(findings[:5]):
+                check_id = f.get("check_id", "unknown")
+                path = f.get("path", "unknown")
+                start = f.get("start", {})
+                line = start.get("line", 0) if isinstance(start, dict) else 0
+                extra = f.get("extra", {})
+                message = extra.get("message", "")[:100] if isinstance(extra, dict) else ""
+                logger.info(f"    [{i}] {check_id}")
+                logger.info(f"        File: {path}:{line}")
+                logger.info(f"        Message: {message}...")
+        
+        # Log errors if any
+        errors = output.get("errors", [])
+        if errors:
+            logger.warning(f"  Semgrep reported {len(errors)} errors:")
+            for e in errors[:3]:
+                logger.warning(f"    - {e}")
 
+        logger.info("=" * 80)
         return findings
 
     except subprocess.TimeoutExpired:
-        logger.error(f"Semgrep timed out after {SEMGREP_TIMEOUT}s")
+        logger.error(f"  Semgrep TIMED OUT after {SEMGREP_TIMEOUT}s")
         return []
     except FileNotFoundError:
-        logger.error("Semgrep binary not found. Please install Semgrep: pip install semgrep")
+        logger.error("  Semgrep binary NOT FOUND. Please install Semgrep: pip install semgrep")
         return []
     except Exception as e:
-        logger.error(f"Semgrep execution failed: {e}", exc_info=True)
+        logger.error(f"  Semgrep execution FAILED: {e}", exc_info=True)
         return []
-    finally:
-        # Clean up temporary file
-        try:
-            Path(taint_rule_path).unlink()
-        except Exception:
-            pass
+    # Note: We do NOT delete the taint rule file - it's a persistent rule file, not a temporary one
 
 
 def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str, Any]]:
@@ -217,12 +247,29 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
 
     for finding in findings:
         try:
+            # Defensive type check - ensure finding is a dict
+            if not isinstance(finding, dict):
+                logger.warning(f"Skipping non-dict finding: {type(finding)}")
+                continue
+            
             # Extract fields from finding
             check_id = finding.get("check_id", "")
             path = finding.get("path", "")
-            start_line = finding.get("start", {}).get("line", 0)
-            end_line = finding.get("end", {}).get("line", 0)
+            
+            # Safely extract line numbers from nested dicts
+            start_obj = finding.get("start", {})
+            if not isinstance(start_obj, dict):
+                start_obj = {}
+            start_line = start_obj.get("line", 0)
+            
+            end_obj = finding.get("end", {})
+            if not isinstance(end_obj, dict):
+                end_obj = {}
+            end_line = end_obj.get("line", 0)
+            
             extra = finding.get("extra", {})
+            if not isinstance(extra, dict):
+                extra = {}
             message = extra.get("message", "")
             severity = extra.get("severity", "INFO")
             code_snippet = extra.get("lines", "")

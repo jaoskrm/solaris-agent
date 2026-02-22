@@ -33,6 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_projects_repo_url ON projects(repo_url);
 CREATE TABLE IF NOT EXISTS scan_queue (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+    repo_url TEXT,  -- Direct repo URL (can be null if project_id is set)
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
     progress INTEGER DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
     error_message TEXT,
