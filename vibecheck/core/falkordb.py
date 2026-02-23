@@ -303,7 +303,7 @@ class FalkorDBClient:
         1. Endpoints that call functions
         2. Those functions contain loops
         3. The loops contain ORM calls
-        4. The loops are dynamic (iterate over user input)
+        4. Optionally: The loops are dynamic (iterate over user input)
 
         Returns:
             List of vulnerability candidates
@@ -312,16 +312,18 @@ class FalkorDBClient:
         
         # Query for N+1 pattern: Endpoint -> Loop -> ORMCall
         # Note: We use CONTAINS relationship which we created earlier
+        # Removed strict is_dynamic filter - Tree-Sitter may not detect Sequelize patterns
         query = """
         MATCH (e:Endpoint)-[:HAS_ROUTE]->(f:Function)-[:CONTAINS]->(l:Loop)-[:CONTAINS]->(q:ORMCall)
-        WHERE l.is_dynamic = true OR l.is_dynamic = "true"
         RETURN e.path as endpoint_path, 
                e.method as method, 
                l.file as file, 
                l.line_start as line_start, 
+               l.line_end as line_end,
                q.method as orm_method, 
                q.model as model,
-               f.name as function_name
+               f.name as function_name,
+               l.is_dynamic as is_dynamic
         """
         
         try:

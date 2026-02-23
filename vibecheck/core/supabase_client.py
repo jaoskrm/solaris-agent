@@ -285,6 +285,22 @@ class SupabaseClient:
         
         client = self._get_client()
         
+        # First, verify the scan_id exists in scan_queue (FK constraint)
+        try:
+            scan_check = (
+                client.table("scan_queue")
+                .select("id")
+                .eq("id", scan_id)
+                .execute()
+            )
+            if not scan_check.data:
+                logger.error(f"Scan ID {scan_id} does not exist in scan_queue table - FK constraint will fail")
+                raise ValueError(f"Scan ID {scan_id} not found in scan_queue table")
+            logger.info(f"Verified scan_id {scan_id} exists in scan_queue")
+        except Exception as e:
+            logger.error(f"Failed to verify scan_id: {e}")
+            raise
+        
         # Add scan_id to each vulnerability
         vulns_data = [{**v, "scan_id": scan_id} for v in vulns]
         

@@ -243,13 +243,21 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
     Returns:
         List of vulnerability candidate dictionaries
     """
+    logger.info("=" * 80)
+    logger.info("SEMGREP TO PARSED NODES: Converting findings to candidates")
+    logger.info(f"  Input findings: {len(findings)}")
+    logger.info("=" * 80)
+    
     candidates = []
+    skipped_test_fixtures = 0
+    skipped_non_dict = 0
 
     for finding in findings:
         try:
             # Defensive type check - ensure finding is a dict
             if not isinstance(finding, dict):
-                logger.warning(f"Skipping non-dict finding: {type(finding)}")
+                logger.warning(f"  Skipping non-dict finding: {type(finding)}")
+                skipped_non_dict += 1
                 continue
             
             # Extract fields from finding
@@ -277,7 +285,8 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
 
             # Skip test fixtures for secrets
             if _is_test_fixture(path, check_id):
-                logger.debug(f"Skipping test fixture: {path}")
+                logger.debug(f"  Skipping test fixture: {path}")
+                skipped_test_fixtures += 1
                 continue
 
             # Map check_id to vulnerability type
@@ -306,12 +315,24 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
             }
 
             candidates.append(candidate)
+            
+            # Log each candidate being created
+            logger.info(f"  Created candidate: {vuln_type} in {path}:{start_line}")
+            logger.info(f"    Rule: {check_id}")
+            logger.info(f"    Severity: {mapped_severity}")
+            logger.info(f"    Snippet (first 100 chars): {code_snippet[:100] if code_snippet else 'EMPTY'}...")
 
         except Exception as e:
-            logger.warning(f"Failed to process finding: {e}")
+            logger.warning(f"  Failed to process finding: {e}")
             continue
 
-    logger.info(f"Converted {len(candidates)} Semgrep findings to candidates")
+    logger.info("-" * 80)
+    logger.info(f"SEMGREP CONVERSION SUMMARY:")
+    logger.info(f"  Total findings: {len(findings)}")
+    logger.info(f"  Converted to candidates: {len(candidates)}")
+    logger.info(f"  Skipped (test fixtures): {skipped_test_fixtures}")
+    logger.info(f"  Skipped (non-dict): {skipped_non_dict}")
+    logger.info("=" * 80)
     return candidates
 
 

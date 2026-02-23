@@ -215,8 +215,13 @@ class ScanWorker:
         
         # Use scan_id from message if provided (from API), otherwise generate new one
         # This ensures vulnerabilities are saved with the same ID created in Supabase
-        scan_id = data.get("scan_id") or str(uuid4())
-        logger.info(f"  Scan ID: {scan_id}")
+        scan_id = data.get("scan_id")
+        if scan_id:
+            logger.info(f"  Scan ID: {scan_id} (from API/Redis message)")
+        else:
+            scan_id = str(uuid4())
+            logger.warning(f"  Scan ID: {scan_id} (GENERATED - not from API! FK may fail)")
+            logger.warning("  >>> This scan was NOT triggered via API. Vulnerabilities may fail to save due to FK constraint!")
         
         try:
             # Clone the repository
@@ -265,7 +270,7 @@ class ScanWorker:
             # Week 3: Semgrep Static Analysis (Stage 5a)
             # ========================================
             logger.info("Running Semgrep static analysis...")
-            semgrep_findings = run_semgrep(str(clone_dir), scan_id)
+            semgrep_findings = run_semgrep(clone_dir, scan_id)
             logger.info(f"Semgrep found {len(semgrep_findings)} raw findings")
             
             # Convert Semgrep findings to parsed nodes
@@ -285,7 +290,8 @@ class ScanWorker:
             # Week 3: Semantic Lifting (Stage 5b)
             # ========================================
             logger.info("Running semantic lifting...")
-            semantic_clone_dir = clone_dir / "semantic_clone"
+            # Place semantic output outside the cloned repo to avoid Semgrep scanning it
+            semantic_clone_dir = self.clone_base_dir / "semantic" / scan_id
             semantic_summaries = await lift_directory(
                 str(clone_dir),
                 nodes,  # All parsed nodes from Tree-Sitter
@@ -352,7 +358,8 @@ class ScanWorker:
                     logger.info(f"      Snippet (first 100 chars): {str(c.get('code_snippet', ''))[:100]}...")
                 logger.info("=" * 80)
             
-            verified_vulns = []
+            verified_vulns = []  # Only CONFIRMED vulnerabilities (for pattern propagation)
+            all_verified_results = []  # ALL verified results (for saving to DB)
             verification_results = []  # Track all verification results for debugging
             
             for idx, candidate in enumerate(all_candidates):
@@ -392,6 +399,9 @@ class ScanWorker:
                             "reason": f"verify_candidate returned {type(verified)}"
                         })
                         continue
+                    
+                    # Store ALL verified results for saving to DB
+                    all_verified_results.append(verified)
                     
                     # Log the verification result
                     verification_results.append({
@@ -457,8 +467,7 @@ class ScanWorker:
             logger.info("=" * 80)
             
             # ========================================
-            # Save ALL candidates to Supabase (not just verified)
-            # This ensures we capture findings even if LLM verification fails
+            # Save ALL candidates to Supabase with verification results merged
             # ========================================
             logger.info(f"Total candidates to save: {len(all_candidates)}")
             
@@ -466,7 +475,16 @@ class ScanWorker:
                 logger.info("Saving ALL vulnerability candidates to Supabase...")
                 supabase = get_supabase_client()
                 
-                # Convert all candidates to records
+                # Build a lookup of ALL verified results by (file_path, line_start)
+                # This ensures verification results are used when saving
+                verified_lookup = {
+                    (v.get("file_path"), v.get("line_start")): v
+                    for v in all_verified_results
+                    if isinstance(v, dict)
+                }
+                logger.info(f"Verified lookup has {len(verified_lookup)} entries (from {len(all_verified_results)} verified results)")
+                
+                # Convert all candidates to records, using verified data when available
                 vulns = []
                 for v in all_candidates:
                     # Defensive type check
@@ -474,19 +492,27 @@ class ScanWorker:
                         logger.warning(f"Skipping non-dict candidate: {type(v)}")
                         continue
                     
+                    # Use verified version if available, otherwise use raw candidate
+                    key = (v.get("file_path"), v.get("line_start"))
+                    source = verified_lookup.get(key, v)
+                    
+                    # Log if we're using verified data
+                    if key in verified_lookup:
+                        logger.info(f"Using VERIFIED data for {key}: confirmed={source.get('confirmed')}")
+                    
                     vuln = {
-                        "type": v.get("vuln_type", "unknown"),
-                        "severity": v.get("severity", self._map_severity(v.get("vuln_type", "unknown"))),
-                        "category": v.get("rule_id", ""),
-                        "title": f"{v.get('vuln_type', 'Unknown')}: {v.get('function_name', v.get('rule_id', 'unknown'))}",
-                        "description": v.get("message", "Candidate vulnerability"),
-                        "file_path": v.get("file_path", "") or "",
-                        "line_start": v.get("line_start", 0),
-                        "line_end": v.get("line_end", 0),
-                        "code_snippet": v.get("code_snippet", ""),
-                        "confirmed": v.get("confirmed", False),
-                        "confidence_score": 0.80 if v.get("confirmed") else 0.50,
-                        "details": json.loads(json.dumps(v, default=str)),
+                        "type": source.get("vuln_type", "unknown"),
+                        "severity": source.get("severity", self._map_severity(source.get("vuln_type", "unknown"))),
+                        "category": source.get("rule_id", ""),
+                        "title": f"{source.get('vuln_type', 'Unknown')}: {source.get('function_name', source.get('rule_id', 'unknown'))}",
+                        "description": source.get("verification_reason", source.get("message", "Candidate vulnerability")),
+                        "file_path": str(source.get("file_path", "") or ""),
+                        "line_start": source.get("line_start", 0),
+                        "line_end": source.get("line_end", 0),
+                        "code_snippet": str(source.get("code_snippet", "") or ""),
+                        "confirmed": bool(source.get("confirmed", False)),
+                        "confidence_score": 0.80 if source.get("confirmed") else 0.50,
+                        "details": json.loads(json.dumps(source, default=str)),
                     }
                     vulns.append(vuln)
                 
@@ -812,6 +838,13 @@ class ScanWorker:
             "code_injection": "critical",
             "open_redirect": "medium",
             "csrf": "medium",
+            # Additional mappings for Semgrep default types
+            "security_misconfiguration": "medium",
+            "jwt_issue": "high",
+            "weak_crypto": "medium",
+            "weak_random": "medium",
+            "missing_auth": "high",
+            "cors_misconfiguration": "medium",
         }
         
         vuln_lower = vuln_type.lower()

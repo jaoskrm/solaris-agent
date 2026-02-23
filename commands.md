@@ -29,7 +29,9 @@ r = redis.from_url('redis://localhost:6380')
 
 # ACK all 4 stuck pending messages
 stuck_ids = [
-    '1771773504764-0'
+    '1771779739267-0',
+    '1771775931203-0',
+    '1771774473235-0'
 ]
 for id in stuck_ids:
     r.xack('scan_queue', 'scan_workers', id)
