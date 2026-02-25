@@ -1,0 +1,22 @@
+# Sample mission definition
+# Used by: python scripts/run_mission.py --mission missions/juice_shop_recon.yaml
+
+mission:
+  name: "Juice Shop Initial Recon & Exploit"
+  objective: >
+    Perform comprehensive reconnaissance on OWASP Juice Shop.
+    Identify open ports, exposed endpoints, and known vulnerabilities.
+    Attempt exploitation of SQL injection, XSS, and authentication bypass vectors.
+  target: "http://localhost:3000"
+  max_iterations: 3
+  
+  constraints:
+    - "Do not perform denial-of-service attacks"
+    - "Do not modify or delete data without HITL approval"
+    - "Focus on OWASP Top 10 vulnerability classes"
+  
+  priority_targets:
+    - "/rest/user/login"
+    - "/api/Products"
+    - "/#/administration"
+    - "/api/Challenges"
