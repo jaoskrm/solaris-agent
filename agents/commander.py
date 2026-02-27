@@ -32,11 +32,8 @@ logger = logging.getLogger(__name__)
 
 def _get_llm_client():
     """Get the appropriate LLM client based on configuration."""
-    # Commander uses OpenRouter (cloud) per PRD
-    if settings.openrouter_api_key and not settings.openrouter_api_key.startswith("sk-or-v1-your"):
-        return "openrouter", openrouter_client
-    # Fallback to Ollama if OpenRouter not configured
-    logger.warning("OpenRouter not configured, falling back to Ollama for Commander")
+    # Use Ollama only (local) - skip OpenRouter entirely
+    logger.info("Using Ollama for Commander (local model)")
     return "ollama", ollama_client
 
 COMMANDER_SYSTEM_PROMPT = """You are the Commander of an autonomous red team operation.
@@ -131,7 +128,7 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
         blackboard=blackboard_str if blackboard_str != "{}" else "(empty — first iteration)",
     )
 
-    # Use OpenRouter for Commander per PRD (with Ollama fallback)
+    # Use Ollama for Commander (local only)
     client_type, client = _get_llm_client()
     model = settings.commander_model
     
@@ -146,22 +143,14 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
         )
         logger.debug("Commander using %s with model %s", client_type, model)
     except Exception as e:
-        # Fallback to Ollama if OpenRouter fails
-        if client_type == "openrouter":
-            logger.warning("OpenRouter failed (%s), falling back to Ollama", e)
-            # Use a model that's available locally
-            local_model = settings.exploit_model  # qwen2.5-coder:7b-instruct
-            response = await ollama_client.chat(
-                model=local_model,
-                messages=[
-                    {"role": "system", "content": COMMANDER_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-            )
-            logger.info("Commander fell back to Ollama with model %s", local_model)
-        else:
-            raise
+        logger.error("LLM request failed: %s", e)
+        return {
+            "errors": [f"LLM request failed: {e}"],
+            "phase": "recon",
+            "strategy": "Fallback: perform broad reconnaissance on the target.",
+            "current_tasks": [],
+            "messages": [],
+        }
 
     try:
         plan = _parse_json_response(response)
@@ -246,7 +235,7 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
         blackboard=blackboard_str,
     )
 
-    # Use OpenRouter for Commander per PRD (with Ollama fallback)
+    # Use Ollama for Commander (local only)
     client_type, client = _get_llm_client()
     model = settings.commander_model
     
@@ -261,21 +250,14 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
         )
         logger.debug("Commander using %s with model %s", client_type, model)
     except Exception as e:
-        # Fallback to Ollama if OpenRouter fails
-        if client_type == "openrouter":
-            logger.warning("OpenRouter failed (%s), falling back to Ollama", e)
-            local_model = settings.exploit_model
-            response = await ollama_client.chat(
-                model=local_model,
-                messages=[
-                    {"role": "system", "content": COMMANDER_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-            )
-            logger.info("Commander fell back to Ollama with model %s", local_model)
-        else:
-            raise
+        logger.error("LLM request failed: %s", e)
+        return {
+            "errors": [f"LLM request failed: {e}"],
+            "phase": "complete",
+            "strategy": state.get("strategy", "Mission failed - LLM error"),
+            "current_tasks": [],
+            "messages": [],
+        }
 
     try:
         result = _parse_json_response(response)

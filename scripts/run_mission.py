@@ -227,6 +227,11 @@ async def run_mission(objective: str, target: str, max_iterations: int = 5):
 def main():
     parser = argparse.ArgumentParser(description="Red Team Agent Swarm — Mission Runner")
     parser.add_argument(
+        "--mission",
+        type=str,
+        help="Path to mission YAML file (overrides --objective, --target)",
+    )
+    parser.add_argument(
         "--objective",
         type=str,
         default="Perform reconnaissance and exploitation of the target OWASP Juice Shop to identify and exploit security vulnerabilities.",
@@ -245,7 +250,22 @@ def main():
         help="Max orchestration loop iterations",
     )
     args = parser.parse_args()
-    asyncio.run(run_mission(args.objective, args.target, args.max_iterations))
+    
+    # Load mission from YAML if provided
+    if args.mission:
+        import yaml
+        with open(args.mission) as f:
+            mission_config = yaml.safe_load(f)
+        objective = mission_config.get("mission", {}).get("objective", args.objective)
+        target = mission_config.get("mission", {}).get("target", args.target)
+        max_iterations = mission_config.get("execution", {}).get("max_iterations", args.max_iterations)
+        logger.info(f"Loaded mission from {args.mission}")
+    else:
+        objective = args.objective
+        target = args.target
+        max_iterations = args.max_iterations
+    
+    asyncio.run(run_mission(objective, target, max_iterations))
 
 
 if __name__ == "__main__":
