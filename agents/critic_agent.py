@@ -33,14 +33,16 @@ ERROR_PATTERNS = {
         r"JSONDecodeError",
         r"IndentationError",
         r"NameError:",
+        r"TypeError:",
+        r"AttributeError:",
     ],
     "waf_block": [
-        r"403 Forbidden",
         r"403 Forbidden",
         r"WAF",
         r"ModSecurity",
         r"blocked",
         r"detected malicious",
+        r"Request blocked",
     ],
     "auth_failure": [
         r"401 Unauthorized",
@@ -48,6 +50,7 @@ ERROR_PATTERNS = {
         r"Invalid credentials",
         r"login failed",
         r"Session expired",
+        r"No Authorization header",
     ],
     "timeout": [
         r"timeout",
@@ -60,6 +63,7 @@ ERROR_PATTERNS = {
         r"404",
         r"Endpoint not found",
         r"Cannot GET",
+        r"Unexpected path",
     ],
     "rate_limit": [
         r"429 Too Many Requests",
@@ -67,6 +71,69 @@ ERROR_PATTERNS = {
         r"too many requests",
     ],
 }
+
+
+# ============ JUICE SHOP SPECIFIC PATTERNS ============
+JUICE_SHOP_PATTERNS = {
+    "sequelize": [r"Sequelize", r"sequelize", r"SQLITE", r"sqlite"],
+    "express": [r"Express", r"express", r"Node.js"],
+    "jwt": [r"jwt", r"JWT", r"JsonWebToken"],
+    "angular": [r"Angular", r"angular"],
+    "sql_syntax_error": [
+        r"SQLITE_CANTOPEN",
+        r"SQL syntax",
+        r"near .* syntax error",
+        r"unrecognized token",
+    ],
+    "validation_error": [
+        r"Validation error",
+        r"isValidationError",
+    ],
+    "jwt_error": [
+        r"invalid token",
+        r"TokenExpiredError",
+        r"jwt expired",
+        r"Unexpected token",
+        r"JsonWebTokenError",
+    ],
+    "access_denied": [
+        r"Access Denied",
+        r"Access to.* is denied",
+    ],
+}
+
+
+def _scan_for_juice_shop_hints(result):
+    """Pre-scan result for Juice Shop specific patterns."""
+    combined = (result.stdout or "") + (result.stderr or "")
+    detected = {}
+    for category, patterns in JUICE_SHOP_PATTERNS.items():
+        matches = []
+        for pattern in patterns:
+            match = re.search(pattern, combined, re.IGNORECASE)
+            if match:
+                matches.append(match.group(0))
+        if matches:
+            detected[category] = matches
+    return detected
+
+
+def _build_grounded_feedback(hints, exploit_type):
+    """Build specific feedback based on detected technologies."""
+    feedback_parts = []
+    if "sequelize" in hints or "sql_syntax_error" in hints:
+        feedback_parts.append(
+            "DETECTED: Server uses SQLite via Sequelize. Avoid standard MySQL comments (--). Use SQLite-safe syntax."
+        )
+    if "jwt_error" in hints:
+        feedback_parts.append(
+            "DETECTED: JWT authentication issue. Try generating a fresh token via SQLi."
+        )
+    if "validation_error" in hints:
+        feedback_parts.append("DETECTED: Input validation error. Try encoding differently.")
+    if "access_denied" in hints:
+        feedback_parts.append("DETECTED: Access denied. Try with valid session token.")
+    return " ".join(feedback_parts) if feedback_parts else ""
 
 
 CRITIC_SYSTEM_PROMPT = """You are the Critic — a meticulous security analyst who evaluates exploit attempts.
@@ -139,11 +206,20 @@ async def analyze_exploit_result(
     """
     logger.info(f"Critic: Analyzing {exploit_type} exploit result (exit code: {result.exit_code})")
     
+    # ========== INTELLIGENCE UPGRADE: Pre-scan for specific patterns ==========
+    # This grounds the LLM's reasoning in actual detected technologies
+    juice_shop_hints = _scan_for_juice_shop_hints(result)
+    grounded_feedback = _build_grounded_feedback(juice_shop_hints, exploit_type)
+    
+    logger.info(f"Critic: Detected hints: {juice_shop_hints}")
+    
     # Build context for the Critic
     intel_str = json.dumps(intel, indent=2, default=str) if intel else "(no intelligence available)"
     prev_str = json.dumps(previous_attempts, indent=2, default=str) if previous_attempts else "(no previous attempts)"
     
-    # Build the analysis prompt
+    # Build the analysis prompt with grounded feedback
+    hints_section = f"\n\nGROUNDED INTELLIGENCE:\n{grounded_feedback}" if grounded_feedback else ""
+    
     analysis_prompt = CRITIC_ANALYSIS_PROMPT.format(
         exploit_type=exploit_type,
         tool_name=tool_name,
@@ -153,7 +229,7 @@ async def analyze_exploit_result(
         stderr=result.stderr[:1000] if result.stderr else "(empty)",
         intel=intel_str,
         previous_attempts=prev_str,
-    )
+    ) + hints_section
     
     # Call the Critic LLM
     try:

@@ -20,6 +20,7 @@ async def curl_execute(
     headers: dict[str, str] | None = None,
     data: str = "",
     args: str = "",
+    timeout: int = 30,
 ) -> ExecResult:
     """
     Send an HTTP request via curl.
@@ -31,12 +32,14 @@ async def curl_execute(
         headers: Optional dict of headers
         data: Optional request body
         args: Additional curl arguments
+        timeout: Request timeout in seconds (default: 30)
     """
     # Resolve Docker service name
     host = sandbox_manager.get_target_host()
     docker_url = url.replace("localhost:3000", f"{host}:3000").replace("localhost", host)
 
-    parts = ["curl", "-s", "-i", f"-X {method}"]
+    # Add timeout to prevent infinite hangs
+    parts = ["curl", "-s", "-i", f"-X {method}", f"--max-time {timeout}"]
 
     if headers:
         for key, value in headers.items():
@@ -51,7 +54,7 @@ async def curl_execute(
     parts.append(shlex.quote(docker_url))
 
     command = " ".join(parts)
-    return await sandbox_manager.exec_command(mission_id, command, timeout=30)
+    return await sandbox_manager.exec_command(mission_id, command, timeout=timeout + 5)
 
 
 curl_tool = ToolSpec(

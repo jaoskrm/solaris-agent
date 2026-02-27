@@ -52,6 +52,15 @@ class RedTeamState(TypedDict):
     max_reflections: int  # Max retries for failed exploits
     pending_exploit: dict[str, Any] | None  # Exploit awaiting HITL approval
 
+    # ── GLOBAL AUTH CHAINING (Objective 3) ──────────────────────
+    discovered_credentials: dict[str, dict]  # JWT, cookies, tokens discovered during exploit
+    # Structure: {
+    #     "jwt_token": {"value": "...", "target": "...", "type": "jwt"},
+    #     "admin_cookie": {"value": "...", "target": "...", "type": "cookie"}
+    # }
+    
+    contextual_memory: dict[str, Any]  # Session tokens, cookies from previous attempts
+
     # ── Mission Report ─────────────────────────────────────────
     report: dict[str, Any] | None  # Final mission report
     report_path: str | None  # Path to saved report file

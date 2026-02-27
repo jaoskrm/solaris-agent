@@ -1,0 +1,459 @@
+======================================================================
+RED TEAM MISSION REPORT
+======================================================================
+
+Mission ID: 26e9c3fb
+Generated: 2026-02-27T16:59:45.255052+00:00
+
+----------------------------------------------------------------------
+MISSION SUMMARY
+----------------------------------------------------------------------
+Objective: Perform comprehensive reconnaissance on OWASP Juice Shop. Identify open ports, exposed endpoints, and known vulnerabilities. Attempt exploitation of SQL injection, XSS, and authentication bypass vectors.
+
+Target: http://localhost:3000
+Final Phase: exploitation
+Iterations: 3/3
+Strategy: Exploit the discovered SQL injection vulnerability to gain full access to the system as an administrator and then explore further avenues such as data exfiltration or privilege escalation....
+
+----------------------------------------------------------------------
+KILL CHAIN PROGRESS
+----------------------------------------------------------------------
+Phases Completed: reconnaissance, weaponization, exploitation, actions_on_objectives
+Progress: 57.1%
+Successful Exploits: 5
+
+----------------------------------------------------------------------
+RECONNAISSANCE FINDINGS
+----------------------------------------------------------------------
+
+[1] localhost:631
+    Finding: CUPS (Common Unix Printing System) version 2.4 is running.
+    Confidence: 90%
+    CVE: CVE-2022-2587
+    Action: Update CUPS to a version that is not vulnerable to CVE-2022-2587.
+
+[2] localhost:3000
+    Finding: An application running on port 3000, likely OWASP Juice Shop.
+    Confidence: 90%
+    Action: Review the application for known vulnerabilities and apply patches or updates.
+
+[3] localhost:631
+    Finding: CUPS (Common Unix Printing System) version 2.4 is running.
+    Confidence: 90%
+    CVE: CVE-2022-2587
+    Action: Update CUPS to a version that is not vulnerable to CVE-2022-2587.
+
+[4] localhost:3000
+    Finding: An application running on port 3000, likely OWASP Juice Shop.
+    Confidence: 90%
+    Action: Review the application for known vulnerabilities and apply patches or updates.
+
+----------------------------------------------------------------------
+EXPLOITATION RESULTS
+----------------------------------------------------------------------
+
+[1] [FAILED] multi
+    Target: http://localhost:3000
+    Impact: None observed. The scan did not identify any vulnerabilities that could be exploited to gain unauthorized access, retrieve sensitive data, or bypass authentication.
+    Evidence: No evidence of successful exploitation found....
+
+[2] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to gain full access to the system as an administrator, potentially leading to data theft, privilege escalation, or further attacks on the network.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[3] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: The exploit attempt resulted in a server error, indicating that the SQL injection was not successful. The application did not return any unexpected data or bypass authentication.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[4] [FAILED] xss
+    Target: http://localhost:3000/rest/products/search
+    Impact: This exploit attempt did not succeed in executing the XSS payload. The server's response does not reflect the injected script in the response body or provide any evidence of successful execution.
+    Evidence: The server responded with a 500 Internal Server Error, indicating that the request was not processed correctly....
+
+[5] [FAILED] idor
+    Target: http://localhost:3000/api/Basket/1
+    Impact: The exploit attempt was unsuccessful as it resulted in a server-side error rather than revealing any sensitive information or allowing unauthorized access.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: 'Unexpected path: /api/Basket/1'...
+
+[6] [FAILED] idor
+    Target: http://localhost:3000/api/Orders/1
+    Impact: The exploit attempt was unsuccessful as the server responded with a 500 Internal Server Error and an error message indicating that the requested path is unexpected. This suggests that the IDOR vulnerability may not be exploitable in this context.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: 'Unexpected path: /api/Orders/1'...
+
+[7] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/v2/Users
+    Impact: This indicates that the application is not properly handling requests for non-existent API endpoints, which could be indicative of poor input validation or routing issues. However, it does not provide any direct evidence of SQL injection, XSS, or authentication bypass.
+    Evidence: The server returned a 500 Internal Server Error, indicating that the request path was unexpected....
+
+[8] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to access administrative features and potentially gain full control of the system.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[9] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to access administrative features and potentially escalate privileges within the system.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[10] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: The exploit attempt did not succeed in bypassing authentication or injecting SQL. The server responded with a 500 error, indicating an internal server error rather than successful exploitation.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[11] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/search
+    Impact: The exploit attempt resulted in an internal server error, indicating that the SQL injection was not successful. The application did not return any unexpected data or reveal sensitive information.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[12] [FAILED] xss
+    Target: http://localhost:3000/rest/products/search
+    Impact: This indicates that the exploit attempt did not succeed in injecting or executing the XSS payload. The server's response does not reflect the injected script in the response body, and there are no indications of SQL injection, auth bypass, or any other vulnerabilities being exploited.
+    Evidence: The server responded with a 500 Internal Server Error, indicating that the request was not processed correctly....
+
+[13] [FAILED] xss
+    Target: http://localhost:3000
+    Impact: The exploit attempt failed due to a tool-specific error, indicating that the payload was not executed as intended.
+    Evidence: Tool execution error: curl_execute() got an unexpected keyword argument '-s'...
+
+[14] [FAILED] auth_bypass
+    Target: http://localhost:3000/rest/user/change-password
+    Impact: The exploit attempt failed as the server responded with an internal server error and did not allow the password change.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: 'Unexpected path: /rest/user/change-password'...
+
+[15] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Users/
+    Impact: This indicates that the exploit attempt did not succeed in gaining unauthorized access to the system or retrieving sensitive information.
+    Evidence: The server returned a 401 Unauthorized error, indicating that the request was not authorized. The response body contains an HTML page with a message stating 'No Authorization header was found'....
+
+[16] [FAILED] idor
+    Target: http://localhost:3000/api/Products/1
+    Impact: No impact. The exploit did not reveal SQL injection, XSS, auth bypass, or error messages revealing server internals.
+    Evidence: The response contains product data for ID 1, which is expected and does not indicate any security vulnerabilities....
+
+[17] [FAILED] idor
+    Target: http://localhost:3000/api/Challenges/1
+    Impact: The exploit attempt failed as it did not receive an expected response indicating a successful exploitation. Instead, it received a standard 'Unauthorized' error message.
+    Evidence: HTTP/1.1 401 Unauthorized...
+
+[18] [FAILED] path_traversal
+    Target: http://localhost:3000/ftp/acquisitions
+    Impact: The exploit attempt was unsuccessful as the server returned a 403 Forbidden status, indicating that access to the requested resource is denied.
+    Evidence: HTTP/1.1 403 Forbidden...
+
+[19] [FAILED] idor
+    Target: http://localhost:3000/api/BasketItems/1
+    Impact: The exploit attempt failed as it did not receive the expected data or access to sensitive information.
+    Evidence: HTTP/1.1 401 Unauthorized...
+
+[20] [FAILED] jwt
+    Target: http://localhost:3000
+    Impact: The exploit did not achieve any specific impact as it only printed the JWT token without attempting to use it for further actions.
+    Evidence: No evidence of SQL injection, XSS, or auth bypass. The output is a JWT token and does not indicate any errors revealing server internals....
+
+[21] [SUCCESS] auth_bypass
+    Target: http://localhost:3000/admin
+    Impact: The attacker was able to bypass authentication and gain access to the admin section of the application, which could lead to further exploitation or data theft.
+    Evidence: HTTP/1.1 200 OK response indicating successful access to the admin page....
+
+[22] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Admins
+    Impact: This indicates that the exploit attempt was not successful in revealing sensitive information or bypassing authentication. The error message does not reveal any SQL injection vulnerabilities, XSS payloads, or auth bypasses.
+    Evidence: The server returned a 500 Internal Server Error and a message indicating that the path '/api/Admins' is unexpected....
+
+[23] [SUCCESS] info_disclosure
+    Target: http://localhost:3000/api/Feedbacks
+    Impact: An attacker could use this information to gather insights into customer satisfaction levels, which could be useful for further attacks or social engineering efforts. However, there is no evidence of sensitive admin data or elevated responses.
+    Evidence: The exploit was successful as it returned a JSON response containing user feedback data, including comments and ratings. There were no indications of SQL injection, XSS, or auth bypass in the provided...
+
+[24] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Complaints
+    Impact: This exploit attempt failed because it did not bypass authentication. The attacker was unable to access any data or perform actions that required authentication.
+    Evidence: The response indicates a 401 Unauthorized error, which means the request was not successful due to missing or invalid authentication credentials. The response body contains an HTML page with a message...
+
+[25] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to access administrative features and potentially escalate privileges within the system.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[26] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: The exploit attempt resulted in a server error, indicating that the SQL injection was not successful. The application did not return any unexpected data or bypass authentication.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[27] [FAILED] xss
+    Target: http://localhost:3000/rest/products/search
+    Impact: The exploit attempt was unsuccessful as the server responded with a 500 error, indicating an internal server error rather than reflecting or executing the XSS payload.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[28] [FAILED] idor
+    Target: http://localhost:3000/api/Basket/1
+    Impact: The exploit attempt was unsuccessful as it resulted in a server-side error rather than revealing sensitive information or allowing unauthorized access.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: 'Unexpected path: /api/Basket/1'...
+
+[29] [FAILED] idor
+    Target: http://localhost:3000/api/Orders/1
+    Impact: The exploit attempt was unsuccessful as it resulted in a server-side error rather than revealing sensitive data or bypassing authentication.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: Unexpected path: /api/Orders/1...
+
+[30] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/v2/Users
+    Impact: This indicates that the exploit attempt did not succeed in disclosing sensitive information or bypassing authentication. The error message does not reveal any SQL injection vulnerabilities, XSS payloads, or auth bypasses.
+    Evidence: The server responded with a 500 Internal Server Error and an error message indicating that the path '/api/v2/Users' is unexpected....
+
+[31] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this exploit to gain unauthorized access to the system as an administrator, potentially leading to full control over the application and its data.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[32] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to access administrative features and potentially elevate their privileges within the system.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[33] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: The exploit attempt resulted in an internal server error, indicating that the SQL injection was not successful and did not bypass authentication.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[34] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/search
+    Impact: The exploit attempt did not succeed in achieving any of the targeted outcomes such as SQL injection, XSS, or auth bypass. The server responded with a 500 error indicating an internal server error.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[35] [FAILED] xss
+    Target: http://localhost:3000/rest/products/search
+    Impact: This indicates that the exploit attempt did not succeed in injecting or executing any malicious code. The server's response suggests an issue with handling the '/rest/products/search' endpoint rather than a successful XSS attack.
+    Evidence: The server responded with a 500 Internal Server Error, indicating that the request was not processed correctly....
+
+[36] [FAILED] xss
+    Target: http://localhost:3000/#/search
+    Impact: The exploit attempt failed due to a syntax error, indicating that the payload was not executed as intended.
+    Evidence: sh: 1: Syntax error: "(" unexpected...
+
+[37] [FAILED] auth_bypass
+    Target: http://localhost:3000/rest/user/change-password
+    Impact: The exploit attempt failed as the server returned a 500 Internal Server Error and an unexpected path error message. This indicates that the authentication bypass was not successful.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: 'Unexpected path: /rest/user/change-password'...
+
+[38] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Users/
+    Impact: This indicates that the exploit attempt did not succeed in gaining unauthorized access to the system or revealing sensitive information. The application is correctly enforcing authentication requirements.
+    Evidence: The server responded with a 401 Unauthorized error, indicating that the request was not authorized. The response body contains an HTML page with a message stating 'No Authorization header was found'. ...
+
+[39] [FAILED] idor
+    Target: http://localhost:3000/api/Products/1
+    Impact: No specific impact as no unexpected or sensitive data was revealed. The exploit attempt did not bypass authentication, inject SQL, or execute XSS.
+    Evidence: The response contains valid product data for ID 1, which indicates that the request was successful and did not reveal any vulnerabilities....
+
+[40] [FAILED] idor
+    Target: http://localhost:3000/api/Challenges/1
+    Impact: The exploit attempt was unsuccessful as it did not bypass authentication and returned an error indicating that no Authorization header was found.
+    Evidence: HTTP/1.1 401 Unauthorized...
+
+[41] [FAILED] path_traversal
+    Target: http://localhost:3000/ftp/acquisitions
+    Impact: This indicates that the path traversal attempt was unsuccessful. The application is correctly preventing access to non-allowed file types.
+    Evidence: The server responded with a 403 Forbidden status and an error message stating 'Only .md and .pdf files are allowed!'...
+
+[42] [FAILED] idor
+    Target: http://localhost:3000/api/BasketItems/1
+    Impact: The exploit attempt failed as it did not receive the expected data or access to sensitive information.
+    Evidence: HTTP/1.1 401 Unauthorized...
+
+[43] [FAILED] jwt
+    Target: http://localhost:3000
+    Impact: The exploit did not achieve any of the targeted outcomes. It simply printed out a JWT token without attempting to use it for malicious purposes.
+    Evidence: No evidence of SQL injection, XSS, auth bypass, or error messages revealing server internals....
+
+[44] [SUCCESS] auth_bypass
+    Target: http://localhost:3000/admin
+    Impact: An attacker could potentially gain unauthorized access to administrative features or sensitive data within the application.
+    Evidence: The HTTP response indicates successful access to the admin page, as evidenced by the status code 200 OK and the presence of HTML content....
+
+[45] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Admins
+    Impact: This indicates that the exploit attempt was unsuccessful. The application appears to have proper error handling in place, preventing attackers from gaining unauthorized access or sensitive information through this method.
+    Evidence: The server returned a 500 Internal Server Error and a custom error message indicating that the path '/api/Admins' is unexpected....
+
+[46] [SUCCESS] info_disclosure
+    Target: http://localhost:3000/api/Feedbacks
+    Impact: An attacker could use this information to gather insights into customer preferences and potentially identify vulnerabilities that could be exploited further.
+    Evidence: The exploit was successful as it returned a JSON response containing user feedback data, including comments and ratings. There were no indications of SQL injection, XSS, or auth bypass in the provided...
+
+[47] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Complaints
+    Impact: This indicates that the exploit attempt did not succeed in bypassing authentication or revealing sensitive information.
+    Evidence: The server returned a 401 Unauthorized error, indicating that the request was not authorized. The response body contains an HTML page with a message stating 'No Authorization header was found'....
+
+[48] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to access administrative features and potentially perform actions with elevated privileges on the system.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[49] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: The exploit attempt resulted in a server error, indicating that the SQL injection was not successful. The application did not return any unexpected data or bypass authentication.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[50] [FAILED] xss
+    Target: http://localhost:3000/rest/products/search
+    Impact: The exploit attempt was unsuccessful as the server responded with a 500 error, indicating an internal server error rather than reflecting or executing the XSS payload.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[51] [FAILED] idor
+    Target: http://localhost:3000/api/Basket/1
+    Impact: This indicates that the exploit attempt was not successful. The application seems to be handling the request correctly, and there are no indications of SQL injection, XSS, or auth bypass.
+    Evidence: The server returned a 500 Internal Server Error and an error message indicating that the path '/api/Basket/1' is unexpected....
+
+[52] [FAILED] idor
+    Target: http://localhost:3000/api/Orders/1
+    Impact: The exploit attempt was unsuccessful as it resulted in a server-side error rather than revealing any sensitive information or allowing unauthorized access.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: Unexpected path: /api/Orders/1...
+
+[53] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/v2/Users
+    Impact: This indicates that the exploit attempt was unsuccessful. The application appears to be handling requests correctly and returning appropriate error messages, which could prevent further exploitation attempts targeting this specific endpoint.
+    Evidence: The server responded with a 500 Internal Server Error and an error message indicating that the path '/api/v2/Users' is unexpected....
+
+[54] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this exploit to gain unauthorized access to the system as an administrator, potentially leading to full control over the application and its data.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[55] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to access administrative features and potentially elevate their privileges within the system.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[56] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: The exploit attempt resulted in an internal server error, indicating that the SQL injection was not successful and did not bypass authentication.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[57] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/search
+    Impact: The exploit attempt did not succeed in achieving any of the targeted outcomes such as SQL injection, XSS, or auth bypass. The server responded with a 500 error indicating an internal server error.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[58] [FAILED] xss
+    Target: http://localhost:3000/rest/products/search
+    Impact: This indicates that the exploit attempt did not succeed in injecting or executing any malicious code. The server's response suggests an issue with handling the '/rest/products/search' endpoint rather than a successful XSS attack.
+    Evidence: The server responded with a 500 Internal Server Error, indicating that the request was not processed correctly....
+
+[59] [FAILED] xss
+    Target: http://localhost:3000/#/search
+    Impact: The exploit attempt failed due to a syntax error, indicating that the payload was not executed as intended.
+    Evidence: sh: 1: Syntax error: "(" unexpected...
+
+[60] [FAILED] auth_bypass
+    Target: http://localhost:3000/rest/user/change-password
+    Impact: The exploit attempt failed as the server returned a 500 Internal Server Error and an unexpected path error message. This indicates that the authentication bypass was not successful.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: 'Unexpected path: /rest/user/change-password'...
+
+[61] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Users/
+    Impact: This indicates that the exploit attempt did not succeed in gaining unauthorized access to the system or revealing sensitive information. The application is correctly enforcing authentication requirements.
+    Evidence: The server responded with a 401 Unauthorized error, indicating that the request was not authorized. The response body contains an HTML page with a message stating 'No Authorization header was found'. ...
+
+[62] [FAILED] idor
+    Target: http://localhost:3000/api/Products/1
+    Impact: No specific impact as no unexpected or sensitive data was revealed. The exploit attempt did not bypass authentication, inject SQL, or execute XSS.
+    Evidence: The response contains valid product data for ID 1, which indicates that the request was successful and did not reveal any vulnerabilities....
+
+[63] [FAILED] idor
+    Target: http://localhost:3000/api/Challenges/1
+    Impact: The exploit attempt was unsuccessful as it did not bypass authentication and returned an error indicating that no Authorization header was found.
+    Evidence: HTTP/1.1 401 Unauthorized...
+
+[64] [FAILED] path_traversal
+    Target: http://localhost:3000/ftp/acquisitions
+    Impact: This indicates that the path traversal attempt was unsuccessful. The application is correctly preventing access to non-allowed file types.
+    Evidence: The server responded with a 403 Forbidden status and an error message stating 'Only .md and .pdf files are allowed!'...
+
+[65] [FAILED] idor
+    Target: http://localhost:3000/api/BasketItems/1
+    Impact: The exploit attempt failed as it did not receive the expected data or access to sensitive information.
+    Evidence: HTTP/1.1 401 Unauthorized...
+
+[66] [FAILED] jwt
+    Target: http://localhost:3000
+    Impact: The exploit did not achieve any of the targeted outcomes. It simply printed out a JWT token without attempting to use it for malicious purposes.
+    Evidence: No evidence of SQL injection, XSS, auth bypass, or error messages revealing server internals....
+
+[67] [SUCCESS] auth_bypass
+    Target: http://localhost:3000/admin
+    Impact: An attacker could potentially gain unauthorized access to administrative features or sensitive data within the application.
+    Evidence: The HTTP response indicates successful access to the admin page, as evidenced by the status code 200 OK and the presence of HTML content....
+
+[68] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Admins
+    Impact: This indicates that the exploit attempt was unsuccessful. The application appears to have proper error handling in place, preventing attackers from gaining unauthorized access or sensitive information through this method.
+    Evidence: The server returned a 500 Internal Server Error and a custom error message indicating that the path '/api/Admins' is unexpected....
+
+[69] [SUCCESS] info_disclosure
+    Target: http://localhost:3000/api/Feedbacks
+    Impact: An attacker could use this information to gather insights into customer preferences and potentially identify vulnerabilities that could be exploited further.
+    Evidence: The exploit was successful as it returned a JSON response containing user feedback data, including comments and ratings. There were no indications of SQL injection, XSS, or auth bypass in the provided...
+
+[70] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/Complaints
+    Impact: This indicates that the exploit attempt did not succeed in bypassing authentication or revealing sensitive information.
+    Evidence: The server returned a 401 Unauthorized error, indicating that the request was not authorized. The response body contains an HTML page with a message stating 'No Authorization header was found'....
+
+[71] [SUCCESS] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: An attacker could use this token to access administrative features and potentially perform actions with elevated privileges on the system.
+    Evidence: The response contains a valid authentication token for the admin user, indicating successful exploitation....
+
+[72] [FAILED] sqli
+    Target: http://localhost:3000/rest/user/login
+    Impact: The exploit attempt resulted in a server error, indicating that the SQL injection was not successful. The application did not return any unexpected data or bypass authentication.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[73] [FAILED] xss
+    Target: http://localhost:3000/rest/products/search
+    Impact: The exploit attempt was unsuccessful as the server responded with a 500 error, indicating an internal server error rather than reflecting or executing the XSS payload.
+    Evidence: HTTP/1.1 500 Internal Server Error...
+
+[74] [FAILED] idor
+    Target: http://localhost:3000/api/Basket/1
+    Impact: This indicates that the exploit attempt was not successful. The application seems to be handling the request correctly, and there are no indications of SQL injection, XSS, or auth bypass.
+    Evidence: The server returned a 500 Internal Server Error and an error message indicating that the path '/api/Basket/1' is unexpected....
+
+[75] [FAILED] idor
+    Target: http://localhost:3000/api/Orders/1
+    Impact: The exploit attempt was unsuccessful as it resulted in a server-side error rather than revealing any sensitive information or allowing unauthorized access.
+    Evidence: HTTP/1.1 500 Internal Server Error, error message: Unexpected path: /api/Orders/1...
+
+[76] [FAILED] info_disclosure
+    Target: http://localhost:3000/api/v2/Users
+    Impact: This indicates that the exploit attempt was unsuccessful. The application appears to be handling requests correctly and returning appropriate error messages, which could prevent further exploitation attempts targeting this specific endpoint.
+    Evidence: The server responded with a 500 Internal Server Error and an error message indicating that the path '/api/v2/Users' is unexpected....
+
+----------------------------------------------------------------------
+STATISTICS
+----------------------------------------------------------------------
+Total Messages: 62
+Intel Reports: 2
+Exploit Attempts: 53
+Successful Exploits: 5
+High Confidence Findings: 2
+Self-Reflections: 1
+
+----------------------------------------------------------------------
+RECOMMENDATIONS
+----------------------------------------------------------------------
+  • Review and patch identified CVEs: CVE-2022-2587
+  • CRITICAL: Successful exploits detected - immediate remediation required
+  •   - sqli on http://localhost:3000/rest/user/login
+  •   - sqli on http://localhost:3000/rest/user/login
+  •   - auth_bypass on http://localhost:3000/admin
+  •   - info_disclosure on http://localhost:3000/api/Feedbacks
+  •   - sqli on http://localhost:3000/rest/user/login
+  • Review 2 high-confidence reconnaissance findings
+
+======================================================================
+END OF REPORT
+======================================================================
