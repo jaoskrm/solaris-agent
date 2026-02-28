@@ -29,9 +29,7 @@ r = redis.from_url('redis://localhost:6380')
 
 # ACK all 4 stuck pending messages
 stuck_ids = [
-    '1771779739267-0',
-    '1771775931203-0',
-    '1771774473235-0'
+    '1772213291460-0'
 ]
 for id in stuck_ids:
     r.xack('scan_queue', 'scan_workers', id)
@@ -41,3 +39,6 @@ for id in stuck_ids:
 r.delete('scan_queue')
 print('Stream deleted - clean slate')
 "
+Get-WmiObject Win32_Process | Where-Object {$_.CommandLine -like "*scan_worker*"} | Select-Object ProcessId, CommandLine
+
+Stop-Process -Id 20088 -Force

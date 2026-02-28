@@ -156,3 +156,16 @@ CodeRabbit is a finished product with a team behind it. VibeCheck is Week 3 of a
 That's a real niche, especially for security-conscious teams and enterprises.
 
 Prepared using Claude Sonnet 4.6
+
+
+On alternatives to Semgrep:
+CodeQL is the strongest alternative technically. It builds a full code property graph and its taint analysis is significantly more accurate — it understands interprocedural flows, sanitizers, and type information in ways Semgrep's pattern matching can't. The tradeoff is it requires a compilation/indexing step and the query language has a steeper learning curve. Free for open source via GitHub, commercial otherwise. For a pipeline like yours it's worth considering as a second-pass verifier on high-confidence findings.
+Bearer is worth looking at — it's open source, built specifically for security scanning with a focus on data flows and sensitive data exposure. It has good Node.js/TypeScript support and is much easier to integrate than CodeQL.
+njsscan is a Node-specific scanner that actually uses Semgrep under the hood but ships with a curated ruleset specifically for Node/Express patterns. Running it alongside your custom rules could surface things you're missing.
+Joern is the most powerful if you want to go deep — it builds a code property graph and lets you write custom traversal queries. It's what serious vulnerability researchers use. Very high setup cost but correspondingly high accuracy.
+For your use case, the most pragmatic path is probably: keep Semgrep with your improved custom rules as the fast first pass, and add CodeQL or Bearer as a second-pass validation layer for findings above a certain confidence threshold.
+
+🟡 One Thing to Watch
+text
+Created 0 Endpoint->Function HAS_ROUTE edges
+421 endpoints were parsed but none were linked to functions. This means the route-to-handler relationship graph is empty — N+1 detection and any graph-based analysis that traverses Endpoint→Function→ORMCall won't work. This is a separate bug in your graph builder's HAS_ROUTE edge creation logic, not blocking for today's scan but worth filing.

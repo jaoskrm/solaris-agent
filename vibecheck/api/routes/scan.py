@@ -49,6 +49,8 @@ class ScanStatusResponse(BaseModel):
     scan_id: str
     status: str
     progress: int
+    current_stage: str | None = None
+    stage_output: dict | None = None
     error_message: str | None
     started_at: datetime | None
     completed_at: datetime | None
@@ -157,6 +159,8 @@ async def get_scan_status(scan_id: str) -> ScanStatusResponse:
             scan_id=str(scan_data.get("id", scan_id)),
             status=scan_data.get("status", "unknown"),
             progress=scan_data.get("progress", 0),
+            current_stage=scan_data.get("current_stage"),
+            stage_output=scan_data.get("stage_output"),
             error_message=scan_data.get("error_message"),
             started_at=scan_data.get("started_at"),
             completed_at=scan_data.get("completed_at"),
@@ -207,6 +211,8 @@ async def list_scans(
                 scan_id=str(scan.get("id", "")),
                 status=scan.get("status", "unknown"),
                 progress=scan.get("progress", 0),
+                current_stage=scan.get("current_stage"),
+                stage_output=scan.get("stage_output"),
                 error_message=scan.get("error_message"),
                 started_at=scan.get("started_at"),
                 completed_at=scan.get("completed_at"),

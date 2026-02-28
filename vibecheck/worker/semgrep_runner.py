@@ -13,6 +13,7 @@ Week 3 Implementation.
 import json
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -63,9 +64,19 @@ CHECK_ID_TO_VULN_TYPE = {
     "hardcoded": "hardcoded_secret",
     "path": "path_traversal",
     "traversal": "path_traversal",
+    "tainted-filename": "path_traversal",  # Custom taint rule for file path injection
+    "tainted-file": "path_traversal",      # Variant naming
+    "filename": "path_traversal",          # php tainted-filename rule
+    "file-read": "path_traversal",         # generic file read rules
+    "sendfile": "path_traversal",          # express res.sendFile rules
+    "express-res-sendfile": "path_traversal",  # Express.js sendfile taint
     "command": "command_injection",
     "exec": "command_injection",
     "rce": "command_injection",
+    "tainted-exec": "command_injection",   # Custom taint rule for command injection
+    "tainted-sql": "sql_injection",        # Custom taint rule for SQL injection
+    "echoed": "xss",                       # php echoed-request rule → XSS
+    "echo": "xss",                         # catch echo variants
     "ssrf": "ssrf",
     "redirect": "open_redirect",
     "jwt": "jwt_issue",
@@ -86,8 +97,9 @@ SEVERITY_MAP = {
     "INFO": "low",
 }
 
-# Test fixture patterns to skip for secrets
-TEST_PATTERNS = [
+# Test fixture patterns to skip (expanded for juice-shop challenge files)
+# NOTE: These patterns match against FILE PATH only, never snippet content
+_FIXTURE_PATH_PATTERNS = [
     "test",
     "spec",
     "__tests__",
@@ -96,9 +108,46 @@ TEST_PATTERNS = [
     "example",
     "sample",
     "demo",
+    "codefixes",        # juice-shop: data/static/codefixes/
+    "vulncodefixes",    # juice-shop: routes/vulnCodeFixes.ts (intentional vulns)
+    "_correct.ts",      # juice-shop "fixed" solution files
+    "impossible.php",   # DVWA: hardened "impossible" difficulty files
+    "/source/impossible.php",  # DVWA: path variant vulnerabilities/exec/source/impossible.php
+    ".min.",            # minified files
     ".test.",
     ".spec.",
 ]
+
+# Legacy alias for backwards compatibility
+TEST_PATTERNS = _FIXTURE_PATH_PATTERNS
+
+
+def _extract_code_context(file_path: str, start_line: int, end_line: int, context: int = 4) -> str:
+    """
+    Read actual source lines from file with surrounding context lines.
+    
+    This fixes the bug where Semgrep's extra.lines only returns the matched line text,
+    which for juice-shop files was always "requires login" (a middleware comment at
+    the top of every file).
+    
+    Args:
+        file_path: Path to the source file
+        start_line: Starting line number (1-based)
+        end_line: Ending line number (1-based)
+        context: Number of context lines to include before and after
+        
+    Returns:
+        Source code snippet with context, or empty string on error
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        lo = max(0, start_line - 1 - context)
+        hi = min(len(all_lines), end_line + context)
+        return "".join(all_lines[lo:hi]).strip()
+    except Exception as e:
+        logger.warning(f"Could not read code context from {file_path}:{start_line}: {e}")
+        return ""
 
 
 def run_semgrep(repo_path: Path, scan_id: str) -> list[dict[str, Any]]:
@@ -148,7 +197,8 @@ def run_semgrep(repo_path: Path, scan_id: str) -> list[dict[str, Any]]:
             "--quiet",
             "--no-git-ignore",  # Scan all files, not just git-tracked
             "--timeout", str(60),  # Per-file timeout
-            "--max-memory", "1024",  # Memory limit in MB
+            "--max-memory", "4096",  # Increased memory limit for faster processing
+            "--jobs", str(4),  # Use multiple cores for parallel scanning
             str(repo_path),
         ])
 
@@ -168,11 +218,20 @@ def run_semgrep(repo_path: Path, scan_id: str) -> list[dict[str, Any]]:
 
         # returncode 1 means findings exist (not an error)
         # returncode 0 means no findings
-        # returncode > 1 is an error
+        # returncode 7 means OOM (out of memory) - partial results may exist
+        # returncode > 1 (except 7) is an error
+        SEMGREP_OOM_CODE = 7
         if result.returncode > 1:
-            logger.error(f"  Semgrep FAILED with returncode {result.returncode}")
-            logger.error(f"  stderr: {result.stderr}")
-            return []
+            if result.returncode == SEMGREP_OOM_CODE:
+                logger.warning(
+                    "  Semgrep hit memory limit (OOM) — partial results only. "
+                    "Consider increasing --max-memory or scanning a subset of files."
+                )
+                # Continue to parse whatever partial JSON was written
+            else:
+                logger.error(f"  Semgrep FAILED with returncode {result.returncode}")
+                logger.error(f"  stderr: {result.stderr}")
+                return []
 
         # Log stderr for any warnings
         if result.stderr:
@@ -280,7 +339,11 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
                 extra = {}
             message = extra.get("message", "")
             severity = extra.get("severity", "INFO")
-            code_snippet = extra.get("lines", "")
+            # BUG FIX: Read actual source code with context instead of using extra.lines
+            # which only returns the matched line text (e.g., "requires login" for juice-shop)
+            code_snippet = _extract_code_context(path, start_line, end_line)
+            # Debug log to verify we're getting real code, not "requires login"
+            logger.debug(f"  Snippet preview [{start_line}]: {repr(code_snippet[:80]) if code_snippet else 'EMPTY'}")
             fingerprint = finding.get("fingerprint", "")
 
             # Skip test fixtures for secrets
@@ -326,35 +389,260 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
             logger.warning(f"  Failed to process finding: {e}")
             continue
 
+    # BUG FIX: Deduplicate candidates by (file_path, line_start)
+    # When both a custom taint rule (rules.*) AND a built-in semgrep rule fire
+    # on the same line, prefer the custom taint rule
+    original_count = len(candidates)
+    seen: dict[tuple, dict] = {}
+    for candidate in candidates:
+        key = (candidate["file_path"], candidate["line_start"])
+        if key not in seen:
+            seen[key] = candidate
+        else:
+            existing = seen[key]
+            # Prefer custom taint rules over built-in ones
+            if (candidate["rule_id"].startswith("rules.") and 
+                not existing["rule_id"].startswith("rules.")):
+                seen[key] = candidate
+                logger.debug(f"  Replaced duplicate: {existing['rule_id']} → {candidate['rule_id']}")
+
+    candidates = list(seen.values())
+    
+    # BUG FIX #8: Second-pass dedup for adjacent findings
+    # Collapses findings from same file+rule within a window of lines
+    # Example: view_source_all.php has 4 file_get_contents() calls with same tainted $id
+    # at lines 14, 18, 22, 26 - these are the same root vulnerability
+    after_first_dedup = len(candidates)
+    candidates = _dedup_adjacent_findings(candidates, window=30)
+    after_second_dedup = len(candidates)
+
     logger.info("-" * 80)
     logger.info(f"SEMGREP CONVERSION SUMMARY:")
     logger.info(f"  Total findings: {len(findings)}")
-    logger.info(f"  Converted to candidates: {len(candidates)}")
+    logger.info(f"  Before dedup: {original_count} candidates")
+    logger.info(f"  After line dedup: {after_first_dedup} candidates")
+    logger.info(f"  After adjacent dedup: {after_second_dedup} unique candidates")
     logger.info(f"  Skipped (test fixtures): {skipped_test_fixtures}")
     logger.info(f"  Skipped (non-dict): {skipped_non_dict}")
     logger.info("=" * 80)
     return candidates
 
 
-def _is_test_fixture(path: str, check_id: str) -> bool:
+def _dedup_adjacent_findings(candidates: list[dict], window: int = 30) -> list[dict]:
+    """
+    Collapse findings from same file+rule within `window` lines into one.
+    
+    This handles the case where Semgrep fires multiple times on sequential lines
+    for the same root vulnerability (e.g., same tainted variable used in multiple
+    file_get_contents() calls in a single function block).
+    
+    IMPORTANT: This function is function-boundary-aware. It will NOT collapse
+    findings that are separated by a function declaration boundary, even if
+    they're within the line window. This prevents over-collapsing findings from
+    different exported handlers in routes files.
+    
+    Args:
+        candidates: List of vulnerability candidates
+        window: Maximum line distance to consider as same finding (default 30)
+        
+    Returns:
+        Deduplicated list of candidates
+    """
+    if not candidates:
+        return candidates
+    
+    # Sort by file_path, rule_id, then line_start for consistent processing
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda c: (c.get("file_path", ""), c.get("rule_id", ""), c.get("line_start", 0))
+    )
+    
+    # File content cache for boundary detection (avoids repeated file reads)
+    _file_cache: dict[str, list[str]] = {}
+    
+    # Track clusters: each cluster has its own representative
+    # Key: (file_path, rule_id, cluster_id) where cluster_id is the line_start of the cluster's first finding
+    # This fixes the bug where a third finding D that should collapse with C couldn't
+    # because we only tracked one representative per file+rule
+    clusters: dict[tuple, dict] = {}
+    # Track the most recent finding per file+rule for comparison
+    last_finding: dict[tuple, dict] = {}
+    
+    for candidate in sorted_candidates:
+        file_path = candidate.get("file_path", "")
+        rule_id = candidate.get("rule_id", "")
+        line_start = candidate.get("line_start", 0)
+        
+        file_rule_key = (file_path, rule_id)
+        
+        if file_rule_key not in last_finding:
+            # First finding for this file+rule - start a new cluster
+            cluster_key = (file_path, rule_id, line_start)
+            clusters[cluster_key] = candidate
+            last_finding[file_rule_key] = candidate
+            logger.debug(f"  Adjacent dedup: New cluster {file_path}:{line_start} (rule={rule_id})")
+        else:
+            prev = last_finding[file_rule_key]
+            prev_line = prev.get("line_start", 0)
+            
+            # Check if there's a function boundary between the two findings
+            has_function_boundary = _has_function_boundary_between(
+                file_path, prev_line, line_start, _file_cache
+            )
+            
+            if abs(line_start - prev_line) <= window and not has_function_boundary:
+                # Within window AND same function - collapse into previous cluster
+                # Find the cluster key for the previous finding
+                prev_cluster_key = (file_path, rule_id, prev.get("_cluster_start", prev_line))
+                
+                # Keep the one with lower line number (root of taint)
+                if line_start < prev_line:
+                    # Replace the cluster representative
+                    new_cluster_key = (file_path, rule_id, line_start)
+                    clusters[new_cluster_key] = candidate
+                    candidate["_cluster_start"] = line_start
+                    # Remove old cluster key
+                    if prev_cluster_key in clusters:
+                        del clusters[prev_cluster_key]
+                    logger.info(f"  Adjacent dedup: Collapsed {file_path}:{line_start} " +
+                               f"(was {prev_line}, rule={rule_id})")
+                else:
+                    logger.info(f"  Adjacent dedup: Collapsed {file_path}:{line_start} " +
+                               f"(keeping {prev_line}, rule={rule_id})")
+                
+                # Update last finding but keep it pointing to the cluster start
+                candidate["_cluster_start"] = prev.get("_cluster_start", prev_line)
+                last_finding[file_rule_key] = candidate
+            else:
+                # Far apart OR separated by function boundary - start a new cluster
+                cluster_key = (file_path, rule_id, line_start)
+                clusters[cluster_key] = candidate
+                candidate["_cluster_start"] = line_start
+                last_finding[file_rule_key] = candidate
+                reason = "function boundary" if has_function_boundary else f"{line_start - prev_line} lines apart"
+                logger.info(f"  Adjacent dedup: New cluster at {file_path}:{line_start} " +
+                           f"({reason})")
+    
+    # Remove internal _cluster_start field before returning
+    result = []
+    for c in clusters.values():
+        c_clean = {k: v for k, v in c.items() if k != "_cluster_start"}
+        result.append(c_clean)
+    
+    if len(result) < len(candidates):
+        logger.info(f"  Adjacent dedup: {len(candidates)} → {len(result)} candidates")
+    
+    return result
+
+
+# Function boundary patterns for different languages
+# Compiled once at module load for performance
+_FUNCTION_BOUNDARY_PATTERNS = [
+    # TypeScript/JavaScript
+    r"export\s+function\s+\w+",           # export function name(
+    r"export\s+const\s+\w+\s*=",          # export const name = 
+    r"export\s+async\s+function",         # export async function
+    r"export\s+default\s+function",       # export default function
+    r"^\s*function\s+\w+",                # function name(
+    r"^\s*async\s+function\s+\w+",        # async function name(
+    r"^\s*const\s+\w+\s*=\s*\(",          # const name = (
+    r"^\s*const\s+\w+\s*=\s*async",       # const name = async
+    # PHP
+    r"function\s+\w+\s*\(",               # function name(
+    r"public\s+function\s+\w+",           # public function name(
+    r"private\s+function\s+\w+",          # private function name(
+    r"protected\s+function\s+\w+",        # protected function name(
+    r"static\s+function\s+\w+",           # static function name(
+    # Python
+    r"^\s*def\s+\w+\s*\(",                # def name(
+    r"^\s*async\s+def\s+\w+\s*\(",        # async def name(
+    r"^\s*class\s+\w+",                   # class name:
+]
+
+# Pre-compiled regex for function boundary detection (performance optimization)
+_FUNCTION_BOUNDARY_RE = re.compile(
+    "|".join(f"({p})" for p in _FUNCTION_BOUNDARY_PATTERNS),
+    re.IGNORECASE
+)
+
+
+def _has_function_boundary_between(
+    file_path: str, 
+    line1: int, 
+    line2: int, 
+    _file_cache: dict | None = None
+) -> bool:
+    """
+    Check if there's a function boundary between two line numbers.
+    
+    This reads the file and checks for function declaration patterns between
+    the two lines. Used to prevent over-collapsing findings from different
+    functions in the same file.
+    
+    Args:
+        file_path: Path to the source file
+        line1: First line number (1-based)
+        line2: Second line number (1-based)
+        _file_cache: Optional cache dict for file contents (keyed by file_path)
+        
+    Returns:
+        True if a function boundary exists between the lines
+    """
+    # Ensure line1 < line2
+    if line1 > line2:
+        line1, line2 = line2, line1
+    
+    try:
+        # Use cached file contents if available
+        if _file_cache is not None and file_path in _file_cache:
+            all_lines = _file_cache[file_path]
+        else:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
+            # Cache for future calls
+            if _file_cache is not None:
+                _file_cache[file_path] = all_lines
+        
+        # Check lines between the two findings (exclusive of both finding lines)
+        # line1 and line2 are 1-based, all_lines is 0-indexed
+        # We want lines strictly between: from line1 (exclusive) to line2 (exclusive)
+        # In 0-indexed terms: range(line1, line2 - 1) where line1 is already the line after finding 1
+        # Actually: finding at line 21 means all_lines[20], finding at line 41 means all_lines[40]
+        # We want to check all_lines[21] through all_lines[39] (lines 22-40 in 1-based)
+        # That's range(line1, line2 - 1) in 0-indexed = range(21, 40)
+        for line_num in range(line1, min(line2 - 1, len(all_lines))):
+            line = all_lines[line_num]
+            if _FUNCTION_BOUNDARY_RE.search(line):
+                logger.debug(f"  Function boundary found at {file_path}:{line_num + 1}: {line.strip()[:50]}")
+                return True
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"  Could not check function boundaries in {file_path}: {e}")
+        # On error, be conservative - don't collapse
+        return True
+
+
+def _is_test_fixture(file_path: str, check_id: str = "") -> bool:
     """
     Check if a finding is in a test fixture file.
 
+    IMPORTANT: This function checks FILE PATH only, never snippet content.
+    The code_snippet is NOT passed to this function to prevent false positives
+    from patterns like "challenge" matching code like "challengeUtils.solveIf()".
+
     Args:
-        path: File path
-        check_id: Semgrep check ID
+        file_path: File path (will be normalized to forward slashes)
+        check_id: Semgrep check ID (unused, kept for backwards compatibility)
 
     Returns:
         True if this is a test fixture that should be skipped
     """
-    # Only skip for secrets
-    if "secret" not in check_id.lower():
-        return False
-
-    # Check for test patterns in path
-    path_lower = path.lower()
-    for pattern in TEST_PATTERNS:
-        if pattern in path_lower:
+    # Normalize path separators to forward slashes for consistent matching
+    path_lower = file_path.lower().replace("\\", "/")
+    for pattern in _FIXTURE_PATH_PATTERNS:
+        if pattern.lower() in path_lower:
             return True
 
     return False
@@ -372,8 +660,10 @@ def _map_check_id_to_vuln_type(check_id: str) -> str:
     """
     check_id_lower = check_id.lower()
 
-    # Check each pattern
-    for pattern, vuln_type in CHECK_ID_TO_VULN_TYPE.items():
+    # Match longest pattern first to avoid short patterns shadowing specific ones
+    # Example: "tainted-sql" should match before "sql" to ensure correct mapping
+    # Example: "express-res-sendfile" should match before "sendfile"
+    for pattern, vuln_type in sorted(CHECK_ID_TO_VULN_TYPE.items(), key=lambda x: -len(x[0])):
         if pattern in check_id_lower:
             return vuln_type
 

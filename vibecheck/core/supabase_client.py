@@ -90,6 +90,8 @@ class SupabaseClient:
         status: str,
         progress: int = 0,
         error_message: str | None = None,
+        current_stage: str | None = None,
+        stage_output: dict | None = None,
     ) -> bool:
         """
         Sync method to update scan status.
@@ -99,6 +101,8 @@ class SupabaseClient:
             status: New status (pending, running, completed, failed)
             progress: Progress percentage (0-100)
             error_message: Optional error message
+            current_stage: Optional current pipeline stage name
+            stage_output: Optional dict with intermediate stage results
 
         Returns:
             True if update succeeded
@@ -118,6 +122,12 @@ class SupabaseClient:
         if error_message:
             update_data["error_message"] = error_message
         
+        if current_stage:
+            update_data["current_stage"] = current_stage
+        
+        if stage_output:
+            update_data["stage_output"] = stage_output
+        
         result = (
             client.table("scan_queue")
             .update(update_data)
@@ -133,6 +143,8 @@ class SupabaseClient:
         status: str,
         progress: int = 0,
         error_message: str | None = None,
+        current_stage: str | None = None,
+        stage_output: dict | None = None,
     ) -> bool:
         """
         Async wrapper to update scan status.
@@ -140,7 +152,7 @@ class SupabaseClient:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: self._update_scan_status_sync(scan_id, status, progress, error_message)
+            lambda: self._update_scan_status_sync(scan_id, status, progress, error_message, current_stage, stage_output)
         )
 
     def _create_scan_sync(
@@ -308,9 +320,11 @@ class SupabaseClient:
         logger.debug(f"Sample vulnerability data: {vulns_data[0] if vulns_data else 'none'}")
         
         try:
+            # Use upsert to handle unique constraint on (scan_id, file_path, line_start)
+            # This prevents race conditions where duplicate vulns are inserted
             result = (
                 client.table("vulnerabilities")
-                .insert(vulns_data)
+                .upsert(vulns_data, on_conflict="scan_id,file_path,line_start")
                 .execute()
             )
             

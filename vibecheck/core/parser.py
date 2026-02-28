@@ -50,7 +50,10 @@ ROUTE_QUERY = """
     (#match? @method "^(get|post|put|delete|patch|use)$"))
   arguments: (arguments
     [(string) @route_path
-     (array) @route_paths])) @call
+     (array) @route_paths]
+    [(identifier) @handler
+     (arrow_function) @handler
+     (function_expression) @handler])) @call
 """
 
 # ORM call detection query
@@ -476,6 +479,23 @@ class CodeParser:
             call_node = call_data["node"]
             method = source[call_data["method"].start_byte:call_data["method"].end_byte].decode("utf-8", errors="replace").upper()
             
+            # Extract handler name if present
+            handler_name = None
+            if "handler" in call_data:
+                handler_node = call_data["handler"]
+                if handler_node.type == "identifier":
+                    handler_name = source[handler_node.start_byte:handler_node.end_byte].decode("utf-8", errors="replace")
+                elif handler_node.type == "arrow_function":
+                    # Arrow function - check if it has a name in variable assignment
+                    # e.g., const handler = (req, res) => {...}
+                    handler_name = None  # Anonymous arrow function
+                elif handler_node.type == "function_expression":
+                    # Named function expression
+                    for child in handler_node.children:
+                        if child.type == "identifier":
+                            handler_name = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+                            break
+            
             # Handle single path (string)
             if "route_path" in call_data:
                 path = source[call_data["route_path"].start_byte:call_data["route_path"].end_byte].decode("utf-8", errors="replace")
@@ -490,6 +510,7 @@ class CodeParser:
                     properties={
                         "method": method,
                         "path": path,
+                        "handler": handler_name,
                     },
                 ))
             
@@ -511,6 +532,7 @@ class CodeParser:
                             properties={
                                 "method": method,
                                 "path": path,
+                                "handler": handler_name,
                             },
                         ))
         

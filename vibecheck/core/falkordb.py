@@ -265,8 +265,9 @@ class FalkorDBClient:
         except Exception as e:
             logger.warning(f"Error creating Loop->SQLQuery edges: {e}")
         
-        # HAS_ROUTE edges: Endpoint -> Function (match handler name)
+        # HAS_ROUTE edges: Endpoint -> Function (match handler name or line overlap)
         try:
+            # First, try to match by handler name
             result = graph.query("""
                 MATCH (e:Endpoint), (f:Function)
                 WHERE e.handler = f.name AND e.file = f.file
@@ -275,7 +276,22 @@ class FalkorDBClient:
             """)
             count = result.result_set[0][0] if result.result_set else 0
             edges_created += count
-            logger.debug(f"Created {count} Endpoint->Function HAS_ROUTE edges")
+            logger.debug(f"Created {count} Endpoint->Function HAS_ROUTE edges by handler name")
+            
+            # Second, match by line overlap (for inline arrow functions)
+            # An endpoint's line range overlaps with a function in the same file
+            result = graph.query("""
+                MATCH (e:Endpoint), (f:Function)
+                WHERE e.file = f.file 
+                  AND f.line_start >= e.line_start 
+                  AND f.line_end <= e.line_end
+                  AND NOT (e)-[:HAS_ROUTE]->(f)
+                CREATE (e)-[:HAS_ROUTE]->(f)
+                RETURN count(*) as edges
+            """)
+            count2 = result.result_set[0][0] if result.result_set else 0
+            edges_created += count2
+            logger.debug(f"Created {count2} Endpoint->Function HAS_ROUTE edges by line overlap")
         except Exception as e:
             logger.warning(f"Error creating Endpoint->Function edges: {e}")
         

@@ -99,6 +99,10 @@ CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(sever
 CREATE INDEX IF NOT EXISTS idx_vulnerabilities_type ON vulnerabilities(type);
 CREATE INDEX IF NOT EXISTS idx_vulnerabilities_confirmed ON vulnerabilities(confirmed);
 
+-- Unique constraint to prevent duplicate vulnerability entries and race conditions
+-- This ensures only one vulnerability per scan_id + file_path + line_start combination
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vulnerabilities_unique_location ON vulnerabilities(scan_id, file_path, line_start);
+
 -- -------------------------------------------
 -- Kill Chain Events Table
 -- -------------------------------------------

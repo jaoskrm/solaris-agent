@@ -17,6 +17,8 @@ export interface ScanStatusResponse {
   scan_id: string;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
+  current_stage: string | null;
+  stage_output: Record<string, unknown> | null;
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
