@@ -47,8 +47,8 @@ def parse_args():
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=10,
-        help="Maximum iterations for the Red Team (default: 10)"
+        default=3,
+        help="Maximum iterations for the Red Team (default: 3)"
     )
     return parser.parse_args()
 

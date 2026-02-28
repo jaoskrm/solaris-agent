@@ -89,11 +89,12 @@ async def nuclei_execute(
         f"-u {docker_target}",
         f"-severity {severity}",
         f"-json-export {CONTAINER_RESULTS_PATH}",
-        "-rl 50",          # Rate limit: 50 req/sec to reduce memory pressure
-        "-c 10",           # Concurrency: 10 templates at a time
-        "-bs 25",          # Bulk size: max 25 templates loaded at once (prevents OOM)
-        "-timeout 10",     # Per-request timeout
-        "-stats",          # Show progress
+        "-rl 100",         # Rate limit: 100 req/sec for faster scanning
+        "-c 20",           # Concurrency: 20 templates at a time  
+        "-bs 50",          # Bulk size: max 50 templates loaded (balanced speed/memory)
+        "-timeout 5",      # Per-request timeout (faster)
+        "-mhe 5",          # Max host errors: stop after 5 errors
+        "-silent",         # Silent mode for cleaner output
     ]
 
     if templates:
@@ -116,7 +117,7 @@ async def nuclei_execute(
         parts.append(args)
 
     command = " ".join(parts)
-    result = await shared_sandbox_manager.exec_command(command, timeout=180)
+    result = await shared_sandbox_manager.exec_command(command, timeout=60)
 
     # Also grab the JSON results if available - use Python for cross-platform file reading
     # This works on Windows, Linux, and macOS inside the container

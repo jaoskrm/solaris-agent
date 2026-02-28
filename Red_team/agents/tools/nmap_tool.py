@@ -95,10 +95,10 @@ async def nmap_execute(mission_id: str, target: str, args: str = "") -> ExecResu
             scan_target = f"{target_host}"
             port_args = "-sV -sC"
     else:
-        # It's just a host/IP
+        # It's just a host/IP - default to port 3000 for efficiency
         target_host = target.replace("localhost", host).replace("127.0.0.1", host)
         scan_target = target_host
-        port_args = "-sV -sC"
+        port_args = "-p 3000 -sV -sC"
     
     # Sanitize arguments to prevent duplicates
     final_args = _sanitize_nmap_args(args, port_args)
