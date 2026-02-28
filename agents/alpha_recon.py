@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 from agents.a2a.messages import (
     A2AMessage,
@@ -125,13 +127,17 @@ Decide which tools to run for these tasks. Respond in JSON."""
         temperature=0.2,
     )
 
+    # Extract port from target URL for precision scanning
+    port = _extract_port_from_target(state["target"])
+    
     try:
         plan = _parse_json_response(response)
     except Exception as e:
         logger.error("Alpha plan parse failed: %s", e)
-        # Fallback: run default nmap scan
+        # Fallback: run precision nmap scan on discovered port
+        nmap_args = f"-sV -p {port}" if port else "-sV --top-ports 20"
         plan = {"tool_calls": [
-            {"tool": "nmap", "args": {"target": state["target"], "args": "-sV --top-ports 20"}, "reasoning": "Default scan"},
+            {"tool": "nmap", "args": {"target": state["target"], "args": nmap_args}, "reasoning": "Precision scan on target port"},
         ]}
 
     # Step 2: Execute each tool call
@@ -217,3 +223,27 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         lines = [l for l in lines if not l.strip().startswith("```")]
         cleaned = "\n".join(lines)
     return json.loads(cleaned)
+
+
+def _extract_port_from_target(target: str) -> str | None:
+    """
+    Extract port from target URL or host:port string.
+    
+    Examples:
+        http://localhost:3000 -> 3000
+        https://example.com:8443 -> 8443
+        localhost:3000 -> 3000
+        example.com -> None
+    """
+    # Try parsing as URL first
+    if "://" in target:
+        parsed = urlparse(target)
+        if parsed.port:
+            return str(parsed.port)
+    
+    # Try parsing as host:port
+    match = re.match(r"^.+:(\d+)$", target)
+    if match:
+        return match.group(1)
+    
+    return None

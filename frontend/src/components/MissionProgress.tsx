@@ -147,13 +147,20 @@ export function MissionProgress({ missionState, targetUrl }: MissionProgressProp
                         )}
                     </div>
                 </div>
-                <div
-                    className={cn(
-                        "px-3 py-1 rounded-full text-xs font-medium border",
-                        getPhaseColor(phase)
+                <div className="flex items-center gap-3">
+                    <div
+                        className={cn(
+                            "px-3 py-1 rounded-full text-xs font-medium border",
+                            getPhaseColor(phase)
+                        )}
+                    >
+                        {phase.toUpperCase()}
+                    </div>
+                    {missionState.iteration !== undefined && missionState.max_iterations && status === "running" && (
+                        <div className="px-2 py-1 rounded-full text-xs font-medium bg-dark-600 text-gray-400">
+                            Iteration: {missionState.iteration}/{missionState.max_iterations}
+                        </div>
                     )}
-                >
-                    {phase.toUpperCase()}
                 </div>
             </div>
 

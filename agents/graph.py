@@ -76,6 +76,8 @@ def should_continue(state: RedTeamState) -> str:
     iteration = state.get("iteration", 0)
     max_iter = state.get("max_iterations", 5)
 
+    logger.info("should_continue: iteration=%d, max_iter=%d, phase=%s", iteration, max_iter, phase)
+
     if phase == "complete":
         logger.info("Mission complete — Commander declared phase=complete")
         return "report"

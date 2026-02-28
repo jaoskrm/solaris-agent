@@ -32,7 +32,21 @@ logger = logging.getLogger("api")
 try:
     from agents.graph import build_red_team_graph, create_initial_state
     from agents.state import RedTeamState
+    from agents.tools.registry import tool_registry
+    from agents.tools.nmap_tool import nmap_tool
+    from agents.tools.nuclei_tool import nuclei_tool
+    from agents.tools.curl_tool import curl_tool
+    from agents.tools.python_exec import python_exec_tool
+    from sandbox.sandbox_manager import sandbox_manager
     from core.config import settings
+    
+    # Register tools on import
+    tool_registry.register(nmap_tool)
+    tool_registry.register(nuclei_tool)
+    tool_registry.register(curl_tool)
+    tool_registry.register(python_exec_tool)
+    logger.info("Tools registered: %s", tool_registry.list_names())
+    
     AGENTS_AVAILABLE = True
     logger.info("Agent modules imported successfully")
 except ImportError as e:
@@ -90,6 +104,8 @@ class MissionStatusResponse(BaseModel):
     status: str
     progress: int
     current_agent: Optional[str]
+    iteration: int
+    max_iterations: int
     error_message: Optional[str]
 
 
@@ -213,6 +229,12 @@ async def run_mission_background(mission_id: str, target: str, objective: str):
                     
                     # Store results
                     if isinstance(node_output, dict):
+                        # Update iteration tracking from commander node
+                        if "iteration" in node_output:
+                            missions[mission_id]["iteration"] = node_output["iteration"]
+                            missions[mission_id]["max_iterations"] = node_output.get("max_iterations", 5)
+                            logger.info(f"Mission {mission_id}: Iteration updated to {node_output['iteration']}/{missions[mission_id]['max_iterations']}")
+                        
                         if "recon_results" in node_output:
                             missions[mission_id]["recon_results"].extend(
                                 node_output.get("recon_results", [])
@@ -273,6 +295,8 @@ async def start_mission(request: StartMissionRequest):
         "status": "pending",
         "progress": 5,
         "current_agent": "commander",
+        "iteration": 0,
+        "max_iterations": 5,
         "recon_results": [],
         "exploit_results": [],
         "report": None,
@@ -306,6 +330,8 @@ async def get_mission_status(mission_id: str):
         status=mission["status"],
         progress=mission["progress"],
         current_agent=mission["current_agent"],
+        iteration=mission.get("iteration", 0),
+        max_iterations=mission.get("max_iterations", 5),
         error_message=mission["errors"][0] if mission["errors"] else None,
     )
 

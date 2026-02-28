@@ -94,6 +94,8 @@ export interface MissionState {
     status: MissionStatus;
     progress: number;
     current_agent: AgentRole | null;
+    iteration: number;
+    max_iterations: number;
     blackboard: Blackboard;
     messages: A2AMessage[];
     recon_results: ReconResult[];
@@ -154,6 +156,8 @@ export interface MissionStatusResponse {
     status: MissionStatus;
     progress: number;
     current_agent: AgentRole | null;
+    iteration: number;
+    max_iterations: number;
     error_message: string | null;
 }
 

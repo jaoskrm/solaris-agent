@@ -73,6 +73,8 @@ export function useMission(options: UseMissionOptions = {}): UseMissionReturn {
                             status: statusResponse.status as MissionState["status"],
                             progress: phaseProgress[phase] || statusResponse.progress,
                             current_agent: currentAgent,
+                            iteration: statusResponse.iteration,
+                            max_iterations: statusResponse.max_iterations,
                         }
                         : null
                 );
@@ -148,6 +150,8 @@ export function useMission(options: UseMissionOptions = {}): UseMissionReturn {
                     status: "running",
                     progress: 5,
                     current_agent: "commander",
+                    iteration: 0,
+                    max_iterations: 5,
                     blackboard: {
                         vulnerabilities: [],
                         exploitation_results: [],

@@ -52,6 +52,7 @@ python_exec_tool = ToolSpec(
     description="Execute Python code in an isolated sandbox. Has access to 'requests' library for HTTP. Use this for complex exploit logic, automated attacks, or data processing.",
     args_schema={
         "code": "Python code to execute (has 'requests' available)",
+        "script_path": "Path to Python script file (alternative to code)",
         "timeout": "Optional: execution timeout in seconds (default: 30)",
     },
     execute=python_exec_execute,

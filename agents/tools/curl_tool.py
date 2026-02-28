@@ -21,6 +21,7 @@ async def curl_execute(
     data: str = "",
     args: str = "",
     timeout: int = 30,
+    max_time: int = 30,
 ) -> ExecResult:
     """
     Send an HTTP request via curl.
@@ -33,13 +34,14 @@ async def curl_execute(
         data: Optional request body
         args: Additional curl arguments
         timeout: Request timeout in seconds (default: 30)
+        max_time: Max time for curl operation (default: 30)
     """
     # Resolve Docker service name
     host = sandbox_manager.get_target_host()
     docker_url = url.replace("localhost:3000", f"{host}:3000").replace("localhost", host)
 
     # Add timeout to prevent infinite hangs
-    parts = ["curl", "-s", "-i", f"-X {method}", f"--max-time {timeout}"]
+    parts = ["curl", "-s", "-i", f"-X {method}", f"--max-time {max_time}"]
 
     if headers:
         for key, value in headers.items():
@@ -49,7 +51,17 @@ async def curl_execute(
         parts.append(f"-d {shlex.quote(data)}")
 
     if args:
-        parts.append(args)
+        # Filter out common curl flags that we already handle or shouldn't be in args
+        # These flags should be in their own fields, not in args
+        filtered_args = args
+        for flag in ['--max-time', '-m', '--silent', '-s', '--show-error', '-S', 
+                     '--include', '-i', '--insecure', '-k', '--verbose', '-v',
+                     '--request', '-X', '--header', '-H', '--data', '-d',
+                     '--data-binary', '--data-raw', '--user', '-u']:
+            filtered_args = filtered_args.replace(flag, '')
+        filtered_args = filtered_args.strip()
+        if filtered_args:
+            parts.append(filtered_args)
 
     parts.append(shlex.quote(docker_url))
 

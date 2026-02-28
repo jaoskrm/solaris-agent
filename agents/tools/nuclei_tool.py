@@ -64,6 +64,7 @@ async def nuclei_execute(
     templates: str = "",
     severity: str = "critical,high,medium",
     args: str = "",
+    headers: dict = {},
 ) -> ExecResult:
     """
     Run Nuclei vulnerability scanner against a target.
@@ -74,6 +75,7 @@ async def nuclei_execute(
         templates: Vulnerability categories (e.g. 'sqli', 'xss', 'cves') or template paths
         severity: Severity filter (default: critical,high,medium)
         args: Additional nuclei arguments
+        headers: Optional HTTP headers dict (e.g. {"Cookie": "session=xxx"})
     """
     # Resolve Docker service name
     host = sandbox_manager.get_target_host()
@@ -99,6 +101,13 @@ async def nuclei_execute(
         # Default: minimal targeted scan for Juice Shop (Node.js/Express)
         # Avoid loading hundreds of templates that cause OOM
         parts.append("-t http/exposed-panels/ -t http/misconfiguration/")
+
+    # Add custom headers if provided
+    if headers:
+        for key, value in headers.items():
+            # Escape double quotes in header value
+            escaped_value = value.replace('"', '\\"')
+            parts.append(f'-H "{key}: {escaped_value}"')
 
     if args:
         parts.append(args)
@@ -147,6 +156,7 @@ nuclei_tool = ToolSpec(
         "templates": "Vulnerability categories: sqli, xss, cves, default-creds, misconfig, panels, lfi, rce, ssrf, tech. Comma-separated.",
         "severity": "Optional: severity filter (default: critical,high,medium)",
         "args": "Optional: additional nuclei flags",
+        "headers": "Optional: HTTP headers as dict (e.g. {\"Cookie\": \"session=xxx\"})",
     },
     execute=nuclei_execute,
 )

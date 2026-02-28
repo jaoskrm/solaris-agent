@@ -23,6 +23,54 @@ from agents.state import RedTeamState
 logger = logging.getLogger(__name__)
 
 
+def _deduplicate_findings(findings: list[dict[str, Any]], key_fields: list[str] = None) -> list[dict[str, Any]]:
+    """
+    Deduplicate findings based on specified key fields.
+    
+    Args:
+        findings: List of finding dicts
+        key_fields: Fields to use for deduplication (default: ['asset', 'finding'])
+    
+    Returns:
+        Deduplicated list of findings
+    """
+    if key_fields is None:
+        key_fields = ["asset", "finding"]
+    
+    seen = set()
+    deduplicated = []
+    
+    for finding in findings:
+        # Create a unique key from the specified fields
+        key = tuple(finding.get(field, "") for field in key_fields)
+        
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(finding)
+    
+    logger.info(f"Deduplicated {len(findings)} findings to {len(deduplicated)}")
+    return deduplicated
+
+
+def _deduplicate_exploits(exploits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Deduplicate exploitation results based on key fields.
+    """
+    seen = set()
+    deduplicated = []
+    
+    for exploit in exploits:
+        # Use target and exploit_type as key
+        key = (exploit.get("target", ""), exploit.get("exploit_type", ""), exploit.get("success", False))
+        
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(exploit)
+    
+    logger.info(f"Deduplicated {len(exploits)} exploits to {len(deduplicated)}")
+    return deduplicated
+
+
 def generate_mission_report(state: RedTeamState) -> dict[str, Any]:
     """
     Generate a comprehensive mission report from the final state.
@@ -55,7 +103,7 @@ def generate_mission_report(state: RedTeamState) -> dict[str, Any]:
 
 
 def _extract_recon_findings(state: RedTeamState) -> list[dict[str, Any]]:
-    """Extract and format reconnaissance findings."""
+    """Extract and format reconnaissance findings with deduplication."""
     findings = []
     
     for msg in state.get("messages", []):
@@ -76,11 +124,12 @@ def _extract_recon_findings(state: RedTeamState) -> list[dict[str, Any]]:
         if result not in findings:
             findings.append(result)
     
-    return findings
+    # Deduplicate findings
+    return _deduplicate_findings(findings)
 
 
 def _extract_exploit_results(state: RedTeamState) -> list[dict[str, Any]]:
-    """Extract and format exploitation results."""
+    """Extract and format exploitation results with deduplication."""
     results = []
     
     for msg in state.get("messages", []):
@@ -102,7 +151,8 @@ def _extract_exploit_results(state: RedTeamState) -> list[dict[str, Any]]:
         if result not in results:
             results.append(result)
     
-    return results
+    # Deduplicate exploits
+    return _deduplicate_exploits(results)
 
 
 def _analyze_kill_chain(state: RedTeamState) -> dict[str, Any]:
