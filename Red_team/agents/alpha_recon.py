@@ -24,9 +24,13 @@ from agents.state import RedTeamState
 from agents.tools.registry import tool_registry
 from core.ollama_client import ollama_client
 from core.config import settings
+from core.supabase_client import get_supabase_client
 from sandbox.sandbox_manager import ExecResult
 
 logger = logging.getLogger(__name__)
+
+# Initialize optional Supabase integration
+supabase = get_supabase_client()
 
 ALPHA_SYSTEM_PROMPT = """You are Agent Alpha, a reconnaissance specialist on a red team.
 You have REAL tools that execute against a live target. You must discover attack surfaces and vulnerabilities.
@@ -253,6 +257,23 @@ Decide which tools to run for these tasks. Respond in JSON."""
             all_findings.append(intel.model_dump())
 
     logger.info("Alpha: %d findings from %d tool calls", len(all_findings), len(plan.get("tool_calls", [])))
+    
+    # Log kill chain events to Supabase
+    for finding in all_findings:
+        await supabase.log_kill_chain_event(
+            mission_id=state.get("mission_id", "unknown"),
+            stage="recon",
+            agent="alpha",
+            event_type="intelligence_discovered",
+            details={
+                "finding": finding.get("finding", ""),
+                "confidence": finding.get("confidence", 0),
+                "asset": finding.get("asset", ""),
+            },
+            target=finding.get("asset", state.get("target")),
+            success=True,
+            human_intervention=False,
+        )
 
     return {
         "recon_results": all_findings,

@@ -378,7 +378,8 @@ def format_report_text(report: dict[str, Any]) -> str:
         lines.append("✓  No successful exploitations detected during this assessment period.")
         lines.append("   However, continued vigilance and defense hardening are recommended.")
     lines.append("")
-    lines.append(f"Strategy: {summary.get('strategy', 'N/A')[:250]}...")
+    strategy = summary.get('strategy', 'N/A') or 'N/A'
+    lines.append(f"Strategy: {str(strategy)[:250]}...")
     lines.append("")
     
     # ═══════════════════════════════════════════════════════════════════════

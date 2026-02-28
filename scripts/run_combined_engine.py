@@ -230,7 +230,8 @@ class CombinedEngine:
             
             logger.info("Red Team: Mission completed")
             logger.info(f"  Final phase: {final_state.get('phase')}")
-            logger.info(f"  Strategy: {final_state.get('strategy', 'N/A')[:100]}...")
+            strategy = final_state.get('strategy', 'N/A') or 'N/A'
+            logger.info(f"  Strategy: {str(strategy)[:100]}...")
             
             return final_state
             
