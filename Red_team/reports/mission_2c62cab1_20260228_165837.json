@@ -1,0 +1,38 @@
+{
+  "report_metadata": {
+    "generated_at": "2026-02-28T11:28:37.893240+00:00",
+    "mission_id": "2c62cab1",
+    "report_version": "1.0"
+  },
+  "mission_summary": {
+    "objective": "Hack Juice Shop",
+    "target": "http://localhost:3000",
+    "final_phase": "complete",
+    "iterations_completed": 0,
+    "max_iterations": 3,
+    "strategy": "Fallback: perform broad reconnaissance on the target."
+  },
+  "reconnaissance_findings": [],
+  "exploitation_results": [],
+  "kill_chain_progress": {
+    "phases_completed": [],
+    "total_phases": 7,
+    "progress_percentage": 0.0,
+    "successful_exploits": 0
+  },
+  "statistics": {
+    "total_messages": 0,
+    "intel_reports": 0,
+    "exploit_attempts": 0,
+    "successful_exploits": 0,
+    "high_confidence_findings": 0,
+    "reflection_count": 0,
+    "errors_count": 1
+  },
+  "recommendations": [
+    "Continue monitoring and periodic security assessments"
+  ],
+  "errors": [
+    "LLM request failed: model 'llama3.2' not found (status code: 404)"
+  ]
+}

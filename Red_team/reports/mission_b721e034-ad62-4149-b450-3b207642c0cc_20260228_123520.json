@@ -1,0 +1,100 @@
+{
+  "report_metadata": {
+    "generated_at": "2026-02-28T07:05:20.748178+00:00",
+    "mission_id": "b721e034-ad62-4149-b450-3b207642c0cc",
+    "report_version": "1.0"
+  },
+  "mission_summary": {
+    "objective": "Security assessment",
+    "target": "http://localhost:3000",
+    "final_phase": "recon",
+    "iterations_completed": 5,
+    "max_iterations": 5,
+    "strategy": "Conduct a comprehensive reconnaissance phase to gather initial data on the target system, focusing on identifying open ports, services, and potential vulnerabilities that could be exploited later."
+  },
+  "reconnaissance_findings": [],
+  "exploitation_results": [
+    {
+      "target": "http://localhost:3000",
+      "exploit_type": "sqli",
+      "success": false,
+      "payload_used": "{'template': 'vulnerabilities/sqli/*.yaml', 'url': 'http://localhost:3000', 'mission_id': 'b721e034-ad62-4149-b450-3b207642c0cc'}",
+      "response_code": null,
+      "evidence": "Unknown tool: nuclei",
+      "impact": "",
+      "priority": "MEDIUM"
+    },
+    {
+      "target": "http://localhost:3000/rest/user/login",
+      "exploit_type": "sqli",
+      "success": false,
+      "payload_used": "{\"email\":\"' OR 1=1--\",\"password\":\"x\"}",
+      "response_code": null,
+      "evidence": "Unknown tool: curl",
+      "impact": "",
+      "priority": "MEDIUM"
+    },
+    {
+      "target": "http://localhost:3000/rest/products/search",
+      "exploit_type": "xss",
+      "success": false,
+      "payload_used": "{\"searchTerms\":\"<script>alert(1)</script>\"}",
+      "response_code": null,
+      "evidence": "Unknown tool: curl",
+      "impact": "",
+      "priority": "MEDIUM"
+    },
+    {
+      "target": "http://localhost:3000/admin",
+      "exploit_type": "auth_bypass",
+      "success": false,
+      "payload_used": "{'url': 'http://localhost:3000/admin', 'method': 'GET', 'mission_id': 'b721e034-ad62-4149-b450-3b207642c0cc'}",
+      "response_code": null,
+      "evidence": "Unknown tool: curl",
+      "impact": "",
+      "priority": "MEDIUM"
+    },
+    {
+      "target": "http://localhost:3000/api/Feedbacks",
+      "exploit_type": "info_disclosure",
+      "success": false,
+      "payload_used": "{'url': 'http://localhost:3000/api/Feedbacks', 'method': 'GET', 'mission_id': 'b721e034-ad62-4149-b450-3b207642c0cc'}",
+      "response_code": null,
+      "evidence": "Unknown tool: curl",
+      "impact": "",
+      "priority": "MEDIUM"
+    },
+    {
+      "target": "http://localhost:3000",
+      "exploit_type": "general_vulnerability_scan",
+      "success": false,
+      "payload_used": "{'templates': ['all'], 'url': 'http://localhost:3000', 'mission_id': 'b721e034-ad62-4149-b450-3b207642c0cc'}",
+      "response_code": null,
+      "evidence": "Unknown tool: nuclei",
+      "impact": "",
+      "priority": "MEDIUM"
+    }
+  ],
+  "kill_chain_progress": {
+    "phases_completed": [
+      "weaponization",
+      "exploitation"
+    ],
+    "total_phases": 7,
+    "progress_percentage": 28.6,
+    "successful_exploits": 0
+  },
+  "statistics": {
+    "total_messages": 30,
+    "intel_reports": 0,
+    "exploit_attempts": 18,
+    "successful_exploits": 0,
+    "high_confidence_findings": 0,
+    "reflection_count": 0,
+    "errors_count": 0
+  },
+  "recommendations": [
+    "Continue monitoring and periodic security assessments"
+  ],
+  "errors": []
+}
