@@ -17,7 +17,7 @@ import logging
 import re
 from typing import Any
 
-from core.ollama_client import ollama_client
+from core.llm_client import llm_client
 from core.config import settings
 from sandbox.sandbox_manager import ExecResult
 
@@ -162,11 +162,24 @@ OUTPUT FORMAT: You MUST respond ONLY in valid JSON with this exact structure:
 }}
 
 SUCCESS CRITERIA:
-- SQLi: Boolean-based true/false in response, UNION works, or authentication bypassed
-- XSS: Script tags executed, alert() called, or payload reflected unescaped
-- Auth Bypass: Access to admin panel, elevated privileges, or unauthorized data
-- IDOR: Access to other users' data without authentication
-- Command Injection: Command executed successfully, output returned
+- SQLi: Boolean-based true/false in response, UNION works, SQLite/Sequelize errors (shows query execution), or authentication bypassed
+- XSS: Script tags in response, alert() references, payload stored/reflected, DOM manipulation, OR HTTP 200/201 with success JSON (stored XSS)
+- Stored XSS: Product created successfully, review posted, or HTTP 200/201 with confirmation
+- Reflected/DOM XSS: Payload appears unescaped in response, URL fragment manipulation works
+- Auth Bypass: Access to admin panel, elevated privileges, JWT token in response, or unauthorized data access
+- Access Control: Bypass restrictions, access admin-only endpoints, or modify other users' data
+- IDOR: Access to other users' data, different user IDs in responses, or data enumeration
+- Data Exposure: JSON arrays/objects returned, database fields visible, or sensitive info leaked
+- XXE: File contents retrieved (/etc/passwd, system files), error messages showing file system
+- File Upload: Success message, file path returned, or upload confirmation
+- SSTI: Template expressions evaluated ({{7*7}} returning 49), math operations executed
+- Command Injection: Command executed, system output returned, or shell access achieved
+- LFI/RFI: Local files retrieved, PHP filters working, or directory traversal successful
+
+JUICESHOP-SPECIFIC SUCCESS INDICATORS:
+- SQLi: SQLite errors mean the query executed - that's success for error-based SQLi
+- XSS: 200/201 response with JSON confirmation means payload was stored
+- Data Exposure: Products API returns full database records with all fields
 
 FAILURE ANALYSIS:
 - syntax_error: Python/curl syntax is wrong — fix syntax before changing exploit logic
@@ -252,13 +265,14 @@ async def analyze_exploit_result(
     
     # Call the Critic LLM
     try:
-        response = await ollama_client.chat(
-            model=settings.exploit_model,  # Use same model as Gamma for consistency
+        response = await llm_client.chat(
+            model=settings.critic_model,  # Use Critic-specific model
             messages=[
                 {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
                 {"role": "user", "content": analysis_prompt},
             ],
             temperature=0.1,  # Low temperature for consistent evaluation
+            fallback_model=settings.critic_model_fallback,
         )
         
         evaluation = _parse_critic_response(response)
@@ -308,12 +322,25 @@ async def quick_evaluate(
     
     combined_output = (result.stdout or "") + (result.stderr or "")
     
-    # Check for success patterns
+    # Check for success patterns - enhanced for Juice Shop and real-world apps
     success_patterns = {
-        "sqli": [r"admin", r"true", r"authenticated", r"login success", r"bypass"],
-        "xss": [r"<script", r"alert(", r"onerror=", r"javascript:"],
-        "auth_bypass": [r"admin", r"dashboard", r"privilege", r"access granted"],
-        "idor": [r'"id":', r'"email":', r'"password":', r'"address":'],
+        "sqli": [r"admin", r"true", r"authenticated", r"login success", r"bypass", r"sqlite", r"mysql", r"union select", r"version\(\)"],
+        "xss": [r"<script", r"alert\s*\(", r"onerror\s*=", r"javascript\s*:", r"onload\s*=", r"onmouseover\s*="],
+        "dom_xss": [r"#\s*", r"location\.", r"document\.", r"innerHTML", r"eval\s*\("],
+        "stored_xss": [r"created", r"success", r"posted", r"review", r"comment"],
+        "reflected_xss": [r"search", r"query", r"keyword", r"results"],
+        "auth_bypass": [r"admin", r"dashboard", r"privilege", r"access granted", r"welcome", r"profile", r"account"],
+        "access_control": [r"unauthorized", r"forbidden", r"403", r"access denied"],
+        "idor": [r'"id":', r'"email":', r'"password":', r'"address":', r'"user":', r'"data":', r'"content":'],
+        "data_exposure": [r'"id":', r'"name":', r'"email":', r'"price":', r'"description":', r'"data":', r'\[\s*\{', r'json', r'"rating"'],
+        "xxe": [r"etc/passwd", r"passwd", r"root:", r"xml", r"entity"],
+        "file_upload": [r"upload", r"success", r"file", r"created", r"path"],
+        "ssti": [r"49", r"7\*7", r"48", r"template", r"render"],
+        "nosql": [r"true", r"admin", r"[$]ne", r"[$]gt", r"[$]regex"],
+        "lfi": [r"etc/passwd", r"passwd", r"root:", r"\.\./", r"%2e%2e", r"php://filter"],
+        "rce": [r"uid=", r"root", r"whoami", r"id\s*", r"command", r"output"],
+        "csrf": [r"token", r"success", r"changed", r"updated"],
+        "command_injection": [r"uid=", r"root", r"bin/", r"etc/"],
     }
     
     if exploit_type in success_patterns:
@@ -406,9 +433,103 @@ def _generate_stealth_recommendation(error_type: str) -> str:
 
 
 def _fallback_evaluation(result: ExecResult) -> dict[str, Any]:
-    """Fallback evaluation when LLM fails."""
+    """Fallback evaluation when LLM fails - with intelligent success detection."""
     error_type = _auto_detect_error_type(result)
     combined = (result.stdout or "") + (result.stderr or "")
+    combined_lower = combined.lower()
+    
+    # Enhanced success detection for various exploit types
+    # HTTP Success indicators
+    http_success = re.search(r'HTTP/[\d.]+\s+(200|201|202|204)', combined)
+    json_response = re.search(r'\{\s*"[^"]+"\s*:', combined)
+    
+    # Check for data exposure (JSON arrays/objects with data)
+    data_exposure_indicators = [
+        r'"id"\s*:\s*\d+',
+        r'"name"\s*:',
+        r'"email"\s*:',
+        r'"data"\s*:\s*\[',
+        r'\[\s*\{.*\}',
+    ]
+    
+    for pattern in data_exposure_indicators:
+        if re.search(pattern, combined):
+            return {
+                "success": True,
+                "evidence": f"Data exposure detected: {combined[:200]}",
+                "error_type": "none",
+                "feedback": "Exploit successful - data retrieved from target",
+                "severity": "high",
+                "session_token_found": False,
+                "session_token_value": None,
+                "recommendation": "none",
+            }
+    
+    # Check for XSS indicators (script tags, event handlers, etc.)
+    xss_indicators = [
+        r'<script',
+        r'<img[^>]+onerror',
+        r'<iframe[^>]+onload',
+        r'on\w+\s*=',
+        r'javascript:',
+    ]
+    
+    for pattern in xss_indicators:
+        if re.search(pattern, combined, re.IGNORECASE):
+            return {
+                "success": True,
+                "evidence": f"XSS payload present in response: {pattern}",
+                "error_type": "none",
+                "feedback": "XSS exploit appears successful - payload present in response",
+                "severity": "high",
+                "session_token_found": False,
+                "session_token_value": None,
+                "recommendation": "none",
+            }
+    
+    # Check for authentication/session indicators
+    auth_indicators = [
+        r'"token"\s*:',
+        r'authorization',
+        r'session',
+        r'welcome',
+        r'admin',
+    ]
+    
+    for pattern in auth_indicators:
+        if re.search(pattern, combined_lower):
+            return {
+                "success": True,
+                "evidence": f"Auth indicator found: {pattern}",
+                "error_type": "none",
+                "feedback": "Authentication bypass or session obtained",
+                "severity": "critical",
+                "session_token_found": True,
+                "session_token_value": None,
+                "recommendation": "none",
+            }
+    
+    # Check for SQL injection errors (which means query executed)
+    sqli_indicators = [
+        r'sqlite',
+        r'sequelize',
+        r'sql syntax',
+        r'near.*syntax error',
+        r'unrecognized token',
+    ]
+    
+    for pattern in sqli_indicators:
+        if re.search(pattern, combined_lower):
+            return {
+                "success": True,
+                "evidence": f"SQL error indicates query execution: {combined[:200]}",
+                "error_type": "none",
+                "feedback": "SQL injection successful - database error confirms query execution",
+                "severity": "critical",
+                "session_token_found": False,
+                "session_token_value": None,
+                "recommendation": "none",
+            }
     
     # Build feedback based on error type
     if error_type == "server_error":

@@ -18,10 +18,11 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 # Fallback chain for when primary model is rate-limited or unavailable
+# Primary model: qwen/qwq-32b (32B parameter Qwen model with QWQ capabilities)
 FALLBACK_MODELS = [
-    "deepseek/deepseek-r1-0528:free",
-    "google/gemini-2.0-flash-exp:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct",  # Fallback to larger Qwen model
+    "deepseek/deepseek-chat",       # DeepSeek V3
+    "anthropic/claude-3.5-sonnet",  # Claude 3.5 Sonnet
 ]
 
 

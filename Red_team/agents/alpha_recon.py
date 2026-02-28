@@ -22,7 +22,7 @@ from agents.a2a.messages import (
 )
 from agents.state import RedTeamState
 from agents.tools.registry import tool_registry
-from core.ollama_client import ollama_client
+from core.llm_client import llm_client
 from core.config import settings
 from core.supabase_client import get_supabase_client
 from sandbox.sandbox_manager import ExecResult
@@ -73,11 +73,12 @@ For each assigned task, respond with a JSON object specifying which tools to run
 {{
   "tool_calls": [
     {{
-      "tool": "nmap" | "nuclei" | "curl",
+      "tool": "nmap" | "nuclei" | "curl" | "google_search" | "shodan_search" | "scrape_website" | "search_cve",
       "args": {{
         "target": "the target URL or host",
         "args": "specific arguments for the tool"
       }},
+      "reasoning": "why this tool is appropriate for the task"
       "reasoning": "what specific vulnerability or pattern this will discover"
     }}
   ]
@@ -155,8 +156,9 @@ TARGET: {state.get('target', 'http://localhost:3000')}
 
 Decide which tools to run for these tasks. Respond in JSON."""
 
-    response = await ollama_client.chat(
+    response = await llm_client.chat(
         model=settings.recon_model,
+        fallback_model=settings.recon_model_fallback,
         messages=[
             {"role": "system", "content": ALPHA_SYSTEM_PROMPT.format(tools_description=tools_desc)},
             {"role": "user", "content": plan_prompt},
@@ -213,8 +215,9 @@ Decide which tools to run for these tasks. Respond in JSON."""
             stderr=result.stderr[:1000] if result.stderr else "(empty)",
         )
 
-        analysis_response = await ollama_client.chat(
+        analysis_response = await llm_client.chat(
             model=settings.recon_model,
+            fallback_model=settings.recon_model_fallback,
             messages=[
                 {"role": "system", "content": "You are a security analyst parsing tool output. Respond ONLY in JSON."},
                 {"role": "user", "content": analyze_prompt},

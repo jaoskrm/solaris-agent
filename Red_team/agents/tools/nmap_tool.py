@@ -28,28 +28,35 @@ def _sanitize_nmap_args(args: str, port_args: str) -> str:
     if not args:
         return port_args
     
+    # Check if user specified a port option BEFORE cleaning
+    # Match -p followed by optional space and value (including -p- for all ports)
+    user_port_match = re.search(r'-p(?:\s+\S+|\-)?', args)
+    has_user_port = user_port_match is not None
+    
     # Extract port specification from port_args (e.g., "-p 3000")
-    port_match = re.search(r'-p\s+\S+', port_args)
+    port_match = re.search(r'-p\s*\S*', port_args)
     system_port = port_match.group(0) if port_match else ""
     
-    # Remove any duplicate -p flags from user args
-    args_cleaned = re.sub(r'-p\s+\S+', '', args)
+    # Remove any -p flags from user args to prevent duplicates
+    args_cleaned = re.sub(r'-p(?:\s+\S+|\-)?', '', args)
     
     # Remove duplicate flag categories
     flags_to_dedup = ['-sV', '-sC', '-sS', '-sT', '-sU', '-A', '-O']
     for flag in flags_to_dedup:
-        # Count occurrences
         occurrences = len(re.findall(re.escape(flag) + r'\b', args_cleaned))
         if occurrences > 1:
-            # Keep only the first occurrence
             parts = args_cleaned.split(flag)
             if len(parts) > 2:
                 args_cleaned = flag.join([parts[0]] + parts[2:])
     
-    # Build final args: system port args take precedence
-    if system_port and '-p' not in args_cleaned:
-        final_args = f"{system_port} {port_args.replace(system_port, '').strip()} {args_cleaned.strip()}"
+    # Build final args
+    if has_user_port:
+        # User specified a port option, use that instead of system port
+        # Extract non-port parts from port_args (like -sV, -sC)
+        port_args_no_port = re.sub(r'-p\s*\S*', '', port_args).strip()
+        final_args = f"{user_port_match.group(0)} {port_args_no_port} {args_cleaned.strip()}"
     else:
+        # No user port, use system port args
         final_args = f"{port_args} {args_cleaned.strip()}"
     
     return ' '.join(final_args.split())  # Normalize whitespace

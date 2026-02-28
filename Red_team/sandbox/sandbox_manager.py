@@ -279,6 +279,101 @@ class SharedSandboxManager:
                 command=command,
             )
 
+    async def execute_python(self, code: str, timeout: int = 60) -> ExecResult:
+        """
+        Execute Python code in the shared sandbox container.
+        Used for web scraping and dynamic exploit generation.
+        """
+        import base64
+        # Encode the code to handle special characters safely
+        encoded_code = base64.b64encode(code.encode()).decode()
+        command = f"python3 -c 'import base64; exec(base64.b64decode(\"{encoded_code}\"))'"
+        return await self.exec_command(command, timeout=timeout)
+
+    async def write_file(self, filename: str, content: str, workdir: str = "/workspace") -> ExecResult:
+        """
+        Write a file to the sandbox filesystem.
+        Used by Gamma to save generated exploit scripts.
+        """
+        import base64
+        # Encode content to handle binary/special chars
+        encoded_content = base64.b64encode(content.encode()).decode()
+        command = f"mkdir -p {workdir} && echo '{encoded_content}' | base64 -d > {workdir}/{filename}"
+        result = await self.exec_command(command)
+        if result.success:
+            logger.info("Written file to sandbox: %s/%s", workdir, filename)
+        else:
+            logger.error("Failed to write file: %s", result.stderr)
+        return result
+
+    async def read_file(self, filepath: str) -> ExecResult:
+        """
+        Read a file from the sandbox filesystem.
+        """
+        command = f"cat {filepath} 2>/dev/null || echo 'FILE_NOT_FOUND'"
+        result = await self.exec_command(command)
+        if result.stdout.strip() == "FILE_NOT_FOUND":
+            return ExecResult(
+                exit_code=-1,
+                stdout="",
+                stderr=f"File not found: {filepath}",
+                command=command,
+            )
+        return result
+
+    async def execute_script(self, script_path: str, interpreter: str = "python3", timeout: int = 60) -> ExecResult:
+        """
+        Execute a script file in the sandbox.
+        Used to run generated exploit scripts.
+        """
+        command = f"{interpreter} {script_path}"
+        return await self.exec_command(command, timeout=timeout)
+
+    async def configure_network_isolation(self, target_ip: str | None = None, allowed_ports: list[int] | None = None) -> ExecResult:
+        """
+        Configure network isolation to restrict outbound connections.
+        Only allows connections to the specified target IP and ports.
+        
+        Args:
+            target_ip: The only IP allowed for outbound connections
+            allowed_ports: List of ports allowed (default: [80, 443, 3000, 8080])
+        """
+        if allowed_ports is None:
+            allowed_ports = [80, 443, 3000, 8080, 11434]  # Include Ollama port
+        
+        # Build iptables rules
+        commands = [
+            "# Flush existing rules",
+            "iptables -F OUTPUT",
+            "iptables -P OUTPUT DROP",  # Default deny outbound
+            "# Allow loopback",
+            "iptables -A OUTPUT -o lo -j ACCEPT",
+            "# Allow established connections",
+            "iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT",
+        ]
+        
+        # Allow specific target if provided
+        if target_ip:
+            for port in allowed_ports:
+                commands.append(f"iptables -A OUTPUT -p tcp -d {target_ip} --dport {port} -j ACCEPT")
+        else:
+            # Allow common ports to any IP (less restrictive)
+            for port in allowed_ports:
+                commands.append(f"iptables -A OUTPUT -p tcp --dport {port} -j ACCEPT")
+        
+        # Allow DNS
+        commands.append("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT")
+        
+        command = " && ".join(commands)
+        result = await self.exec_command(command)
+        
+        if result.success:
+            logger.info("Network isolation configured for target: %s", target_ip or "any")
+        else:
+            logger.warning("Failed to configure network isolation: %s", result.stderr)
+        
+        return result
+
     async def destroy(self):
         """Stop and remove the shared sandbox container."""
         if self._shared_container:

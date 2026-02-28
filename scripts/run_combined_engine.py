@@ -18,8 +18,10 @@ import os
 import sys
 import signal
 import importlib.util
+import time
 from pathlib import Path
 
+# Progress bar class for mission tracking
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -73,12 +75,17 @@ from agents.tools.nmap_tool import nmap_tool
 from agents.tools.nuclei_tool import nuclei_tool
 from agents.tools.curl_tool import curl_tool
 from agents.tools.python_exec import python_exec_tool
+from agents.tools.web_search_tool import register_web_search_tools
 
 # Register all tools
 tool_registry.register(nmap_tool)
 tool_registry.register(nuclei_tool)
 tool_registry.register(curl_tool)
 tool_registry.register(python_exec_tool)
+
+# Register web search/OSINT tools (Google Search, Shodan, Web Scraping, CVE Search)
+register_web_search_tools(tool_registry)
+
 logger.info("Tools registered: %s", tool_registry.list_names())
 
 # Blue Team components will be loaded dynamically in start_blue_team() to avoid namespace collision
@@ -210,6 +217,36 @@ class CombinedEngine:
             logger.info(f"  Target: {mission_config['target']}")
             logger.info(f"  Objective: {mission_config['objective']}")
             
+            # Configure network isolation for the sandbox (PentAGI-style security)
+            logger.info("Red Team: Configuring network isolation...")
+            try:
+                from sandbox.sandbox_manager import shared_sandbox_manager
+                from urllib.parse import urlparse
+                
+                # Ensure sandbox is running
+                await shared_sandbox_manager.ensure_shared_sandbox()
+                
+                # Extract target IP/hostname for network restrictions
+                parsed = urlparse(ARGS.target)
+                target_host = parsed.hostname or ARGS.target
+                
+                # Configure iptables rules to restrict outbound connections
+                # Allow: target host, localhost (for Ollama), DNS
+                # Block: everything else
+                net_result = await shared_sandbox_manager.configure_network_isolation(
+                    target_ip=target_host,
+                    allowed_ports=[80, 443, 3000, 8080, 11434, 6379, 6333]
+                )
+                
+                if net_result.success:
+                    logger.info(f"Red Team: Network isolation active - only {target_host} accessible")
+                else:
+                    logger.warning(f"Red Team: Could not configure network isolation: {net_result.stderr}")
+                    logger.info("Red Team: Continuing without network restrictions")
+            except Exception as net_err:
+                logger.warning(f"Red Team: Network isolation setup failed: {net_err}")
+                logger.info("Red Team: Continuing without network restrictions")
+            
             # Create mission graph
             graph = build_red_team_graph()
             
@@ -224,6 +261,8 @@ class CombinedEngine:
                 target=mission_config["target"],
                 max_iterations=mission_config["max_iterations"],
             )
+            
+            logger.info("Red Team: Starting mission execution...")
             
             # Run the LangGraph
             final_state = await graph.ainvoke(state)
@@ -245,6 +284,9 @@ class CombinedEngine:
         """Background task to monitor Blue->Red communication."""
         logger.info("Starting Blue-Red bridge monitoring loop...")
         
+        # Track seen alerts to prevent spam
+        seen_alerts: set[str] = set()
+        
         while self.running:
             try:
                 # Check for new defense analytics
@@ -252,6 +294,19 @@ class CombinedEngine:
                 
                 if messages:
                     for msg in messages:
+                        # Create unique key for deduplication
+                        alert_key = f"{msg.get('vulnerability_type')}:{msg.get('description', '')[:50]}"
+                        
+                        # Skip if we've seen this alert before
+                        if alert_key in seen_alerts:
+                            continue
+                        
+                        seen_alerts.add(alert_key)
+                        
+                        # Limit cache size to prevent memory growth
+                        if len(seen_alerts) > 100:
+                            seen_alerts.clear()
+                        
                         # VibeCheck branded alert display
                         severity = msg.get('severity', 'medium').upper()
                         vuln_type = msg.get('vulnerability_type', 'unknown')

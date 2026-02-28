@@ -23,8 +23,7 @@ from agents.a2a.messages import (
     TaskAssignment,
 )
 from agents.state import RedTeamState
-from core.openrouter_client import openrouter_client
-from core.ollama_client import ollama_client
+from core.llm_client import llm_client
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -48,10 +47,9 @@ def _truncate_to_tokens(text: str, max_tokens: int = 4096, avg_chars_per_token: 
 
 
 def _get_llm_client():
-    """Get the appropriate LLM client based on configuration."""
-    # Use Ollama only (local) - skip OpenRouter entirely
-    logger.info("Using Ollama for Commander (local model)")
-    return "ollama", ollama_client
+    """Get the appropriate LLM client - OpenRouter primary, Ollama fallback."""
+    logger.info("Using unified LLM client (OpenRouter primary, Ollama fallback)")
+    return "unified", llm_client
 
 COMMANDER_SYSTEM_PROMPT = """You are the Commander of an autonomous red team operation.
 Your role is to think like an adversary conducting a real penetration test.
@@ -200,8 +198,9 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
 
     # Use Ollama for Commander (local only)
     client_type, client = _get_llm_client()
-    # Use local Ollama model, NOT OpenRouter model string
-    model = settings.commander_model_local if client_type == "ollama" else settings.commander_model
+    # Use OpenRouter as primary, Ollama as fallback
+    primary_model = settings.commander_model
+    fallback_model = settings.commander_model_fallback
     
     # Truncate prompts to 4096 tokens for Ollama speed optimization
     system_prompt = _truncate_to_tokens(COMMANDER_SYSTEM_PROMPT, max_tokens=4096)
@@ -209,14 +208,15 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
     
     try:
         response = await client.chat(
-            model=model,
+            model=primary_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
+            fallback_model=fallback_model,
         )
-        logger.debug("Commander using %s with model %s (truncated to 4096 tokens)", client_type, model)
+        logger.debug("Commander using %s with primary model %s (fallback: %s)", client_type, primary_model, fallback_model)
     except Exception as e:
         logger.error("LLM request failed: %s", e)
         return {
@@ -409,10 +409,10 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
         stealth_mode=stealth_mode_str,
     )
 
-    # Use Ollama for Commander (local only)
+    # Use OpenRouter as primary, Ollama as fallback
     client_type, client = _get_llm_client()
-    # Use local Ollama model, NOT OpenRouter model string
-    model = settings.commander_model_local if client_type == "ollama" else settings.commander_model
+    primary_model = settings.commander_model
+    fallback_model = settings.commander_model_fallback
     
     # Truncate prompts to 4096 tokens for Ollama speed optimization
     system_prompt = _truncate_to_tokens(COMMANDER_SYSTEM_PROMPT, max_tokens=4096)
@@ -420,14 +420,15 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
     
     try:
         response = await client.chat(
-            model=model,
+            model=primary_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
+            fallback_model=fallback_model,
         )
-        logger.debug("Commander using %s with model %s (truncated to 4096 tokens)", client_type, model)
+        logger.debug("Commander using %s with primary model %s (fallback: %s)", client_type, primary_model, fallback_model)
     except Exception as e:
         logger.error("LLM request failed: %s", e)
         return {
