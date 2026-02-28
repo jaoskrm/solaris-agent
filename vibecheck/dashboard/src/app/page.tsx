@@ -8,6 +8,7 @@ import { ScanProgress } from "@/components/ScanProgress";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { useScan } from "@/hooks/useScan";
 import { generateId, extractRepoName } from "@/lib/utils";
+import api from "@/lib/api";
 import type { ChatMessage as ChatMessageType, Conversation } from "@/types";
 
 export default function Home() {
@@ -27,11 +28,11 @@ export default function Home() {
   } = useScan({
     pollInterval: 2000,
     onComplete: (report) => {
-      // Add report message to conversation
+      // Add report message to conversation - use vulnerabilities from report response
       addAssistantMessage(
         generateReportSummary(report),
         report,
-        vulnerabilities
+        report.vulnerabilities || []
       );
     },
     onError: (error) => {
@@ -106,7 +107,7 @@ export default function Home() {
 
   // Handle sending a message
   const handleSendMessage = useCallback(
-    async (message: string, isRepoUrl: boolean) => {
+    (message: string, isRepoUrl?: boolean) => {
       // If no active conversation, create one
       let convId = activeConversationId;
       if (!convId) {
@@ -130,7 +131,7 @@ export default function Home() {
 
       // If it's a repo URL, start scanning
       if (isRepoUrl) {
-        // Update conversation title
+        // Update conversation title and store scan_id when scan starts
         setConversations((prev) =>
           prev.map((conv) =>
             conv.id === convId
@@ -146,7 +147,21 @@ export default function Home() {
           isLoading: true,
         });
 
-        await startScan(message);
+        // Start scan and store scan_id when available
+        startScan(message).then(() => {
+          // After scan starts, store the scan_id in the conversation
+          setTimeout(() => {
+            if (scanId) {
+              setConversations((prev) =>
+                prev.map((conv) =>
+                  conv.id === convId
+                    ? { ...conv, scan_id: scanId }
+                    : conv
+                )
+              );
+            }
+          }, 100);
+        });
       } else {
         // Regular chat message - for now, just acknowledge
         addMessage({
@@ -155,7 +170,7 @@ export default function Home() {
         });
       }
     },
-    [activeConversationId, addMessage, startScan]
+    [activeConversationId, addMessage, startScan, scanId]
   );
 
   // Handle example click
@@ -166,10 +181,51 @@ export default function Home() {
     [handleSendMessage]
   );
 
-  // Select conversation
-  const handleSelectConversation = useCallback((id: string) => {
-    setActiveConversationId(id);
-  }, []);
+  // Select conversation and load scan results if available
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      const conv = conversations.find((c) => c.id === id);
+      setActiveConversationId(id);
+
+      // If this conversation has a scan_id and scan results weren't loaded yet,
+      // we need to load them
+      if (conv?.scan_id && !conv.messages.some((m) => m.report)) {
+        // Load existing scan results from backend
+        const loadExistingScan = async () => {
+          try {
+            const reportResponse = await api.getReport(conv.scan_id!);
+            if (reportResponse) {
+              // Add the report to the conversation
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === id
+                    ? {
+                        ...c,
+                        messages: [
+                          ...c.messages,
+                          {
+                            id: generateId(),
+                            role: "assistant" as const,
+                            content: generateReportSummary(reportResponse),
+                            timestamp: new Date(),
+                            report: reportResponse,
+                            vulnerabilities: reportResponse.vulnerabilities,
+                          },
+                        ],
+                      }
+                    : c
+                )
+              );
+            }
+          } catch (err) {
+            console.error("Failed to load existing scan:", err);
+          }
+        };
+        loadExistingScan();
+      }
+    },
+    [conversations]
+  );
 
   // Generate report summary
   function generateReportSummary(report: ChatMessageType["report"]): string {
@@ -226,9 +282,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto">
-          {!activeConversation || activeConversation.messages.length === 0 ? (
-            <WelcomeScreen onExampleClick={handleExampleClick} />
-          ) : (
+          {activeConversationId && activeConversation && activeConversation.messages.length > 0 ? (
             <div className="max-w-4xl mx-auto">
               {/* Scan Progress */}
               {isScanning && scanStatus && (
@@ -256,6 +310,8 @@ export default function Home() {
 
               <div ref={messagesEndRef} />
             </div>
+          ) : (
+            <WelcomeScreen onExampleClick={handleExampleClick} />
           )}
         </div>
 
