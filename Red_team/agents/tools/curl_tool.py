@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 async def curl_execute(
     mission_id: str,
-    url: str,
+    url: str = "",
+    target: str = "",
     method: str = "GET",
     headers: dict[str, str] | None = None,
     data: str = "",
@@ -28,7 +29,8 @@ async def curl_execute(
 
     Args:
         mission_id: Active mission ID
-        url: Target URL
+        url: Target URL (primary)
+        target: Alternative to url (for LLM compatibility)
         method: HTTP method (GET, POST, PUT, DELETE)
         headers: Optional dict of headers
         data: Optional request body
@@ -36,8 +38,18 @@ async def curl_execute(
         timeout: Request timeout in seconds (default: 30)
         max_time: Max time for curl operation (default: 30)
     """
+    # Support both 'url' and 'target' parameters (LLM may use either)
+    actual_url = url or target
+    if not actual_url:
+        return ExecResult(
+            stdout="",
+            stderr="Error: No URL provided (need 'url' or 'target' parameter)",
+            exit_code=1,
+            command="curl (no url)",
+        )
+    
     # With shared sandbox using host network, localhost is directly accessible
-    docker_url = url
+    docker_url = actual_url
 
     # Add timeout to prevent infinite hangs
     parts = ["curl", "-s", "-i", f"-X {method}", f"--max-time {max_time}"]
@@ -72,7 +84,8 @@ curl_tool = ToolSpec(
     name="curl",
     description="Send custom HTTP requests. Supports all methods, custom headers, JSON bodies, and cookies. Returns full response including headers.",
     args_schema={
-        "url": "Target URL (e.g. http://localhost:3000/rest/user/login)",
+        "url": "Target URL (e.g. http://localhost:3000/rest/user/login) - use this or 'target'",
+        "target": "Alternative to url for LLM compatibility",
         "method": "HTTP method: GET, POST, PUT, DELETE (default: GET)",
         "headers": "Optional dict of headers (e.g. {'Content-Type': 'application/json'})",
         "data": "Optional request body (e.g. JSON payload)",

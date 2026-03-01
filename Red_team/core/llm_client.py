@@ -1,5 +1,12 @@
 """
-Unified LLM client with OpenRouter as primary and Ollama as fallback.
+Unified LLM client with 4-model cascade.
+
+PentAGI v4.0 Priority Order:
+  1st → OpenRouter primary model (google/gemini-2.0-flash-exp:free)
+  2nd → OpenRouter fallback chain (deepseek-r1:free → qwq-32b:free)
+  3rd → Ollama local (last resort)
+
+Each OpenRouter model gets 15s timeout before auto-failover.
 """
 
 from __future__ import annotations
@@ -16,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class LLMClient:
     """
-    Unified LLM client that uses OpenRouter as primary and Ollama as fallback.
+    Unified LLM client: OpenRouter cascade → Ollama fallback.
     """
 
     async def chat(
@@ -30,45 +37,75 @@ class LLMClient:
     ) -> str:
         """
         Send a chat completion request.
-        
-        Tries OpenRouter first (if API key is set), then falls back to Ollama.
+
+        DEMO MODE: Ollama models (no "/" in name) go directly to Ollama.
+        OpenRouter models (contain "/") use OpenRouter cascade first.
         """
-        # Try OpenRouter first if we have an API key
-        if settings.openrouter_api_key and settings.openrouter_api_key != "your_openrouter_api_key_here":
+        # Check if this is an Ollama model (no "/" in model name)
+        is_ollama_model = "/" not in model
+        
+        if is_ollama_model:
+            # DEMO MODE: Use Ollama directly for local models
+            logger.info(f"🦙 Using Ollama model directly: {model}")
             try:
-                logger.debug(f"Trying OpenRouter with model: {model}")
-                response = await openrouter_client.chat(
+                response = await ollama_client.chat(
                     model=model,
                     messages=messages,
                     temperature=temperature,
-                    max_tokens=max_tokens,
                     **kwargs,
                 )
-                logger.info(f"OpenRouter success with model: {model}")
+                logger.info(f"✅ LLM [Ollama/{model}] responded")
                 return response
             except Exception as e:
-                logger.warning(f"OpenRouter failed: {e}, trying fallback...")
+                logger.warning(f"Ollama primary failed: {e}")
+                # Try fallback model if different
+                ollama_fallback = fallback_model or "llama3:latest"
+                if ollama_fallback != model:
+                    logger.info(f"🔄 Trying Ollama fallback: {ollama_fallback}")
+                    response = await ollama_client.chat(
+                        model=ollama_fallback,
+                        messages=messages,
+                        temperature=temperature,
+                        **kwargs,
+                    )
+                    logger.info(f"✅ LLM [Ollama/{ollama_fallback}] responded")
+                    return response
+                raise
         else:
-            logger.debug("No OpenRouter API key set, using Ollama")
+            # OpenRouter model (contains "/") - use OpenRouter cascade
+            if settings.openrouter_api_key and settings.openrouter_api_key != "your_openrouter_api_key_here":
+                try:
+                    response = await openrouter_client.chat(
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    )
+                    return response
+                except Exception as e:
+                    logger.warning("OpenRouter cascade exhausted: %s — falling back to Ollama", str(e)[:100])
+            else:
+                logger.debug("No OpenRouter API key set, using Ollama directly")
 
-        # Fallback to Ollama
-        ollama_model = fallback_model or settings.commander_model_fallback
-        try:
-            logger.debug(f"Trying Ollama with model: {ollama_model}")
-            response = await ollama_client.chat(
-                model=ollama_model,
-                messages=messages,
-                temperature=temperature,
-                **kwargs,
-            )
-            logger.info(f"Ollama fallback success with model: {ollama_model}")
-            return response
-        except Exception as e:
-            logger.error(f"Ollama fallback also failed: {e}")
-            raise RuntimeError(
-                f"Both OpenRouter (primary) and Ollama (fallback) failed. "
-                f"OpenRouter model: {model}, Ollama model: {ollama_model}"
-            )
+            # Fallback to Ollama
+            ollama_model = fallback_model or settings.commander_model_fallback
+            try:
+                logger.info("🔄 LLM falling back to Ollama [%s]", ollama_model)
+                response = await ollama_client.chat(
+                    model=ollama_model,
+                    messages=messages,
+                    temperature=temperature,
+                    **kwargs,
+                )
+                logger.info("✅ LLM [Ollama/%s] responded", ollama_model)
+                return response
+            except Exception as e:
+                logger.error("❌ Ollama fallback also failed: %s", e)
+                raise RuntimeError(
+                    f"All LLM backends failed. "
+                    f"OpenRouter model: {model}, Ollama model: {ollama_model}"
+                )
 
     async def ping_openrouter(self) -> bool:
         """Check if OpenRouter is available."""

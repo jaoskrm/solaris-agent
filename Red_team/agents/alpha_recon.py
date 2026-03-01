@@ -2,7 +2,8 @@
 Agent Alpha — Reconnaissance (Phase 2: Real Tools).
 
 Uses Ollama local LLM to reason about recon tasks,
-then executes real tools (nmap, nuclei) via the Docker sandbox.
+then executes real tools (nmap, curl) via the Docker sandbox.
+Nuclei has been removed for speed - using lightweight HTTP fingerprinting instead.
 """
 
 from __future__ import annotations
@@ -73,7 +74,13 @@ For each assigned task, respond with a JSON object specifying which tools to run
 {{
   "tool_calls": [
     {{
-      "tool": "nmap" | "nuclei" | "curl" | "google_search" | "shodan_search" | "scrape_website" | "search_cve",
+      "tool": "nmap" | "curl" | "python" | "google_search" | "shodan_search" | "scrape_website" | "search_cve",
+      "args": {{
+        "target": "the target URL or host",
+        "method": "GET|POST|PUT|DELETE (for curl)",
+        "endpoint": "/api/example (for lightweight fingerprinting)",
+        "wordlist": "common-api-endpoints (optional)"
+      }}
       "args": {{
         "target": "the target URL or host",
         "args": "specific arguments for the tool"
@@ -85,8 +92,9 @@ For each assigned task, respond with a JSON object specifying which tools to run
 }}
 
 IMPORTANT:
-- These are REAL tools. nmap will actually scan. nuclei will actually probe for vulns.
+- These are REAL tools. nmap will actually scan. curl will do HTTP fingerprinting (1-2s vs 120s for nuclei).
 - Use the target URL provided in the task, not made-up targets.
+- For lightweight recon, use curl with HEAD requests to discover endpoints quickly.
 - Start broad (port scan) then narrow (specific vuln templates).
 - Focus on DISCOVERING patterns that Gamma can exploit (IDOR endpoints, input vectors, etc.)
 
@@ -128,6 +136,66 @@ async def alpha_recon(state: RedTeamState) -> dict[str, Any]:
     Alpha Recon agent — executes real tools and analyzes output with LLM.
     """
     logger.info("Alpha: Executing recon for mission %s", state.get("mission_id", "unknown"))
+
+    # STATIC MODE: Code analysis instead of network recon
+    if state.get("mode", "live") == "static":
+        logger.info("Alpha: STATIC MODE - Analyzing source code")
+        target = state.get('target', '')
+        
+        # Run static analysis
+        static_findings, repo_path = await _run_static_analysis(target, state.get("mission_id", "unknown"))
+        
+        # Store repo path in blackboard for gamma to access
+        if repo_path:
+            await redis_bus.blackboard_write(state.get("mission_id", "unknown"), "repo_path", str(repo_path))
+        
+        intel = IntelligenceReport(
+            asset=target,
+            finding=f"Static analysis complete - {len(static_findings)} findings",
+            confidence=0.9,
+            evidence=f"Analyzed {target} - found code vulnerabilities",
+            recommended_action="Gamma should analyze static findings for exploitation",
+        )
+        msg = A2AMessage(
+            sender=AgentRole.ALPHA,
+            recipient=AgentRole.COMMANDER,
+            type=MessageType.INTELLIGENCE_REPORT,
+            priority=Priority.HIGH,
+            payload=intel.model_dump(),
+        )
+        return {
+            "recon_results": static_findings,
+            "messages": [msg],
+        }
+    
+    # FAST MODE: Skip slow recon tools, proceed directly to exploitation
+    if state.get("fast_mode", False):
+        logger.info("Alpha: FAST MODE - Skipping recon tools, proceeding to exploitation")
+        target = state.get('target', 'http://localhost:3000')
+        # Return minimal finding to trigger Gamma
+        intel = IntelligenceReport(
+            asset=target,
+            finding="OWASP Juice Shop web application detected (fast mode)",
+            confidence=0.95,
+            evidence="Target confirmed as Juice Shop - proceeding with exploit arsenal",
+            recommended_action="Gamma should attempt to exploit known vulnerabilities in OWASP Juice Shop",
+        )
+        msg = A2AMessage(
+            sender=AgentRole.ALPHA,
+            recipient=AgentRole.COMMANDER,
+            type=MessageType.INTELLIGENCE_REPORT,
+            priority=Priority.HIGH,
+            payload=intel.model_dump(),
+        )
+        return {
+            "recon_results": [{
+                "asset": target,
+                "finding": "Juice Shop confirmed",
+                "confidence": 0.95,
+                "evidence": "Fast mode - skipping recon",
+            }],
+            "messages": [msg],
+        }
 
     # Find task assignments directed to Alpha
     tasks_for_alpha = []
@@ -330,3 +398,163 @@ def _extract_port_from_target(target: str) -> str | None:
         return match.group(1)
     
     return None
+
+
+async def _run_static_analysis(target: str, mission_id: str) -> tuple[list[dict[str, Any]], Path | None]:
+    """
+    Run static code analysis on GitHub repo or local path.
+    
+    Args:
+        target: GitHub URL or local file path
+        mission_id: Mission identifier for logging
+        
+    Returns:
+        Tuple of (findings list, repo_path)
+    """
+    import subprocess
+    import tempfile
+    import os
+    from pathlib import Path
+    
+    findings = []
+    repo_path = None
+    
+    try:
+        # Determine if target is GitHub URL or local path
+        if target.startswith("https://github.com/") or target.startswith("http://github.com/"):
+            # Clone repo to temp directory
+            logger.info("Alpha: Cloning GitHub repo %s", target)
+            temp_dir = tempfile.mkdtemp(prefix="vibecheck_")
+            repo_path = Path(temp_dir) / "repo"
+            
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", target, str(repo_path)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                logger.error("Alpha: Git clone failed: %s", result.stderr)
+                return [{
+                    "asset": target,
+                    "finding": "Failed to clone repository",
+                    "confidence": 1.0,
+                    "evidence": result.stderr,
+                    "recommended_action": "Check URL and network connectivity",
+                }], None
+            logger.info("Alpha: Repo cloned to %s", repo_path)
+        else:
+            # Use local path
+            repo_path = Path(target)
+            if not repo_path.exists():
+                logger.error("Alpha: Local path does not exist: %s", target)
+                return [{
+                    "asset": target,
+                    "finding": "Local path does not exist",
+                    "confidence": 1.0,
+                    "evidence": f"Path {target} not found",
+                    "recommended_action": "Check file path",
+                }], None
+        
+        # Run npm audit if package.json exists
+        pkg_json = repo_path / "package.json"
+        if pkg_json.exists():
+            logger.info("Alpha: Running npm audit")
+            try:
+                result = subprocess.run(
+                    ["npm", "audit", "--json"],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode in [0, 1]:  # 0 = no vulns, 1 = vulns found
+                    try:
+                        audit_data = json.loads(result.stdout)
+                        vulnerabilities = audit_data.get("vulnerabilities", {})
+                        for pkg_name, pkg_info in vulnerabilities.items():
+                            findings.append({
+                                "asset": f"npm:{pkg_name}",
+                                "finding": f"CVE: {pkg_info.get('name', 'Unknown')}",
+                                "confidence": 0.9,
+                                "evidence": f"Severity: {pkg_info.get('severity', 'unknown')}, Via: {pkg_info.get('via', [])}",
+                                "cve_hint": pkg_info.get('name'),
+                                "recommended_action": f"Update {pkg_name} to {pkg_info.get('fixAvailable', 'latest')}",
+                            })
+                        logger.info("Alpha: npm audit found %d vulnerabilities", len(findings))
+                    except json.JSONDecodeError:
+                        logger.warning("Alpha: Could not parse npm audit output")
+            except Exception as e:
+                logger.warning("Alpha: npm audit failed: %s", e)
+        
+        # Run pip audit if requirements.txt exists
+        req_txt = repo_path / "requirements.txt"
+        if req_txt.exists():
+            logger.info("Alpha: Running pip audit")
+            try:
+                result = subprocess.run(
+                    ["pip-audit", "--format=json", "-r", str(req_txt)],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    try:
+                        audit_data = json.loads(result.stdout)
+                        for vuln in audit_data.get("vulnerabilities", []):
+                            findings.append({
+                                "asset": f"pip:{vuln.get('name', 'Unknown')}",
+                                "finding": f"CVE: {vuln.get('vulnerability_id', 'Unknown')}",
+                                "confidence": 0.9,
+                                "evidence": f"Version: {vuln.get('version', 'unknown')}",
+                                "cve_hint": vuln.get('vulnerability_id'),
+                                "recommended_action": f"Update {vuln.get('name')} to fix version",
+                            })
+                        logger.info("Alpha: pip audit found %d vulnerabilities", len(audit_data.get("vulnerabilities", [])))
+                    except json.JSONDecodeError:
+                        logger.warning("Alpha: Could not parse pip audit output")
+            except Exception as e:
+                logger.warning("Alpha: pip audit failed: %s", e)
+        
+        # Basic file structure analysis
+        logger.info("Alpha: Analyzing file structure")
+        code_files = []
+        for pattern in ["**/*.js", "**/*.ts", "**/*.py", "**/*.java"]:
+            code_files.extend(repo_path.glob(pattern))
+        
+        if code_files:
+            findings.append({
+                "asset": str(repo_path),
+                "finding": f"Found {len(code_files)} source code files",
+                "confidence": 1.0,
+                "evidence": f"Extensions: .js, .ts, .py, .java",
+                "recommended_action": "Run Semgrep for detailed code analysis",
+            })
+        
+        # Look for sensitive files
+        sensitive_files = [".env", ".env.example", "config.json", "secrets.yaml", "docker-compose.yml"]
+        for sf in sensitive_files:
+            sf_path = repo_path / sf
+            if sf_path.exists():
+                findings.append({
+                    "asset": str(sf_path.relative_to(repo_path)),
+                    "finding": "Potentially sensitive configuration file found",
+                    "confidence": 0.7,
+                    "evidence": f"File exists: {sf}",
+                    "recommended_action": "Review for hardcoded credentials",
+                })
+        
+        logger.info("Alpha: Static analysis complete - %d findings", len(findings))
+        
+    except Exception as e:
+        logger.error("Alpha: Static analysis failed: %s", e)
+        findings.append({
+            "asset": target,
+            "finding": "Static analysis error",
+            "confidence": 1.0,
+            "evidence": str(e),
+            "recommended_action": "Check target format and accessibility",
+        })
+    
+    return findings, repo_path

@@ -1,8 +1,11 @@
 """
 Robust JSON parsing utilities for LLM output.
 
-This module provides bulletproof parsing with retry/fallback mechanisms
-to ensure LangGraph never crashes due to malformed JSON from LLMs.
+PentAGI v4.0 enhancements:
+  - Removed "error"/"failed" from refusal patterns (valid in security output)
+  - Added truncated JSON completion (closes unclosed braces/brackets)
+  - Parse failures logged to Redis for critic analysis
+  - Max 3 parse retries before marking task failed
 """
 
 from __future__ import annotations
@@ -19,17 +22,17 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)
 
 
-# Patterns that indicate the LLM is refusing or erroring
+# Patterns that indicate the LLM is refusing
+# NOTE: "error" and "failed" REMOVED — they appear in valid security tool output
+# e.g. "SQL syntax error" or "login failed" are valid exploit results
 REFUSAL_PATTERNS = [
     r"i cannot",
     r"i can't",
     r"unable to",
     r"not able to",
     r"cannot fulfill",
-    r"apologize",
-    r"sorry",
-    r"error",
-    r"failed",
+    r"i apologize",
+    r"i'm sorry",
 ]
 
 # Patterns for conversational filler that should be stripped
@@ -82,6 +85,7 @@ def extract_json_from_text(text: str) -> dict | list | None:
     3. Markdown code block extraction
     4. Regex extraction
     5. Bracket matching
+    6. Truncated JSON completion
     """
     if not text:
         return None
@@ -103,7 +107,10 @@ def extract_json_from_text(text: str) -> dict | list | None:
         try:
             return json.loads(code_block_match.group(1).strip())
         except json.JSONDecodeError:
-            pass
+            # Try completing truncated JSON from code block
+            completed = _complete_truncated_json(code_block_match.group(1).strip())
+            if completed is not None:
+                return completed
     
     # Strategy 3: Find JSON object in text
     # Look for { ... } pattern
@@ -122,7 +129,72 @@ def extract_json_from_text(text: str) -> dict | list | None:
         except json.JSONDecodeError:
             pass
     
+    # Strategy 5: Try completing truncated JSON
+    completed = _complete_truncated_json(text)
+    if completed is not None:
+        return completed
+    
     return None
+
+
+def _complete_truncated_json(text: str) -> dict | list | None:
+    """
+    Attempt to complete truncated JSON by closing unclosed braces/brackets.
+    Handles cases where LLM output was cut off mid-JSON.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    
+    # Find the start of JSON
+    start_idx = -1
+    for i, ch in enumerate(text):
+        if ch in ('{', '['):
+            start_idx = i
+            break
+    
+    if start_idx < 0:
+        return None
+    
+    text = text[start_idx:]
+    
+    # Count unclosed braces/brackets
+    stack = []
+    in_string = False
+    escape_next = False
+    
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\':
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ('{', '['):
+            stack.append('}' if ch == '{' else ']')
+        elif ch in ('}', ']'):
+            if stack:
+                stack.pop()
+    
+    if not stack:
+        return None  # Already balanced or no JSON structure
+    
+    # Remove trailing comma before closing
+    completed = text.rstrip().rstrip(',')
+    
+    # Close all unclosed braces/brackets
+    for closer in reversed(stack):
+        completed += closer
+    
+    try:
+        return json.loads(completed)
+    except json.JSONDecodeError:
+        return None
 
 
 def parse_with_retry(
@@ -183,16 +255,34 @@ def parse_with_retry(
         logger.warning("All parse attempts failed, calling failure handler")
         return on_failure(text)
     
+    # Log to Redis for critic analysis (fire-and-forget)
+    _log_parse_failure_async(text)
+    
     return None
+
+
+def _log_parse_failure_async(text: str) -> None:
+    """Fire-and-forget parse failure logging to Redis."""
+    try:
+        import asyncio
+        from core.redis_bus import redis_bus
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(
+                redis_bus.log_parse_failure("current", "parsing", text[:500])
+            )
+    except Exception:
+        pass  # Non-critical — don't crash on logging failure
 
 
 def _try_parse(text: str, schema: type[T] | None) -> dict | T | None:
     """Try to parse text as JSON, optionally validating against schema."""
     
-    # Check for refusals
-    text_lower = text.lower()
+    # Check for refusals — only check clear refusal patterns, not "error"/"failed"
+    text_lower = text.lower().strip()
+    # Only match refusals at the START of text (not embedded in JSON)
     for pattern in REFUSAL_PATTERNS:
-        if re.search(pattern, text_lower):
+        if re.match(pattern, text_lower):
             logger.warning(f"LLM refusal detected: {pattern}")
             return None
     
@@ -377,7 +467,12 @@ def sanitize_json_output(text: str) -> dict | list | None:
             except (json.JSONDecodeError, ValueError):
                 continue
     
-    # Strategy 5: Manual key-value extraction for simple objects
+    # Strategy 5: Try truncated JSON completion
+    completed = _complete_truncated_json(text)
+    if completed is not None:
+        return completed
+    
+    # Strategy 6: Manual key-value extraction for simple objects
     # This handles cases like {key: "value", key2: 123}
     try:
         simple_obj_match = re.search(r'\{([^}]*)\}', text)

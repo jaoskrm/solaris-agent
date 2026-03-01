@@ -33,10 +33,17 @@ logger = logging.getLogger(__name__)
 def parse_args():
     parser = argparse.ArgumentParser(description="VibeCheck Combined Red Team + Blue Team Engine")
     parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["live", "static"],
+        default="live",
+        help="Scan mode: 'live' for running app URL, 'static' for GitHub repo or local path (default: live)"
+    )
+    parser.add_argument(
         "--target",
         type=str,
         default="http://localhost:3000",
-        help="Target URL to attack (default: http://localhost:3000)"
+        help="Target URL to attack (live mode) or GitHub URL/file path (static mode) (default: http://localhost:3000)"
     )
     parser.add_argument(
         "--objective",
@@ -47,8 +54,13 @@ def parse_args():
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=3,
-        help="Maximum iterations for the Red Team (default: 3)"
+        default=1,
+        help="Maximum iterations for the Red Team (default: 1, exploits run in parallel)"
+    )
+    parser.add_argument(
+        "--fast-mode",
+        action="store_true",
+        help="Fast mode: skip recon tools (nmap), go straight to exploits (live mode only)"
     )
     return parser.parse_args()
 
@@ -64,6 +76,12 @@ BLUE_TEAM_PATH = PROJECT_ROOT / "Blue_team" / "solaris-agent" / "vibecheck"
 sys.path.insert(0, str(RED_TEAM_PATH))
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Import banners
+from core.banners import print_mode_banner, print_phase_banner, print_summary_table
+
+# Print mode banner at startup
+print_mode_banner(ARGS.mode, ARGS.target)
+
 # Import Red Team components first (this sets up the core module correctly)
 logger.info("Loading Red Team components...")
 from core.redis_bus import redis_bus, DEFENSE_ANALYTICS
@@ -72,14 +90,12 @@ from core.config import settings as red_settings
 # Register tools for Red Team
 from agents.tools.registry import tool_registry
 from agents.tools.nmap_tool import nmap_tool
-from agents.tools.nuclei_tool import nuclei_tool
 from agents.tools.curl_tool import curl_tool
 from agents.tools.python_exec import python_exec_tool
 from agents.tools.web_search_tool import register_web_search_tools
 
-# Register all tools
+# Register all tools (nuclei removed - causes 60s timeouts)
 tool_registry.register(nmap_tool)
-tool_registry.register(nuclei_tool)
 tool_registry.register(curl_tool)
 tool_registry.register(python_exec_tool)
 
@@ -211,38 +227,65 @@ class CombinedEngine:
                 "objective": ARGS.objective,
                 "target": ARGS.target,
                 "max_iterations": ARGS.max_iterations,
+                "fast_mode": ARGS.fast_mode,
+                "mode": ARGS.mode,
             }
             
             logger.info(f"Red Team: Initializing mission {mission_config['mission_id']}")
+            logger.info(f"  Mode: {mission_config['mode'].upper()}")
             logger.info(f"  Target: {mission_config['target']}")
             logger.info(f"  Objective: {mission_config['objective']}")
             
+            # Clear stale tokens and payload stores from previous runs
+            try:
+                await redis_bus.client.delete(f"payload_attempts:{mission_config['mission_id']}")
+                await redis_bus.client.delete(f"redteam:findings:{mission_config['mission_id']}:tokens")
+                await redis_bus.client.delete(f"redteam:blackboard:{mission_config['mission_id']}:repo_path")
+                # Fix Issue 3: Clear payload stores that cause "already tried" on fresh runs
+                await redis_bus.client.delete(f"payload_store:{mission_config['mission_id']}")
+                await redis_bus.client.delete(f"tried_payloads:{mission_config['mission_id']}")
+                await redis_bus.client.delete(f"exploit_history:{mission_config['mission_id']}")
+                # Clear global payload tracking keys
+                await redis_bus.client.delete("payload_store")
+                await redis_bus.client.delete("tried_payloads")
+                await redis_bus.client.delete("global_exploit_history")
+                logger.info("Red Team: Cleared stale tokens, payload stores, and mission data from Redis")
+            except Exception as e:
+                logger.warning(f"Red Team: Could not clear Redis data: {e}")
+            
             # Configure network isolation for the sandbox (PentAGI-style security)
+            # SKIP network isolation for localhost targets - sandbox uses host network
             logger.info("Red Team: Configuring network isolation...")
             try:
                 from sandbox.sandbox_manager import shared_sandbox_manager
                 from urllib.parse import urlparse
                 
-                # Ensure sandbox is running
-                await shared_sandbox_manager.ensure_shared_sandbox()
-                
                 # Extract target IP/hostname for network restrictions
                 parsed = urlparse(ARGS.target)
                 target_host = parsed.hostname or ARGS.target
                 
-                # Configure iptables rules to restrict outbound connections
-                # Allow: target host, localhost (for Ollama), DNS
-                # Block: everything else
-                net_result = await shared_sandbox_manager.configure_network_isolation(
-                    target_ip=target_host,
-                    allowed_ports=[80, 443, 3000, 8080, 11434, 6379, 6333]
-                )
-                
-                if net_result.success:
-                    logger.info(f"Red Team: Network isolation active - only {target_host} accessible")
+                # Skip network isolation for localhost/127.0.0.1 targets
+                # The sandbox uses host network mode, so localhost is the host machine
+                if target_host in ('localhost', '127.0.0.1', '::1', '0.0.0.0'):
+                    logger.info(f"Red Team: Skipping network isolation for localhost target ({target_host})")
+                    logger.info("Red Team: Sandbox has full host network access")
                 else:
-                    logger.warning(f"Red Team: Could not configure network isolation: {net_result.stderr}")
-                    logger.info("Red Team: Continuing without network restrictions")
+                    # Ensure sandbox is running
+                    await shared_sandbox_manager.ensure_shared_sandbox()
+                    
+                    # Configure iptables rules to restrict outbound connections
+                    # Allow: target host, localhost (for Ollama), DNS
+                    # Block: everything else
+                    net_result = await shared_sandbox_manager.configure_network_isolation(
+                        target_ip=target_host,
+                        allowed_ports=[80, 443, 3000, 8080, 11434, 6379, 6333]
+                    )
+                    
+                    if net_result.success:
+                        logger.info(f"Red Team: Network isolation active - only {target_host} accessible")
+                    else:
+                        logger.warning(f"Red Team: Could not configure network isolation: {net_result.stderr}")
+                        logger.info("Red Team: Continuing without network restrictions")
             except Exception as net_err:
                 logger.warning(f"Red Team: Network isolation setup failed: {net_err}")
                 logger.info("Red Team: Continuing without network restrictions")
@@ -260,6 +303,8 @@ class CombinedEngine:
                 objective=mission_config["objective"],
                 target=mission_config["target"],
                 max_iterations=mission_config["max_iterations"],
+                fast_mode=mission_config.get("fast_mode", False),
+                mode=mission_config.get("mode", "live"),
             )
             
             logger.info("Red Team: Starting mission execution...")

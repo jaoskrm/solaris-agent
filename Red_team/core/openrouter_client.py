@@ -1,14 +1,58 @@
+from __future__ import annotations
+
 """
 OpenRouter client for cloud LLM inference.
 Uses the OpenAI-compatible API at https://openrouter.ai/api/v1.
 
-Includes retry with exponential backoff and model fallback for rate limits.
+PentAGI v4.0: 9-model cascade with instant failover.
+Priority order:
+  1st → meta-llama/llama-3.3-70b-instruct:free
+  2nd → openai/gpt-oss-120b:free
+  3rd → nousresearch/hermes-3-llama-3.1-405b:free
+  4th → cognitivecomputations/dolphin-mistral-24b-venice-edition:free
+  5th → upstage/solar-pro-3:free
+  6th → z-ai/glm-4.5-air:free
+  7th → stepfun/step-3.5-flash:free
+  8th → google/gemma-3-27b-it:free
+  9th → mistralai/mistral-small-3.1-24b-instruct:free
+  10th → Ollama local (last resort - no limits)
+
+NOTE: All OpenRouter free models have rate limits (~10-20 req/min).
+For production use, set OPENROUTER_API_KEY in .env for paid access.
 """
 
-from __future__ import annotations
+# PentAGI v4.0: 9-model cascade - instant skip on 429/timeout
+# On any error or rate limit: immediately try next model (zero wait time)
+FALLBACK_MODELS = [
+    "openai/gpt-oss-120b:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+    "upstage/solar-pro-3:free",
+    "z-ai/glm-4.5-air:free",
+    "stepfun/step-3.5-flash:free",
+    "google/gemma-3-27b-it:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+]  # Ollama is last resort after all OpenRouter models fail
+
+# Model role recommendations (for logging/debugging)
+MODEL_ROLES = {
+    "meta-llama/llama-3.3-70b-instruct:free": "Primary/Llama-3.3",
+    "openai/gpt-oss-120b:free": "Backup/GPT-OSS",
+    "nousresearch/hermes-3-llama-3.1-405b:free": "Reasoning/Hermes-405B",
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free": "Uncensored/Dolphin",
+    "upstage/solar-pro-3:free": "Solid/Solar-Pro",
+    "z-ai/glm-4.5-air:free": "Fast/GLM-4.5",
+    "stepfun/step-3.5-flash:free": "Fast/Step-Flash",
+    "google/gemma-3-27b-it:free": "Reliable/Gemma-3",
+    "mistralai/mistral-small-3.1-24b-instruct:free": "Small/Mistral",
+}
+
+# Per-request timeout before switching to next model (20s for better success rate)
+MODEL_TIMEOUT_SECONDS = 20
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from openai import AsyncOpenAI, RateLimitError, NotFoundError
@@ -17,21 +61,13 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Fallback chain for when primary model is rate-limited or unavailable
-# Primary model: qwen/qwq-32b (32B parameter Qwen model with QWQ capabilities)
-FALLBACK_MODELS = [
-    "qwen/qwen-2.5-72b-instruct",  # Fallback to larger Qwen model
-    "deepseek/deepseek-chat",       # DeepSeek V3
-    "anthropic/claude-3.5-sonnet",  # Claude 3.5 Sonnet
-]
-
 
 class OpenRouterClient:
     """Async wrapper around OpenRouter's OpenAI-compatible API."""
 
     BASE_URL = "https://openrouter.ai/api/v1"
-    MAX_RETRIES = 5
-    BASE_DELAY = 2  # seconds
+    MAX_RETRIES = 2  # Reduced from 5 — fail fast, try next model
+    BASE_DELAY = 1  # seconds
 
     def __init__(self, api_key: str | None = None):
         self._api_key = api_key or settings.openrouter_api_key
@@ -50,59 +86,76 @@ class OpenRouterClient:
         **kwargs: Any,
     ) -> str:
         """
-        Send a chat completion with retry + model fallback.
+        Send a chat completion with 10s timeout + model fallback cascade.
+        Logs which model was used for each successful request.
+        
+        Note: Free tier models have rate limits. If all OpenRouter models fail,
+        the caller should fall back to Ollama local inference.
         """
         models_to_try = [model] + [m for m in FALLBACK_MODELS if m != model]
 
         for model_name in models_to_try:
             for attempt in range(self.MAX_RETRIES):
                 try:
-                    response = await self._client.chat.completions.create(
-                        model=model_name,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        **kwargs,
+                    start_ts = time.monotonic()
+                    # 15-second timeout per model attempt
+                    response = await asyncio.wait_for(
+                        self._client.chat.completions.create(
+                            model=model_name,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            **kwargs,
+                        ),
+                        timeout=MODEL_TIMEOUT_SECONDS,
                     )
+                    elapsed = time.monotonic() - start_ts
+
                     # Handle None response or empty choices
                     if response is None or not response.choices:
-                        logger.warning("OpenRouter: empty response from %s, trying fallback...", model_name)
+                        logger.warning("OpenRouter: empty response from %s (%.1fs), trying next model...", model_name, elapsed)
                         break  # Try next model
+
                     content = response.choices[0].message.content or ""
-                    if model_name != model:
-                        logger.info("OpenRouter: used fallback model %s", model_name)
-                    logger.debug("OpenRouter %s response: %d chars", model_name, len(content))
+                    role = MODEL_ROLES.get(model_name, "General")
+                    logger.info(
+                        "✅ LLM [%s|%s] responded in %.1fs (%d chars)",
+                        model_name, role, elapsed, len(content),
+                    )
                     return content
 
-                except RateLimitError as e:
-                    delay = min(self.BASE_DELAY * (2 ** attempt), 32)
+                except asyncio.TimeoutError:
                     logger.warning(
-                        "OpenRouter 429 on %s (attempt %d/%d), waiting %ds...",
-                        model_name, attempt + 1, self.MAX_RETRIES, delay,
+                        "⏱️ LLM [%s] timed out after %ds (attempt %d/%d), trying next...",
+                        model_name, MODEL_TIMEOUT_SECONDS, attempt + 1, self.MAX_RETRIES,
                     )
-                    if attempt < self.MAX_RETRIES - 1:
-                        await asyncio.sleep(delay)
-                    else:
-                        logger.warning("Max retries on %s, trying fallback...", model_name)
-                        break  # Try next model
+                    break  # Don't retry same model on timeout — try next model
+
+                except RateLimitError:
+                    # Free tier models are rate-limited by design (~10-20 req/min)
+                    # Don't waste time retrying - immediately try next model
+                    logger.warning(
+                        "🚫 LLM [%s] rate limited (429) - free tier limit reached, trying next model...",
+                        model_name,
+                    )
+                    break  # Immediately try next model - no retries on rate limit
 
                 except NotFoundError:
-                    logger.warning("Model %s not found, trying fallback...", model_name)
+                    logger.warning("❌ LLM [%s] not found on OpenRouter, trying next...", model_name)
                     break  # Try next model
-                    
+
                 except Exception as e:
-                    logger.warning("OpenRouter error on %s: %s, trying fallback...", model_name, e)
+                    logger.warning("❌ LLM [%s] error: %s, trying next...", model_name, str(e)[:100])
                     break  # Try next model
 
         raise RuntimeError(
-            f"All OpenRouter models exhausted after retries. "
-            f"Tried: {', '.join(models_to_try)}"
+            f"All OpenRouter models exhausted. Tried: {', '.join(models_to_try)}"
         )
 
     async def ping(self) -> bool:
         """Check OpenRouter connectivity."""
         try:
-            await self._client.models.list()
+            await asyncio.wait_for(self._client.models.list(), timeout=5)
             return True
         except Exception:
             return False

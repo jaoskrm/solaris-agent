@@ -12,9 +12,61 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Dict, Set
+import json
+import threading
+import time
+
+# WebSocket connection manager
+class ConnectionManager:
+    """Manages WebSocket connections for real-time mission updates."""
+    
+    def __init__(self):
+        # mission_id -> set of WebSocket connections
+        self.active_connections: Dict[str, Set[WebSocket]] = {}
+        self._lock = threading.Lock()
+    
+    async def connect(self, websocket: WebSocket, mission_id: str):
+        """Accept a new WebSocket connection."""
+        await websocket.accept()
+        with self._lock:
+            if mission_id not in self.active_connections:
+                self.active_connections[mission_id] = set()
+            self.active_connections[mission_id].add(websocket)
+        logger.info(f"WebSocket client connected for mission {mission_id}")
+    
+    def disconnect(self, websocket: WebSocket, mission_id: str):
+        """Remove a WebSocket connection."""
+        with self._lock:
+            if mission_id in self.active_connections:
+                self.active_connections[mission_id].discard(websocket)
+                if not self.active_connections[mission_id]:
+                    del self.active_connections[mission_id]
+        logger.info(f"WebSocket client disconnected from mission {mission_id}")
+    
+    async def broadcast_to_mission(self, mission_id: str, message: dict):
+        """Broadcast a message to all connected clients for a mission."""
+        if mission_id not in self.active_connections:
+            return
+        
+        disconnected = []
+        for connection in self.active_connections[mission_id]:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.warning(f"Failed to send WebSocket message: {e}")
+                disconnected.append(connection)
+        
+        # Clean up disconnected clients
+        with self._lock:
+            for conn in disconnected:
+                self.active_connections[mission_id].discard(conn)
+
+# Global connection manager
+ws_manager = ConnectionManager()
 
 # Add project root to path
 import sys
@@ -83,6 +135,73 @@ logger.info("CORS middleware configured")
 
 # In-memory storage for mission states (in production, use a database)
 missions: dict[str, dict] = {}
+
+# Redis subscriber for real-time events
+_redis_subscriber_task = None
+
+async def redis_event_subscriber():
+    """Subscribe to Redis Blackboard events and broadcast to WebSocket clients.
+    
+    This runs as a background task and listens for EXPLOIT_RESULT and 
+    INTELLIGENCE_REPORT events from the Redis bus, then broadcasts them
+    to connected WebSocket clients.
+    """
+    try:
+        # Import redis_bus
+        from core.redis_bus import redis_bus, EXPLOIT_RESULT, INTELLIGENCE_REPORT
+        
+        logger.info("Starting Redis event subscriber for WebSocket broadcasting")
+        
+        # Subscribe to relevant channels
+        channels = [EXPLOIT_RESULT, INTELLIGENCE_REPORT, "mission_events"]
+        
+        async for message in redis_bus.subscribe(channels):
+            try:
+                # Parse the message
+                if isinstance(message, dict):
+                    mission_id = message.get("mission_id") or message.get("payload", {}).get("mission_id")
+                    event_type = message.get("type", "unknown")
+                    payload = message.get("payload", message)
+                    
+                    if mission_id:
+                        # Broadcast to WebSocket clients
+                        await ws_manager.broadcast_to_mission(
+                            mission_id,
+                            {
+                                "type": event_type,
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "payload": payload,
+                            }
+                        )
+                        logger.debug(f"Broadcasted {event_type} event for mission {mission_id}")
+            except Exception as e:
+                logger.error(f"Error processing Redis message: {e}")
+                
+    except ImportError:
+        logger.warning("Redis bus not available - WebSocket real-time updates disabled")
+    except Exception as e:
+        logger.error(f"Redis subscriber error: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on API startup."""
+    global _redis_subscriber_task
+    _redis_subscriber_task = asyncio.create_task(redis_event_subscriber())
+    logger.info("API startup complete - WebSocket broadcaster ready")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up background tasks on API shutdown."""
+    global _redis_subscriber_task
+    if _redis_subscriber_task:
+        _redis_subscriber_task.cancel()
+        try:
+            await _redis_subscriber_task
+        except asyncio.CancelledError:
+            pass
+    logger.info("API shutdown complete")
 
 
 # ── Request/Response Models ────────────────────────────────────────────────
@@ -334,6 +453,81 @@ async def get_mission_status(mission_id: str):
         max_iterations=mission.get("max_iterations", 5),
         error_message=mission["errors"][0] if mission["errors"] else None,
     )
+
+
+@app.websocket("/ws/missions/{mission_id}")
+async def mission_websocket(websocket: WebSocket, mission_id: str):
+    """WebSocket endpoint for real-time mission updates.
+    
+    Connect to this endpoint to receive live updates as the Red Team
+    agents execute exploits and discover vulnerabilities.
+    
+    Events streamed:
+    - exploit_result: When Gamma agent completes an exploit
+    - intelligence_report: When Alpha agent discovers information
+    - critic_analysis: When Critic agent grades an exploit
+    - tool_execution: When a tool is executed
+    - phase_transition: When mission phase changes
+    
+    Example JavaScript connection:
+        const ws = new WebSocket('ws://localhost:8000/ws/missions/123');
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            console.log('Mission update:', data);
+        };
+    """
+    await ws_manager.connect(websocket, mission_id)
+    
+    try:
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "connection_established",
+            "mission_id": mission_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "message": "Connected to mission event stream",
+        })
+        
+        # Keep connection alive and handle client messages
+        while True:
+            try:
+                # Wait for client messages (optional - clients can send commands)
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                
+                # Handle client commands
+                if message.get("action") == "ping":
+                    await websocket.send_json({
+                        "type": "pong",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
+                elif message.get("action") == "get_status":
+                    # Send current mission status
+                    if mission_id in missions:
+                        await websocket.send_json({
+                            "type": "mission_status",
+                            "payload": missions[mission_id],
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"Mission {mission_id} not found",
+                        })
+                        
+            except json.JSONDecodeError:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Invalid JSON received",
+                })
+            except Exception as e:
+                logger.error(f"WebSocket error for mission {mission_id}: {e}")
+                break
+                
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket client disconnected from mission {mission_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        ws_manager.disconnect(websocket, mission_id)
 
 
 @app.get("/api/mission/{mission_id}/report", response_model=MissionReportResponse)

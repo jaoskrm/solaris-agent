@@ -12,6 +12,7 @@ This enables the Actor-Critic loop:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -19,9 +20,18 @@ from typing import Any
 
 from core.llm_client import llm_client
 from core.config import settings
+from core.parsing import parse_with_retry, sanitize_json_output
 from sandbox.sandbox_manager import ExecResult
 
 logger = logging.getLogger(__name__)
+
+# Step 3: Import Supabase client for non-blocking event logging
+try:
+    from core.supabase_client import fire_and_forget_log_event, get_supabase_client
+    HAS_SUPABASE = True
+except ImportError:
+    HAS_SUPABASE = False
+    logger.warning("Supabase client not available - event logging disabled")
 
 
 # Error type patterns for automatic detection
@@ -96,6 +106,24 @@ JUICE_SHOP_PATTERNS = {
     "validation_error": [
         r"Validation error",
         r"isValidationError",
+    ],
+    "success_indicators": [
+        r"\"id\":",
+        r"\"token\":",
+        r"\"email\":",
+        r"\"username\":",
+        r"\"role\":",
+        r"\"password\":",
+        r"\"content\":",
+        r"\"rating\":",
+        r"\"comment\":",
+        r"authentication",
+        r"success",
+        r"created",
+        r"updated",
+        r"admin",
+        r"customer",
+        r"200 OK",
     ],
     "jwt_error": [
         r"invalid token",
@@ -223,6 +251,74 @@ Previous attempts (for contextual memory):
 Analyze and respond in JSON format."""
 
 
+def quick_evaluate(exploit_type: str, result: ExecResult) -> dict[str, Any] | None:
+    """
+    Quick pre-evaluation without LLM call for obvious success/failure cases.
+    Returns evaluation dict if clear case detected, None otherwise.
+    """
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
+    combined = stdout + stderr
+    
+    # Success indicators
+    success_patterns = {
+        "sqli": [
+            r'"token":\s*"[^"]+"',  # JWT token returned
+            r'"id":\s*\d+',  # User ID returned
+            r'"email":\s*"[^"]+"',  # Email returned
+            r'Sequelize',  # SQL error means query executed
+            r'sqlite',  # SQLite error
+        ],
+        "info_disclosure": [
+            r'\[\s*\{[^}]+"id"',  # JSON array with objects containing id
+            r'"createdAt":',  # Database timestamps
+            r'"updatedAt":',
+        ],
+        "auth_bypass": [
+            r'admin',  # Admin access
+            r'dashboard',  # Dashboard loaded
+        ],
+        "sensitive_data_exposure": [
+            r'-----BEGIN',  # Private keys
+            r'password',  # Password in response
+            r'api[_-]?key',  # API keys
+            r'secret',  # Secrets
+            r'\.git',  # Git exposure
+        ],
+    }
+    
+    # Check for success patterns
+    if exploit_type.lower() in success_patterns:
+        for pattern in success_patterns[exploit_type.lower()]:
+            if re.search(pattern, combined, re.IGNORECASE):
+                return {
+                    "success": True,
+                    "evidence": f"Pattern match: {pattern[:50]}...",
+                    "error_type": "none",
+                    "feedback": f"Successfully detected {exploit_type} vulnerability.",
+                    "severity": "high",
+                    "session_token_found": bool(re.search(r'"token":\s*"([^"]+)"', combined)),
+                    "session_token_value": None,
+                    "recommendation": "pivot",
+                }
+    
+    # Failure indicators
+    if result.exit_code != 0:
+        if "404" in combined or "Not Found" in combined:
+            return {
+                "success": False,
+                "evidence": "Endpoint returned 404",
+                "error_type": "not_found",
+                "feedback": "Endpoint does not exist. Try different path.",
+                "severity": "none",
+                "session_token_found": False,
+                "session_token_value": None,
+                "recommendation": "pivot",
+            }
+    
+    return None  # Need LLM evaluation
+
+
 async def analyze_exploit_result(
     exploit_type: str,
     tool_name: str,
@@ -301,13 +397,77 @@ async def analyze_exploit_result(
             )
             evaluation["severity"] = "high"
         
+        # PentAGI v4.0: HTTP response code pivot logic
+        response_code = evaluation.get("response_code")
+        if response_code and not evaluation.get("success"):
+            pivot = _response_code_pivot(response_code, evaluation.get("error_type", "unknown"))
+            if pivot:
+                evaluation["feedback"] = pivot + " " + evaluation.get("feedback", "")
+        
         logger.info(f"Critic: Evaluation complete - success={evaluation.get('success')}, error_type={evaluation.get('error_type')}, recommendation={evaluation.get('recommendation')}")
+        
+        # Step 3: Non-blocking Supabase event logging (fire-and-forget)
+        # This will NOT block or slow down the mission execution
+        if HAS_SUPABASE:
+            try:
+                # Extract mission_id from context if available
+                mission_id = "unknown"
+                # Try to find mission_id in previous_attempts or intel
+                if previous_attempts and len(previous_attempts) > 0:
+                    mission_id = previous_attempts[0].get("mission_id", "unknown")
+                elif intel and len(intel) > 0:
+                    mission_id = intel[0].get("mission_id", "unknown")
+                
+                # Build the event payload
+                event_payload = {
+                    "exploit_type": exploit_type,
+                    "tool_name": tool_name,
+                    "command": command[:200],  # Truncate for storage
+                    "exit_code": result.exit_code,
+                    "success": evaluation.get("success", False),
+                    "error_type": evaluation.get("error_type", "unknown"),
+                    "severity": evaluation.get("severity", "low"),
+                    "feedback": evaluation.get("feedback", "")[:500],
+                    "recommendation": evaluation.get("recommendation", ""),
+                    "evidence": evaluation.get("evidence", "")[:500],
+                    "timestamp": asyncio.get_event_loop().time(),
+                }
+                
+                # Fire-and-forget: don't await, don't block, wrap in try/except
+                asyncio.create_task(
+                    _log_critic_event_async(mission_id, event_payload)
+                )
+            except Exception as log_err:
+                # Supabase failures must never crash the mission
+                logger.debug(f"Supabase logging skipped: {log_err}")
+        
         return evaluation
         
     except Exception as e:
         logger.error(f"Critic: Analysis failed with exception: {e}")
         # Fallback to basic evaluation
         return _fallback_evaluation(result)
+
+
+async def _log_critic_event_async(mission_id: str, payload: dict):
+    """Async helper to log critic events to Supabase.
+    
+    This runs as a background task and will not block the main execution.
+    Failures are silently logged and do not affect the mission.
+    """
+    try:
+        from core.supabase_client import get_supabase_client
+        supabase = get_supabase_client()
+        if supabase._enabled:
+            await supabase.log_mission_event(
+                mission_id=mission_id,
+                event_type="critic_analysis",
+                payload_json=payload
+            )
+            logger.debug(f"Logged critic event to Supabase for mission {mission_id}")
+    except Exception as e:
+        # Silently fail - mission must continue regardless
+        logger.debug(f"Supabase logging failed (non-critical): {e}")
 
 
 async def quick_evaluate(
@@ -389,31 +549,45 @@ def _auto_detect_error_type(result: ExecResult) -> str:
 
 
 def _parse_critic_response(response: str) -> dict[str, Any]:
-    """Parse JSON from Critic LLM response."""
-    import re as regex_module
+    """Parse JSON from Critic LLM response using robust parsing."""
+    # Use robust parser first
+    result = parse_with_retry(response)
+    if result is not None and isinstance(result, dict):
+        return result
     
-    # Clean the response - remove markdown code blocks
+    # Fallback to sanitize
+    sanitized = sanitize_json_output(response)
+    if sanitized is not None and isinstance(sanitized, dict):
+        return sanitized
+    
+    # Last resort: simple JSON extraction
     cleaned = response.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
         lines = [l for l in lines if not l.strip().startswith("```")]
         cleaned = "\n".join(lines)
     
-    # Try to extract JSON
     try:
-        # Look for JSON object
-        json_match = regex_module.search(r'\{[^{}]*\}', cleaned, regex_module.DOTALL)
+        json_match = re.search(r'\{[^{}]*\}', cleaned, re.DOTALL)
         if json_match:
             return json.loads(json_match.group())
     except json.JSONDecodeError:
         pass
     
-    # Fallback: try parsing entire response
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.warning(f"Critic: Failed to parse JSON response: {e}")
-        raise
+    return json.loads(cleaned)
+
+
+def _response_code_pivot(response_code: int, error_type: str) -> str:
+    """Generate pivot recommendation based on HTTP response code."""
+    if response_code == 403:
+        return "🔄 PIVOT: 403 Forbidden → Try privilege escalation, different user context, or X-Forwarded-For bypass."
+    elif response_code == 401:
+        return "🔄 PIVOT: 401 Unauthorized → Try auth bypass with found credentials from Redis findings, or JWT manipulation."
+    elif response_code == 500:
+        return "🔄 PIVOT: 500 Server Error → Mark as potentially injectable! Escalate to SQLi/XXE with error-based payloads."
+    elif response_code == 429:
+        return "🔄 PIVOT: 429 Rate Limited → Add delays, rotate User-Agent, try different endpoint."
+    return ""
 
 
 def _generate_stealth_recommendation(error_type: str) -> str:
@@ -559,19 +733,26 @@ def extract_session_tokens(result: ExecResult) -> dict[str, str]:
     tokens = {}
     combined = (result.stdout or "") + (result.stderr or "")
     
-    # Common session/token patterns
+    # Common session/token patterns - capture full token values
     patterns = [
         (r'session[_-]?id["\s:=]+([^\s",}]+)', "session_id"),
-        (r'token["\s:=]+([^\s",}]+)', "token"),
-        (r'Authorization:\s*([^\s]+)', "authorization"),
-        (r'Bearer\s+([^\s]+)', "bearer_token"),
+        (r'["\']token["\']?\s*:\s*["\']?([^"\',}\s]+)', "token"),
+        (r'Bearer\s+([a-zA-Z0-9_\-\.]+)', "bearer_token"),
         (r'Set-Cookie:\s*([^=]+)=([^;]+)', "cookie"),
-        (r'jwt["\s:=]+([^\s",}]+)', "jwt"),
+        (r'["\']jwt["\']?\s*:\s*["\']?([^"\',}\s]+)', "jwt"),
+        # JWT pattern - captures standard JWT format
+        (r'["\']?([a-zA-Z0-9_\-]*\.[a-zA-Z0-9_\-]*\.[a-zA-Z0-9_\-]*)["\']?', "jwt"),
     ]
     
     for pattern, name in patterns:
-        match = re.search(pattern, combined, re.IGNORECASE)
-        if match:
-            tokens[name] = match.group(1)
+        matches = re.findall(pattern, combined, re.IGNORECASE)
+        for match in matches:
+            if match and len(match) > 5:  # Skip very short/empty values
+                if isinstance(match, tuple):
+                    # Handle cookie pattern with 2 groups
+                    tokens[name] = f"{match[0]}={match[1]}"
+                else:
+                    tokens[name] = match
+                break  # Only take first valid match per pattern
     
     return tokens

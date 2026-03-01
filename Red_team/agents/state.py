@@ -67,3 +67,7 @@ class RedTeamState(TypedDict):
 
     # ── Error Handling ─────────────────────────────────────────
     errors: list[str]  # Error messages accumulated during execution
+    
+    # ── Mode Configuration ─────────────────────────────────────
+    mode: str  # "live" for running app, "static" for code analysis
+    fast_mode: bool  # Skip recon tools for faster execution

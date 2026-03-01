@@ -257,6 +257,66 @@ class RedisBus:
 
         return messages
 
+    # ── Shared Findings Store (PentAGI v4.0 Memory System) ────────
+
+    async def findings_store(
+        self, mission_id: str, category: str, key: str, value: Any
+    ) -> None:
+        """
+        Store a finding for cross-agent propagation.
+
+        Categories: tokens, credentials, successful_payloads, endpoints, owasp_successes
+        Example: findings_store("m1", "tokens", "admin_jwt", "eyJ...")
+        """
+        findings_key = f"redteam:findings:{mission_id}:{category}"
+        await self.client.hset(findings_key, key, json.dumps(value) if not isinstance(value, str) else value)
+        logger.info("📦 Findings store: %s/%s.%s", mission_id, category, key)
+
+    async def findings_read(self, mission_id: str, category: str) -> dict[str, Any]:
+        """Read all findings in a category."""
+        findings_key = f"redteam:findings:{mission_id}:{category}"
+        raw = await self.client.hgetall(findings_key)
+        parsed = {}
+        for k, v in raw.items():
+            try:
+                parsed[k] = json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                parsed[k] = v
+        return parsed
+
+    async def findings_read_all(self, mission_id: str) -> dict[str, dict[str, Any]]:
+        """Read all findings across all categories."""
+        result = {}
+        for category in ("tokens", "credentials", "successful_payloads", "endpoints", "owasp_successes"):
+            data = await self.findings_read(mission_id, category)
+            if data:
+                result[category] = data
+        return result
+
+    async def log_parse_failure(
+        self, mission_id: str, agent: str, raw_text: str
+    ) -> None:
+        """Log a JSON parse failure for critic analysis."""
+        failure_key = f"redteam:parse_failures:{mission_id}"
+        entry = json.dumps({"agent": agent, "text": raw_text[:500]})
+        await self.client.rpush(failure_key, entry)
+        logger.debug("Parse failure logged for critic: %s", agent)
+
+    async def get_payload_attempt_count(
+        self, mission_id: str, payload_hash: str
+    ) -> int:
+        """Get how many times a payload has been attempted (max 2 retries)."""
+        key = f"redteam:payload_attempts:{mission_id}"
+        count = await self.client.hget(key, payload_hash)
+        return int(count) if count else 0
+
+    async def increment_payload_attempt(
+        self, mission_id: str, payload_hash: str
+    ) -> int:
+        """Increment and return attempt count for a payload."""
+        key = f"redteam:payload_attempts:{mission_id}"
+        return await self.client.hincrby(key, payload_hash, 1)
+
     # ── Health Check ───────────────────────────────────────────────
 
     async def ping(self) -> bool:

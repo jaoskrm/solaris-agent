@@ -150,11 +150,16 @@ def create_initial_state(
     max_iterations: int = 5,
     mission_id: str | None = None,
     max_reflections: int = 3,
+    fast_mode: bool = False,
+    mode: str = "live",
 ) -> RedTeamState:
     """
     Create the initial state for a red team mission.
+    
+    Args:
+        mode: "live" for running app URL, "static" for GitHub repo or local path
     """
-    return RedTeamState(
+    state = RedTeamState(
         mission_id=mission_id or str(uuid.uuid4())[:8],
         objective=objective,
         target=target,
@@ -172,7 +177,13 @@ def create_initial_state(
         reflection_count=0,
         max_reflections=max_reflections,
         pending_exploit=None,
+        discovered_credentials={},
+        contextual_memory={},
         report=None,
         report_path=None,
         errors=[],
     )
+    # Add mode and fast_mode flags
+    state["mode"] = mode
+    state["fast_mode"] = fast_mode
+    return state

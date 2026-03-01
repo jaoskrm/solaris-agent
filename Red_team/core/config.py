@@ -34,47 +34,62 @@ class Settings(BaseSettings):
         default="http://localhost:3000", description="Juice Shop target URL"
     )
 
-    # Model selection (OpenRouter primary, Ollama fallback)
-    # Primary Model: qwen/qwq-32b (32B parameter Qwen with QWQ capabilities)
+    # Model selection — PentAGI v4.0 (Ollama primary, OpenRouter optional)
+    # DEMO MODE: Ollama is primary for local execution
+    # OpenRouter available as backup if Ollama fails
+    #
+    # OLLAMA_CASCADE (local):
+    # 1st → qwen2.5-coder:7b      (best for exploit code generation)
+    # 2nd → llama3:latest          (reliable general-purpose)
+    # 3rd → mistral:latest         (good reasoning, fast)
+    # 4th → deepseek-r1:8b         (good reasoning fallback)
+    # 5th → phi4:latest            (fast, lightweight)
+    #
+    # OPENROUTER_CASCADE (cloud backup):
+    # 6th → meta-llama/llama-3.3-70b-instruct:free
+    # 7th → nousresearch/hermes-3-llama-3.1-405b:free
+    # 8th → cognitivecomputations/dolphin-mistral-24b-venice-edition:free
+    # 9th → upstage/solar-pro-3:free
+    # 10th → google/gemma-3-27b-it:free
     
-    # Commander: OpenRouter primary with Ollama fallback
+    # Commander - Ollama primary
     commander_model: str = Field(
-        default="qwen/qwq-32b",
-        description="OpenRouter model for Commander agent (primary)",
+        default="qwen2.5-coder:7b",
+        description="Ollama model for Commander agent (primary)",
     )
     commander_model_fallback: str = Field(
         default="llama3:latest",
-        description="Ollama model for Commander agent (fallback)",
+        description="Ollama fallback for Commander agent",
     )
 
-    # Alpha Recon: OpenRouter primary with Ollama fallback
+    # Alpha Recon - Ollama primary
     recon_model: str = Field(
-        default="qwen/qwq-32b",
-        description="OpenRouter model for Alpha Recon agent (primary)",
+        default="qwen2.5-coder:7b",
+        description="Ollama model for Alpha Recon agent (primary)",
     )
     recon_model_fallback: str = Field(
         default="llama3:latest",
-        description="Ollama model for Alpha Recon agent (fallback)",
+        description="Ollama fallback for Alpha Recon agent",
     )
 
-    # Gamma Exploit: OpenRouter primary with Ollama fallback
+    # Gamma Exploit - Ollama primary (coder model best for exploits)
     exploit_model: str = Field(
-        default="qwen/qwq-32b",
-        description="OpenRouter model for Gamma Exploit agent (primary)",
+        default="qwen2.5-coder:7b",
+        description="Ollama model for Gamma Exploit agent (primary)",
     )
     exploit_model_fallback: str = Field(
-        default="qwen2.5-coder:7b-instruct",
-        description="Ollama model for Gamma Exploit agent (fallback)",
+        default="llama3:latest",
+        description="Ollama fallback for Gamma Exploit agent",
     )
 
-    # Critic Agent: OpenRouter primary with Ollama fallback
+    # Critic Agent - Ollama primary
     critic_model: str = Field(
-        default="qwen/qwq-32b",
-        description="OpenRouter model for Critic agent (primary)",
+        default="qwen2.5-coder:7b",
+        description="Ollama model for Critic agent (primary)",
     )
     critic_model_fallback: str = Field(
-        default="qwen2.5-coder:7b-instruct",
-        description="Ollama model for Critic agent (fallback)",
+        default="llama3:latest",
+        description="Ollama fallback for Critic agent",
     )
 
     # HITL (Phase 3)

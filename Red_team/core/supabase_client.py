@@ -113,6 +113,173 @@ class RedTeamSupabaseClient:
             return False
 
 
+    # ==================== REAL-TIME REPORTING METHODS ====================
+    
+    async def create_mission(
+        self,
+        mission_id: str,
+        target: str,
+        objective: str | None = None,
+        mode: str = "live",
+    ) -> dict[str, Any] | None:
+        """Create a new mission record in Supabase.
+        
+        Returns the created mission data or None if failed.
+        """
+        if not self._enabled:
+            logger.debug(f"Supabase not enabled - mission {mission_id} would be created")
+            return None
+        
+        mission_data = {
+            "mission_id": mission_id,
+            "target": target,
+            "objective": objective,
+            "mode": mode,
+            "status": "running",
+            "start_time": datetime.utcnow().isoformat(),
+        }
+        
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._client.table("missions").insert(mission_data).execute()
+            )
+            logger.info(f"Created mission record: {mission_id}")
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Failed to create mission: {e}")
+            return None
+    
+    async def complete_mission(
+        self,
+        mission_id: str,
+        status: str = "completed",
+    ) -> bool:
+        """Mark a mission as completed or failed."""
+        if not self._enabled:
+            return False
+        
+        update_data = {
+            "status": status,
+            "end_time": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._client.table("missions")
+                .update(update_data)
+                .eq("mission_id", mission_id)
+                .execute()
+            )
+            logger.info(f"Mission {mission_id} marked as {status}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to complete mission: {e}")
+            return False
+    
+    async def log_mission_event(
+        self,
+        mission_id: str,
+        event_type: str,
+        payload_json: dict[str, Any],
+    ) -> bool:
+        """Log a mission event to Supabase (NON-BLOCKING).
+        
+        This method is designed to be fire-and-forget using asyncio.create_task()
+        to avoid blocking the main execution loop.
+        """
+        if not self._enabled:
+            return False
+        
+        event_data = {
+            "mission_id": mission_id,
+            "event_type": event_type,
+            "payload_json": payload_json,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._client.table("mission_events").insert(event_data).execute()
+            )
+            logger.debug(f"Logged mission event: {event_type} for {mission_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to log mission event: {e}")
+            return False
+    
+    async def get_mission_events(
+        self,
+        mission_id: str,
+        event_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve all events for a mission (for final report generation)."""
+        if not self._enabled:
+            return []
+        
+        try:
+            loop = asyncio.get_event_loop()
+            query = self._client.table("mission_events").select("*").eq("mission_id", mission_id)
+            
+            if event_type:
+                query = query.eq("event_type", event_type)
+            
+            result = await loop.run_in_executor(
+                None,
+                lambda: query.order("timestamp", desc=False).execute()
+            )
+            return result.data if result.data else []
+        except Exception as e:
+            logger.error(f"Failed to get mission events: {e}")
+            return []
+    
+    async def upload_report(
+        self,
+        mission_id: str,
+        file_content: bytes,
+        file_name: str,
+        content_type: str,
+    ) -> str | None:
+        """Upload a report to Supabase Storage.
+        
+        Returns the public URL of the uploaded file or None if failed.
+        """
+        if not self._enabled:
+            return None
+        
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Upload to vibecheck_reports bucket
+            file_path = f"{mission_id}/{file_name}"
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._client.storage
+                .from_("vibecheck_reports")
+                .upload(file_path, file_content, {"content-type": content_type})
+            )
+            
+            # Get public URL
+            public_url = await loop.run_in_executor(
+                None,
+                lambda: self._client.storage
+                .from_("vibecheck_reports")
+                .get_public_url(file_path)
+            )
+            
+            logger.info(f"Uploaded report: {file_name} for mission {mission_id}")
+            return public_url
+        except Exception as e:
+            logger.error(f"Failed to upload report: {e}")
+            return None
+
+
 # Singleton instance
 _supabase_client: RedTeamSupabaseClient | None = None
 
@@ -123,3 +290,24 @@ def get_supabase_client(url: str | None = None, key: str | None = None) -> RedTe
     if _supabase_client is None:
         _supabase_client = RedTeamSupabaseClient(url, key)
     return _supabase_client
+
+
+# Convenience function for non-blocking event logging
+def fire_and_forget_log_event(
+    mission_id: str,
+    event_type: str,
+    payload_json: dict[str, Any],
+) -> None:
+    """Fire-and-forget event logging that won't block the main loop.
+    
+    Usage: fire_and_forget_log_event(mission_id, "exploit_result", {...})
+    """
+    try:
+        client = get_supabase_client()
+        if client._enabled:
+            # Create task without awaiting - it runs in background
+            asyncio.create_task(
+                client.log_mission_event(mission_id, event_type, payload_json)
+            )
+    except Exception as e:
+        logger.debug(f"Failed to queue event log: {e}")

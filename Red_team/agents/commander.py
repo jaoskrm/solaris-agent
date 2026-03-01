@@ -25,6 +25,7 @@ from agents.a2a.messages import (
 from agents.state import RedTeamState
 from core.llm_client import llm_client
 from core.config import settings
+from core.parsing import parse_with_retry, sanitize_json_output
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +243,16 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
     strategy = plan.get("strategy", "Perform initial reconnaissance.")
     tasks = plan.get("tasks", [])
 
+    # PentAGI v4.0: Read shared findings for token chaining
+    shared_tokens = {}
+    try:
+        from core.redis_bus import redis_bus
+        shared_tokens = await redis_bus.findings_read(state.get("mission_id", "default"), "tokens")
+        if shared_tokens:
+            logger.info("Commander: Found %d shared tokens for task injection", len(shared_tokens))
+    except Exception:
+        pass
+
     # Build A2A messages for each task
     new_messages: list[A2AMessage] = []
     task_dicts: list[dict[str, Any]] = []
@@ -253,15 +264,19 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
             target=task_spec.get("target", state.get('target', 'http://localhost:3000')),
             tools_allowed=task_spec.get("tools_allowed", []),
         )
+        task_payload = task.model_dump()
+        # Inject shared tokens so Gamma receives them
+        if shared_tokens:
+            task_payload["found_tokens"] = shared_tokens
         msg = A2AMessage(
             sender=AgentRole.COMMANDER,
             recipient=AgentRole(agent),
             type=MessageType.TASK_ASSIGNMENT,
             priority=Priority(task_spec.get("priority", "MEDIUM")),
-            payload=task.model_dump(),
+            payload=task_payload,
         )
         new_messages.append(msg)
-        task_dicts.append(task.model_dump())
+        task_dicts.append(task_payload)
 
     logger.info("Commander: Issued %d tasks, strategy: %s", len(tasks), strategy[:100])
 
@@ -457,6 +472,14 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
     new_messages: list[A2AMessage] = []
     task_dicts: list[dict[str, Any]] = []
 
+    # PentAGI v4.0: Read shared findings for observe-phase task injection
+    shared_tokens_obs = {}
+    try:
+        from core.redis_bus import redis_bus
+        shared_tokens_obs = await redis_bus.findings_read(state.get("mission_id", "default"), "tokens")
+    except Exception:
+        pass
+
     for task_spec in tasks:
         agent = task_spec.get("agent", "agent_alpha")
         task = TaskAssignment(
@@ -464,15 +487,18 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
             target=task_spec.get("target", state.get('target', 'http://localhost:3000')),
             tools_allowed=task_spec.get("tools_allowed", []),
         )
+        task_payload = task.model_dump()
+        if shared_tokens_obs:
+            task_payload["found_tokens"] = shared_tokens_obs
         msg = A2AMessage(
             sender=AgentRole.COMMANDER,
             recipient=AgentRole(agent),
             type=MessageType.TASK_ASSIGNMENT,
             priority=Priority(task_spec.get("priority", "MEDIUM")),
-            payload=task.model_dump(),
+            payload=task_payload,
         )
         new_messages.append(msg)
-        task_dicts.append(task.model_dump())
+        task_dicts.append(task_payload)
 
     # Update blackboard with analysis and strategy memory
     blackboard_update = dict(state.get("blackboard", {}))
@@ -505,14 +531,21 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
 
 
 def _parse_json_response(text: str) -> dict[str, Any]:
-    """Extract JSON from LLM response, handling markdown fencing."""
+    """Extract JSON from LLM response using robust parsing."""
+    # Use robust parser that handles markdown, truncation, etc.
+    result = parse_with_retry(text)
+    if result is not None and isinstance(result, dict):
+        return result
+    
+    # Fallback to sanitize
+    sanitized = sanitize_json_output(text)
+    if sanitized is not None and isinstance(sanitized, dict):
+        return sanitized
+    
+    # Last resort: try raw JSON
     cleaned = text.strip()
-
-    # Strip markdown code fences if present
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        # Remove first line (```json or ```) and last line (```)
         lines = [l for l in lines if not l.strip().startswith("```")]
         cleaned = "\n".join(lines)
-
     return json.loads(cleaned)

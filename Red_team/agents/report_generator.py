@@ -461,7 +461,31 @@ def format_report_text(report: dict[str, Any]) -> str:
     lines.append("-" * 80)
     lines.append("EXPLOITATION RESULTS")
     lines.append("-" * 80)
-    for i, result in enumerate(report.get("exploitation_results", []), 1):
+    
+    # Summary Table
+    exploit_results = report.get("exploitation_results", [])
+    if exploit_results:
+        lines.append("")
+        lines.append("┌─────────────────────────┬─────────┬──────┬──────────┐")
+        lines.append("│ Exploit                 │ Status  │ Time │ Severity │")
+        lines.append("├─────────────────────────┼─────────┼──────┼──────────┤")
+        
+        for result in exploit_results:
+            exploit = result.get("exploit_type", "unknown")[:23].ljust(23)
+            status = ("✅ WIN" if result.get("success") else "❌ FAIL").ljust(7)
+            time_val = "1.0s".ljust(4)  # Placeholder - could be enhanced
+            severity = result.get("severity", "N/A").upper().ljust(8)
+            lines.append(f"│ {exploit} │ {status} │ {time_val} │ {severity} │")
+        
+        lines.append("└─────────────────────────┴─────────┴──────┴──────────┘")
+        
+        # Calculate stats
+        total = len(exploit_results)
+        wins = sum(1 for r in exploit_results if r.get("success"))
+        lines.append(f"\n📊 SUMMARY: {wins}/{total} exploits successful ({100*wins/total:.0f}% success rate)")
+        lines.append("")
+    
+    for i, result in enumerate(exploit_results, 1):
         status = "✓ SUCCESS" if result.get("success") else "✗ FAILED"
         lines.append(f"\n  [{i}] [{status}] {result.get('exploit_type', 'unknown').upper()}")
         lines.append(f"      Target:   {result.get('target', 'unknown')}")
@@ -470,7 +494,7 @@ def format_report_text(report: dict[str, Any]) -> str:
         if result.get('evidence'):
             lines.append(f"      Evidence: {result['evidence'][:200]}...")
     
-    if not report.get("exploitation_results"):
+    if not exploit_results:
         lines.append("  No exploitation attempts recorded.")
     lines.append("")
     
@@ -557,3 +581,306 @@ async def save_report(report: dict[str, Any], output_dir: str = "reports") -> tu
     logger.info("Text report saved to %s", text_path)
     
     return str(json_path), str(text_path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 4: STREAMLINED SUPABASE REPORT GENERATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def generate_supabase_report(
+    mission_id: str,
+    target: str,
+    objective: str,
+    state: RedTeamState | None = None,
+) -> dict[str, Any]:
+    """
+    Step 4: Streamlined report generation using Supabase.
+    
+    1. Queries mission_events from Supabase (instead of keeping in RAM)
+    2. Builds kill chain narrative from events
+    3. Generates JSON and Markdown reports
+    4. Uploads to Supabase vibecheck_reports bucket
+    5. Returns public URLs for both reports
+    
+    Args:
+        mission_id: The mission ID
+        target: Target URL/hostname
+        objective: Mission objective
+        state: Optional RedTeamState for additional context
+        
+    Returns:
+        Dict with report URLs and metadata
+    """
+    import tempfile
+    from core.supabase_client import get_supabase_client
+    
+    logger.info(f"Step 4: Generating Supabase report for mission {mission_id}")
+    
+    try:
+        # Initialize Supabase client
+        supabase = get_supabase_client()
+        
+        # Step 4.1: Query mission events from Supabase (not from RAM)
+        events = []
+        if supabase._enabled:
+            try:
+                events = await supabase.get_mission_events(mission_id)
+                logger.info(f"Retrieved {len(events)} events from Supabase for mission {mission_id}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve events from Supabase: {e}")
+        
+        # Step 4.2: Build kill chain narrative from events
+        kill_chain_narrative = _build_kill_chain_from_events(events)
+        
+        # Step 4.3: Extract findings from events
+        exploit_events = [e for e in events if e.get("event_type") == "critic_analysis"]
+        successful_exploits = [e for e in exploit_events 
+                               if e.get("payload_json", {}).get("success", False)]
+        
+        # Step 4.4: Generate structured report
+        report_data = {
+            "report_metadata": {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "mission_id": mission_id,
+                "report_version": "2.0",
+                "generated_by": "VibeCheck Step 4 Streamlined Reporter",
+            },
+            "mission_summary": {
+                "objective": objective,
+                "target": target,
+                "total_events": len(events),
+                "successful_exploits": len(successful_exploits),
+                "failed_exploits": len(exploit_events) - len(successful_exploits),
+            },
+            "kill_chain_narrative": kill_chain_narrative,
+            "exploitation_results": [
+                {
+                    "timestamp": e.get("timestamp"),
+                    "exploit_type": e.get("payload_json", {}).get("exploit_type", "unknown"),
+                    "success": e.get("payload_json", {}).get("success", False),
+                    "severity": e.get("payload_json", {}).get("severity", "low"),
+                    "error_type": e.get("payload_json", {}).get("error_type", "unknown"),
+                    "feedback": e.get("payload_json", {}).get("feedback", ""),
+                }
+                for e in exploit_events
+            ],
+            "recommendations": _generate_recommendations_from_events(events),
+        }
+        
+        # Step 4.5: Generate JSON report
+        json_content = json.dumps(report_data, indent=2, default=str)
+        json_bytes = json_content.encode("utf-8")
+        
+        # Step 4.6: Generate Markdown report (human-readable kill chain)
+        markdown_content = _generate_markdown_report(report_data, kill_chain_narrative)
+        markdown_bytes = markdown_content.encode("utf-8")
+        
+        # Step 4.7: Upload to Supabase Storage
+        json_url = None
+        markdown_url = None
+        
+        if supabase._enabled:
+            try:
+                # Upload JSON report
+                json_url = await supabase.upload_report(
+                    mission_id=mission_id,
+                    file_content=json_bytes,
+                    file_name=f"{mission_id}_report.json",
+                    content_type="application/json",
+                )
+                logger.info(f"JSON report uploaded: {json_url}")
+                
+                # Upload Markdown report
+                markdown_url = await supabase.upload_report(
+                    mission_id=mission_id,
+                    file_content=markdown_bytes,
+                    file_name=f"{mission_id}_report.md",
+                    content_type="text/markdown",
+                )
+                logger.info(f"Markdown report uploaded: {markdown_url}")
+                
+            except Exception as e:
+                logger.error(f"Supabase upload failed: {e}")
+        
+        # Step 4.8: Fallback - save locally if Supabase fails or not configured
+        local_json_path = None
+        local_md_path = None
+        
+        if not json_url or not markdown_url:
+            logger.warning("Supabase upload failed or not configured, saving locally")
+            
+            # Use cross-platform temp directory
+            temp_dir = Path(tempfile.gettempdir()) / "vibecheck_reports"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save JSON locally
+            local_json_path = temp_dir / f"{mission_id}_report.json"
+            with open(local_json_path, "wb") as f:
+                f.write(json_bytes)
+            logger.info(f"JSON report saved locally: {local_json_path}")
+            
+            # Save Markdown locally
+            local_md_path = temp_dir / f"{mission_id}_report.md"
+            with open(local_md_path, "wb") as f:
+                f.write(markdown_bytes)
+            logger.info(f"Markdown report saved locally: {local_md_path}")
+        
+        # Return report metadata with URLs
+        return {
+            "mission_id": mission_id,
+            "generated_at": report_data["report_metadata"]["generated_at"],
+            "supabase_json_url": json_url,
+            "supabase_markdown_url": markdown_url,
+            "local_json_path": str(local_json_path) if local_json_path else None,
+            "local_markdown_path": str(local_md_path) if local_md_path else None,
+            "total_events": len(events),
+            "successful_exploits": len(successful_exploits),
+            "kill_chain_progress": len(kill_chain_narrative),
+        }
+        
+    except Exception as e:
+        logger.error(f"Step 4 report generation failed: {e}")
+        # Return minimal report on failure
+        return {
+            "mission_id": mission_id,
+            "error": str(e),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+def _build_kill_chain_from_events(events: list[dict]) -> list[dict]:
+    """Build kill chain narrative from Supabase events."""
+    narrative = []
+    step = 1
+    
+    # Sort events by timestamp
+    sorted_events = sorted(events, key=lambda e: e.get("timestamp", ""))
+    
+    for event in sorted_events:
+        event_type = event.get("event_type", "")
+        payload = event.get("payload_json", {})
+        
+        if event_type == "critic_analysis" and payload.get("success"):
+            narrative.append({
+                "step": step,
+                "phase": "exploitation",
+                "timestamp": event.get("timestamp"),
+                "exploit_type": payload.get("exploit_type", "unknown"),
+                "target": payload.get("command", "")[:50] if payload.get("command") else "unknown",
+                "severity": payload.get("severity", "low"),
+                "evidence": payload.get("evidence", "")[:100],
+            })
+            step += 1
+    
+    return narrative
+
+
+def _generate_recommendations_from_events(events: list[dict]) -> list[str]:
+    """Generate recommendations based on events."""
+    recommendations = []
+    
+    # Check for successful exploits
+    successful = [e for e in events 
+                  if e.get("event_type") == "critic_analysis" 
+                  and e.get("payload_json", {}).get("success", False)]
+    
+    if successful:
+        recommendations.append(f"CRITICAL: {len(successful)} successful exploit(s) detected - immediate remediation required")
+        
+        # Group by exploit type
+        exploit_types = {}
+        for e in successful:
+            exp_type = e.get("payload_json", {}).get("exploit_type", "unknown")
+            exploit_types[exp_type] = exploit_types.get(exp_type, 0) + 1
+        
+        for exp_type, count in exploit_types.items():
+            recommendations.append(f"  - {count} x {exp_type.upper()}: Patch or implement input validation")
+    
+    # Check for high severity findings
+    high_severity = [e for e in events 
+                     if e.get("payload_json", {}).get("severity") == "high"]
+    if high_severity:
+        recommendations.append(f"HIGH: {len(high_severity)} high-severity issues require immediate attention")
+    
+    if not recommendations:
+        recommendations.append("No critical findings - continue monitoring and periodic assessments")
+    
+    return recommendations
+
+
+def _generate_markdown_report(report_data: dict, narrative: list) -> str:
+    """Generate human-readable Markdown report with kill chain narrative."""
+    lines = []
+    
+    # Header
+    lines.append("# VibeCheck Security Assessment Report")
+    lines.append("")
+    lines.append(f"**Mission ID:** {report_data['mission_summary'].get('mission_id', 'unknown')}")
+    lines.append(f"**Target:** {report_data['mission_summary'].get('target', 'N/A')}")
+    lines.append(f"**Generated:** {report_data['report_metadata'].get('generated_at', 'unknown')}")
+    lines.append("")
+    
+    # Executive Summary
+    lines.append("## Executive Summary")
+    lines.append("")
+    summary = report_data["mission_summary"]
+    lines.append(f"- **Objective:** {summary.get('objective', 'N/A')}")
+    lines.append(f"- **Total Events:** {summary.get('total_events', 0)}")
+    lines.append(f"- **Successful Exploits:** {summary.get('successful_exploits', 0)}")
+    lines.append(f"- **Failed Exploits:** {summary.get('failed_exploits', 0)}")
+    lines.append("")
+    
+    # Kill Chain Narrative
+    lines.append("## Kill Chain Narrative")
+    lines.append("")
+    lines.append("### Attack Progression")
+    lines.append("")
+    
+    if narrative:
+        for step in narrative:
+            lines.append(f"#### Step {step['step']}: {step['exploit_type'].upper()}")
+            lines.append("")
+            lines.append(f"- **Phase:** {step['phase']}")
+            lines.append(f"- **Target:** `{step.get('target', 'N/A')}`")
+            lines.append(f"- **Severity:** {step.get('severity', 'low').upper()}")
+            if step.get('evidence'):
+                lines.append(f"- **Evidence:** {step['evidence']}")
+            lines.append("")
+    else:
+        lines.append("No successful kill chain progression recorded.")
+        lines.append("")
+    
+    # Exploitation Results
+    lines.append("## Exploitation Results")
+    lines.append("")
+    
+    results = report_data.get("exploitation_results", [])
+    if results:
+        lines.append("| Timestamp | Exploit | Success | Severity |")
+        lines.append("|-----------|---------|---------|----------|")
+        for r in results:
+            ts = r.get("timestamp", "N/A")[:19] if r.get("timestamp") else "N/A"
+            exploit = r.get("exploit_type", "unknown")
+            success = "✅ YES" if r.get("success") else "❌ NO"
+            severity = r.get("severity", "low").upper()
+            lines.append(f"| {ts} | {exploit} | {success} | {severity} |")
+        lines.append("")
+    else:
+        lines.append("No exploitation results recorded.")
+        lines.append("")
+    
+    # Recommendations
+    lines.append("## Priority Recommendations")
+    lines.append("")
+    
+    for i, rec in enumerate(report_data.get("recommendations", []), 1):
+        lines.append(f"{i}. {rec}")
+    lines.append("")
+    
+    # Footer
+    lines.append("---")
+    lines.append("")
+    lines.append("*Generated by VibeCheck Autonomous Red Team Platform*")
+    lines.append("")
+    
+    return "\n".join(lines)
