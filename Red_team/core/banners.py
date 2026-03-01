@@ -63,9 +63,9 @@ def print_summary_table(results: list[dict]) -> None:
     print("=" * 80 + "\n")
 
 
-def print_mode_banner(mode: str, target: str) -> None:
+def print_mode_banner(mode: str | None, target: str) -> None:
     """Print the initial mode banner."""
-    mode_str = mode.upper()
+    mode_str = (mode or "AUTO").upper()
     print("\n" + "=" * 80)
     print(f"  VIBECHECK v4.0 - {mode_str} MODE")
     print(f"  Target: {target}")

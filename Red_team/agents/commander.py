@@ -76,14 +76,24 @@ TARGET: {target}
 Current blackboard intelligence:
 {blackboard}
 
+BLUE TEAM STATIC ANALYSIS INTELLIGENCE:
+{blue_team_intel}
+
 Generate a list of task assignments for your agents to begin reconnaissance.
+
+IMPORTANT: If Blue Team intelligence is provided above, USE IT to prioritize:
+1. Start with HIGH/CRITICAL confirmed vulnerabilities
+2. Target specific file paths and line numbers mentioned
+3. Use suggested exploit vectors from the static analysis
+4. Focus on injection points (SQLi, XSS, Command Injection) first
+
 Respond with a JSON object:
 {{
-  "strategy": "Your overall attack strategy in 2-3 sentences.",
+  "strategy": "Your overall attack strategy in 2-3 sentences. Reference Blue Team findings if available.",
   "tasks": [
     {{
       "agent": "agent_alpha" or "agent_gamma",
-      "description": "What to do",
+      "description": "What to do. Be specific about exploiting Blue Team findings if applicable.",
       "target": "Specific target (URL, IP, etc.)",
       "tools_allowed": ["nmap", "nuclei", "curl", "python"],
       "priority": "HIGH" or "MEDIUM" or "LOW"
@@ -191,10 +201,16 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
 
     blackboard_str = json.dumps(state.get("blackboard", {}), indent=2)
 
+    # Get Blue Team intelligence brief
+    blue_team_intel = state.get("blue_team_intelligence_brief", "")
+    if not blue_team_intel:
+        blue_team_intel = "No Blue Team static analysis findings available. Proceed with standard reconnaissance."
+
     prompt = PLAN_PROMPT.format(
         objective=state.get("objective", "Perform reconnaissance"),
         target=state.get("target", "http://localhost:3000"),
         blackboard=blackboard_str if blackboard_str != "{}" else "(empty — first iteration)",
+        blue_team_intel=blue_team_intel,
     )
 
     # Use Ollama for Commander (local only)

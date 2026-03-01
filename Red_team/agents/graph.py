@@ -30,21 +30,70 @@ from agents.commander import commander_plan, commander_observe
 from agents.alpha_recon import alpha_recon
 from agents.gamma_exploit import gamma_exploit, hitl_approval_gate
 from agents.report_generator import generate_mission_report, save_report, format_report_text
+from core.blue_team_bridge import enrich_state_with_blue_team_findings, get_blue_team_bridge
 
 logger = logging.getLogger(__name__)
+
+
+async def blue_team_enrichment_node(state: RedTeamState) -> dict[str, Any]:
+    """
+    Blue Team enrichment node - fetches static analysis findings.
+
+    This node runs at mission start to query Blue Team's findings
+    for the target and inject them into the state for use by all agents.
+    """
+    target = state.get("target", "")
+    mission_id = state.get("mission_id", "unknown")
+
+    logger.info("=" * 60)
+    logger.info("BLUE TEAM ENRICHMENT - Querying static analysis findings")
+    logger.info(f"Mission: {mission_id}, Target: {target}")
+    logger.info("=" * 60)
+
+    try:
+        # Enrich state with Blue Team findings
+        enriched_state = await enrich_state_with_blue_team_findings(
+            dict(state), target
+        )
+
+        # Log summary
+        findings = enriched_state.get("blue_team_findings", [])
+        if findings:
+            logger.info(f"✓ Loaded {len(findings)} Blue Team findings")
+            brief = enriched_state.get("blue_team_intelligence_brief", "")
+            if brief:
+                logger.info("\n" + brief)
+        else:
+            logger.info("ℹ No Blue Team findings available for this target")
+
+        # Return enriched keys
+        return {
+            "blue_team_findings": enriched_state.get("blue_team_findings", []),
+            "blue_team_recon_results": enriched_state.get("blue_team_recon_results", []),
+            "blue_team_intelligence_brief": enriched_state.get("blue_team_intelligence_brief", ""),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to enrich with Blue Team findings: {e}")
+        # Don't fail the mission - just continue without Blue Team data
+        return {
+            "blue_team_findings": [],
+            "blue_team_recon_results": [],
+            "blue_team_intelligence_brief": f"Blue Team enrichment failed: {e}",
+        }
 
 
 async def generate_report_node(state: RedTeamState) -> dict[str, Any]:
     """
     Report generation node - creates and saves mission report.
-    
+
     This node runs when the mission completes (either by Commander
     declaration or max iterations reached).
     """
     logger.info("=" * 60)
     logger.info("MISSION COMPLETE - Generating Report")
     logger.info("=" * 60)
-    
+
     # Generate the report
     report = generate_mission_report(state)
     
@@ -104,6 +153,7 @@ def build_red_team_graph() -> StateGraph:
     graph = StateGraph(RedTeamState)
 
     # ── Add Nodes ──────────────────────────────────────────────
+    graph.add_node("blue_team_enrichment", blue_team_enrichment_node)  # NEW: Blue Team findings
     graph.add_node("commander_plan", commander_plan)
     graph.add_node("alpha_recon", alpha_recon)
     graph.add_node("gamma_exploit", gamma_exploit)
@@ -112,9 +162,12 @@ def build_red_team_graph() -> StateGraph:
     graph.add_node("generate_report", generate_report_node)  # Report generation
 
     # ── Set Entry Point ────────────────────────────────────────
-    graph.set_entry_point("commander_plan")
+    graph.set_entry_point("blue_team_enrichment")
 
     # ── Define Edges ───────────────────────────────────────────
+    # Blue Team Enrichment → Commander Plan (start with findings loaded)
+    graph.add_edge("blue_team_enrichment", "commander_plan")
+
     # Commander Plan → Alpha Recon (always starts with recon)
     graph.add_edge("commander_plan", "alpha_recon")
 
@@ -199,6 +252,9 @@ def create_initial_state(
         report=None,
         report_path=None,
         errors=[],
+        blue_team_findings=[],
+        blue_team_recon_results=[],
+        blue_team_intelligence_brief="",
     )
     # Add mode and fast_mode flags (mode is auto-detected if not provided)
     state["mode"] = detected_mode

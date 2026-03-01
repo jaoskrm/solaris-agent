@@ -65,6 +65,11 @@ class RedTeamState(TypedDict):
     report: dict[str, Any] | None  # Final mission report
     report_path: str | None  # Path to saved report file
 
+    # ── Blue Team Integration ──────────────────────────────────
+    blue_team_findings: list[Any]  # Static analysis findings from Blue Team
+    blue_team_recon_results: list[dict[str, Any]]  # Converted to recon format
+    blue_team_intelligence_brief: str  # Formatted brief for Commander
+
     # ── Error Handling ─────────────────────────────────────────
     errors: list[str]  # Error messages accumulated during execution
 

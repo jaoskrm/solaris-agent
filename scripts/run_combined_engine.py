@@ -233,7 +233,8 @@ class CombinedEngine:
             }
             
             logger.info(f"Red Team: Initializing mission {mission_config['mission_id']}")
-            logger.info(f"  Mode: {mission_config['mode'].upper()}")
+            mode_display = (mission_config['mode'] or 'AUTO').upper()
+            logger.info(f"  Mode: {mode_display}")
             logger.info(f"  Target: {mission_config['target']}")
             logger.info(f"  Objective: {mission_config['objective']}")
             
