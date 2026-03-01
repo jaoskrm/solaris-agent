@@ -2,8 +2,8 @@
 LLM verifier for Project VibeCheck.
 
 Two-tier verification:
-- TIER 1: Ollama deepseek-coder-v2:16b (local)
-- TIER 2: OpenRouter qwen/qwen3-235b-a22b:free (cloud escalation)
+- TIER 1: OpenRouter (cloud primary - reliable and fast)
+- TIER 2: Ollama (local fallback - when cloud is unavailable)
 
 Also provides pattern propagation via Qdrant similarity search.
 
@@ -29,12 +29,13 @@ async def verify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     """
     Verify a vulnerability candidate using two-tier LLM verification.
 
-    TIER 1 — Ollama qwen2.5-coder:7b-instruct (local):
-      - If confidence == "low", escalate to TIER 2
-      - If call fails, escalate to TIER 2
+    TIER 1 — OpenRouter (cloud primary):
+      - Primary: Fast, reliable cloud LLM via OpenRouter
+      - If call fails or returns low confidence, escalate to TIER 2
 
-    TIER 2 — OpenRouter qwen/qwen3-235b-a22b:free (cloud):
-      - Fallback to deepseek/deepseek-r1-0528:free if Qwen3 fails
+    TIER 2 — Ollama (local fallback):
+      - Fallback: Local Ollama instance when cloud is unavailable
+      - Model: qwen2.5-coder:7b-instruct or configured coder model
 
     Args:
         candidate: Vulnerability candidate dict with:
@@ -71,44 +72,50 @@ async def verify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         snippet = f"File: {candidate.get('file_path', 'unknown')}, Line: {candidate.get('line_start', 0)}"
         logger.warning(f"  No code snippet provided, using fallback: {snippet}")
 
-    # TIER 1: Try Ollama first
-    logger.info("  >> TIER 1: Calling Ollama for verification...")
-    tier1_result = await _verify_with_ollama(
+    # TIER 1: Try OpenRouter first (cloud primary)
+    logger.info("  >> TIER 1: Calling OpenRouter for verification...")
+    tier1_result = await _verify_with_openrouter(
         snippet=snippet,
         vuln_type=vuln_type,
         rule_id=rule_id,
         settings=settings,
     )
     
-    # DEBUG: Log TIER 1 result
-    logger.info(f"  >> TIER 1 Result: {tier1_result}")
+    # Log TIER 1 result summary
+    if tier1_result:
+        logger.info(f"  [TIER 1] ✓ OpenRouter → confirmed={tier1_result.get('confirmed')} confidence={tier1_result.get('confidence')}")
+    else:
+        logger.info("  [TIER 1] ✗ OpenRouter failed")
 
-    # Check if we need to escalate
+    # Check if we need to escalate to local fallback
     if tier1_result is None:
-        # Ollama call failed, escalate to TIER 2
-        logger.info("  >> TIER 1 FAILED - Escalating to OpenRouter (TIER 2)")
-        tier2_result = await _verify_with_openrouter(
+        # OpenRouter call failed, escalate to TIER 2 (Ollama fallback)
+        logger.info("  [TIER 2] Escalating to Ollama fallback...")
+        tier2_result = await _verify_with_ollama(
             snippet=snippet,
             vuln_type=vuln_type,
             rule_id=rule_id,
             settings=settings,
         )
         result = tier2_result
-        logger.info(f"  >> TIER 2 Result: {tier2_result}")
+        if tier2_result:
+            logger.info(f"  [TIER 2] ✓ Ollama → confirmed={tier2_result.get('confirmed')} confidence={tier2_result.get('confidence')}")
     elif _is_low_confidence(tier1_result.get("confidence")):
-        # Low confidence, escalate to TIER 2
-        logger.info("  >> TIER 1 LOW CONFIDENCE - Escalating to OpenRouter (TIER 2)")
-        tier2_result = await _verify_with_openrouter(
+        # Low confidence, try Ollama as fallback
+        logger.info("  [TIER 2] Low confidence, trying Ollama fallback...")
+        tier2_result = await _verify_with_ollama(
             snippet=snippet,
             vuln_type=vuln_type,
             rule_id=rule_id,
             settings=settings,
         )
         result = tier2_result if tier2_result else tier1_result
-        logger.info(f"  >> TIER 2 Result: {tier2_result}")
-        logger.info(f"  >> Final result (TIER 2 or fallback): {result}")
+        if tier2_result:
+            logger.info(f"  [TIER 2] ✓ Ollama → confirmed={tier2_result.get('confirmed')} confidence={tier2_result.get('confidence')}")
+        else:
+            logger.info("  [TIER 2] ✗ Ollama failed, using TIER 1 result")
     else:
-        logger.info("  >> TIER 1 SUCCEEDED - Using TIER 1 result")
+        logger.info("  [TIER 1] Using OpenRouter result")
         result = tier1_result
 
     # Handle test fixture detection
@@ -123,8 +130,18 @@ async def verify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         merged["confirmed"] = result.get("confirmed", False)
         # Normalize confidence to string (high/medium/low)
         merged["confidence"] = _normalize_confidence(result.get("confidence"))
-        merged["verification_reason"] = result.get("reason", "No reason provided")
-        merged["fix_suggestion"] = result.get("fix_suggestion", "")
+        
+        # BUG FIX: Handle empty/whitespace verification_reason
+        reason = result.get("reason", "").strip()
+        merged["verification_reason"] = reason if reason else f"{vuln_type} vulnerability detected in this code pattern"
+        
+        # BUG FIX: Handle empty/whitespace fix_suggestion
+        fix = result.get("fix_suggestion", "").strip()
+        if not fix:
+            # Generate contextual fix suggestion based on vuln type
+            fix = _generate_fallback_fix(vuln_type, snippet)
+        merged["fix_suggestion"] = fix
+        
         # NOTE: is_test_fixture is NOT set from LLM result - it's pre-set by semgrep_runner
         # Include severity if provided
         if result.get("severity"):
@@ -133,8 +150,8 @@ async def verify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         # Both tiers failed
         merged["confirmed"] = False
         merged["confidence"] = "low"
-        merged["verification_reason"] = "LLM verification failed"
-        merged["fix_suggestion"] = ""
+        merged["verification_reason"] = f"Unable to verify {vuln_type} - LLM analysis unavailable"
+        merged["fix_suggestion"] = _generate_fallback_fix(vuln_type, snippet)
 
     merged["needs_llm_verification"] = False
 
@@ -207,6 +224,34 @@ def _normalize_confidence(confidence: Any) -> str:
     return "medium"
 
 
+def _generate_fallback_fix(vuln_type: str, snippet: str) -> str:
+    """Generate a contextual fallback fix suggestion when LLM fails to provide one.
+    
+    Args:
+        vuln_type: Type of vulnerability
+        snippet: Code snippet for context
+        
+    Returns:
+        Fallback fix suggestion
+    """
+    fixes = {
+        "sql_injection": "Use parameterized queries or prepared statements instead of string concatenation. For Sequelize: use Model.findOne({ where: { id: req.params.id } }). For raw queries: use db.query('SELECT * FROM users WHERE id = ?', [userId]).",
+        "nosql_injection": "Sanitize user input before using in MongoDB queries. Avoid using $where with user input. Use explicit field comparisons instead of passing user objects directly to find().",
+        "path_traversal": "Validate and sanitize file paths using path.normalize() and ensure the resolved path stays within the allowed directory. Use a whitelist of allowed filenames.",
+        "command_injection": "Avoid using exec(), system(), or child_process.exec() with user input. If necessary, use parameterized commands with execFile() and pass arguments as an array.",
+        "eval_injection": "Never use eval() with user input. Use JSON.parse() for parsing JSON, or implement a safe expression evaluator if needed.",
+        "ssrf": "Validate and sanitize URLs before fetching. Use an allowlist of permitted domains. Avoid passing user-controlled URLs directly to fetch() or request libraries.",
+        "open_redirect": "Validate redirect URLs against an allowlist of permitted destinations. Use path-based redirects instead of full URL redirects when possible.",
+        "hardcoded_secret": "Move secrets to environment variables or a secure vault. Use process.env.SECRET_KEY instead of hardcoded values. Rotate any exposed credentials immediately.",
+        "mass_assignment": "Explicitly whitelist allowed fields when updating models. Use Model.update({ allowedField: req.body.allowedField }) instead of spreading req.body.",
+        "prototype_pollution": "Prevent prototype pollution by checking for __proto__, constructor, and prototype keys. Use Object.create(null) for maps or a library like lodash's _.set() with protection.",
+        "security_misconfiguration": "Review and harden configuration settings. Disable debug mode in production. Set secure headers and follow security best practices for the framework.",
+    }
+    
+    # Return specific fix or generic advice
+    return fixes.get(vuln_type.lower(), "Review the code for security issues. Validate all user inputs, use parameterized queries, and follow the principle of least privilege.")
+
+
 async def _verify_with_ollama(
     snippet: str,
     vuln_type: str,
@@ -229,37 +274,61 @@ async def _verify_with_ollama(
     # Include severity field for better prioritization
     # NOTE: Removed is_test_fixture - the LLM was incorrectly flagging production code
     # as test fixtures based on patterns like "challengeUtils" in snippets
-    prompt = f"""You are a penetration tester analyzing potential security vulnerabilities.
+    prompt = f"""You are a security expert analyzing code for the specific vulnerability type: {vuln_type}.
 
-Analyze this code for security issues:
+TASK: Verify if the following code contains a {vuln_type} vulnerability.
 
-Vulnerability Type: {vuln_type}
-Rule: {rule_id}
-Code:
+Rule that detected this: {rule_id}
+
+Code to analyze:
 ```
 {snippet}
 ```
 
-IMPORTANT CONTEXT FOR JUICE-SHOP CODE:
-- Code containing "challengeUtils.solveIf()" or similar is PRODUCTION CODE, not a test fixture
-- Sequelize/ORM queries with user-controlled WHERE clauses ARE vulnerable to SQL/NoSQL injection
-- MongoDB $where clauses with string concatenation ARE NoSQL injection vulnerabilities
-- User input includes: req.body, req.params, req.query, req.headers, req.cookies
+VULNERABILITY TYPE DEFINITIONS:
+- sql_injection: User input directly used in SQL queries without parameterization
+- nosql_injection: User input used in MongoDB/NoSQL queries in a dangerous way (e.g., $where with string concatenation, JSON.parse in where)
+- nosql_where_injection: MongoDB $where with string concatenation - allows arbitrary JavaScript execution (e.g., {{$where: 'this.product == ' + req.body.id}})
+- orm_operator_injection: JSON.parse(user_input) passed directly to where clause - allows operators like {{$gt: 0}} to bypass auth
+- idor: Insecure Direct Object Reference - UserId from req.body/params used in query without ownership verification (e.g., {{where: UserId: req.body.UserId, UserId: req.body.UserId}} - simplified from {{where: {{UserId: {{UserId: req.body.UserId}}}}}})
+- insecure_cookie: Cookie set without httpOnly flag - vulnerable to XSS theft
+- weak_random_secret: Math.random() used for JWT secrets - not cryptographically secure
+- prototype_pollution: User input used as object key allowing __proto__ or constructor injection
+- path_traversal: User-controlled file paths that could access files outside intended directory (path.resolve with req.body)
+- command_injection: User input passed to shell commands or exec functions
+- eval_injection: User input passed to eval() or similar dynamic code execution
+- ssrf: User-controlled URLs fetched by the server
+- open_redirect: User-controlled redirect URLs without validation
+- hardcoded_secret: API keys, passwords, or tokens in source code
+- mass_assignment: User input spread directly into model updates without field whitelist
+- security_misconfiguration: eval() usage, insecure configurations, debug mode in production
 
-Respond with ONLY a JSON object (no markdown, no explanation):
+CRITICAL PATTERNS - Set confirmed=true for these:
+1. IDOR: req.body.UserId OR req.body.id in where clauses without ownership verification (e.g., findOne({{where: {{UserId: req.body.UserId}}}}))
+2. NoSQL $where: $where with string concatenation (e.g., {{$where: 'this.product == ' + req.body.id}})
+3. JSON.parse in where: JSON.parse(req.params.id) passed directly to where clause
+4. Insecure cookies: res.cookie('token', value) without httpOnly: true
+5. Weak random for secrets: Math.random() used as JWT secret (e.g., secret: '' + Math.random())
+6. Basket/Order IDOR: findOne({{where: {{id: req.params.id}}}}) without UserId ownership check
+
+IMPORTANT INSTRUCTIONS:
+1. ONLY confirm this finding if it ACTUALLY matches the {vuln_type} type above
+2. If the code shows a DIFFERENT vulnerability type, set confirmed=false
+3. If the code is SAFE (e.g., uses parameterized queries, validates input), set confirmed=false
+4. Provide a SPECIFIC explanation referencing the exact code pattern found
+5. Include a DETAILED fix suggestion with actual code examples
+
+Respond with ONLY this JSON format:
 {{
   "confirmed": true/false,
   "confidence": 0.0-1.0,
-  "reason": "brief explanation",
-  "fix_suggestion": "how to fix this vulnerability",
+  "reason": "Detailed explanation of what vulnerability was found or why it's safe",
+  "fix_suggestion": "Specific code changes needed to fix this vulnerability",
   "severity": "critical/high/medium/low"
 }}"""
 
-    # DEBUG: Log the prompt being sent
-    logger.info("  [OLLAMA] Sending verification request...")
-    logger.info(f"  [OLLAMA] Model: {settings.ollama_coder_model}")
-    logger.info(f"  [OLLAMA] URL: {settings.ollama_base_url}/api/generate")
-    logger.info(f"  [OLLAMA] Prompt (first 500 chars):\n{prompt[:500]}...")
+    # DEBUG: Log summary only
+    logger.debug(f"  [OLLAMA] Verifying with {settings.ollama_coder_model}")
 
     try:
         async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
@@ -280,20 +349,19 @@ Respond with ONLY a JSON object (no markdown, no explanation):
             result = response.json()
             response_text = result.get("response", "")
 
-            # DEBUG: Log the raw response
-            logger.info(f"  [OLLAMA] Raw response text (first 500 chars):\n{response_text[:500] if response_text else 'EMPTY'}...")
-
             # Parse JSON response
             parsed = _parse_json_response(response_text)
             
-            # DEBUG: Log the parsed result
-            logger.info(f"  [OLLAMA] Parsed result: {parsed}")
+            # Log summary only
+            if parsed:
+                logger.info(f"  [OLLAMA] ✓ {settings.ollama_coder_model} → confirmed={parsed.get('confirmed')} confidence={parsed.get('confidence')}")
+            else:
+                logger.info("  [OLLAMA] ✗ Failed to parse response")
             
             return parsed
 
     except httpx.HTTPStatusError as e:
         logger.warning(f"  [OLLAMA] API error: {e}")
-        logger.warning(f"  [OLLAMA] Response body: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         return None
     except Exception as e:
         logger.warning(f"  [OLLAMA] Verification failed: {e}")
@@ -324,36 +392,61 @@ async def _verify_with_openrouter(
         logger.warning("  [OPENROUTER] API key not configured")
         return None
 
-    prompt = f"""You are a penetration tester analyzing potential security vulnerabilities.
+    prompt = f"""You are a security expert analyzing code for the specific vulnerability type: {vuln_type}.
 
-Analyze this code for security issues:
+TASK: Verify if the following code contains a {vuln_type} vulnerability.
 
-Vulnerability Type: {vuln_type}
-Rule: {rule_id}
-Code:
+Rule that detected this: {rule_id}
+
+Code to analyze:
 ```
 {snippet}
 ```
 
-IMPORTANT CONTEXT FOR JUICE-SHOP CODE:
-- Code containing "challengeUtils.solveIf()" or similar is PRODUCTION CODE, not a test fixture
-- Sequelize/ORM queries with user-controlled WHERE clauses ARE vulnerable to SQL/NoSQL injection
-- MongoDB $where clauses with string concatenation ARE NoSQL injection vulnerabilities
-- User input includes: req.body, req.params, req.query, req.headers, req.cookies
+VULNERABILITY TYPE DEFINITIONS:
+- sql_injection: User input directly used in SQL queries without parameterization
+- nosql_injection: User input used in MongoDB/NoSQL queries in a dangerous way (e.g., $where with string concatenation, JSON.parse in where)
+- nosql_where_injection: MongoDB $where with string concatenation - allows arbitrary JavaScript execution (e.g., {{$where: 'this.product == ' + req.body.id}})
+- orm_operator_injection: JSON.parse(user_input) passed directly to where clause - allows operators like {{$gt: 0}} to bypass auth
+- idor: Insecure Direct Object Reference - UserId from req.body/params used in query without ownership verification (e.g., {{where: UserId: req.body.UserId, UserId: req.body.UserId}} - simplified from {{where: {{UserId: {{UserId: req.body.UserId}}}}}})
+- insecure_cookie: Cookie set without httpOnly flag - vulnerable to XSS theft
+- weak_random_secret: Math.random() used for JWT secrets - not cryptographically secure
+- prototype_pollution: User input used as object key allowing __proto__ or constructor injection
+- path_traversal: User-controlled file paths that could access files outside intended directory (path.resolve with req.body)
+- command_injection: User input passed to shell commands or exec functions
+- eval_injection: User input passed to eval() or similar dynamic code execution
+- ssrf: User-controlled URLs fetched by the server
+- open_redirect: User-controlled redirect URLs without validation
+- hardcoded_secret: API keys, passwords, or tokens in source code
+- mass_assignment: User input spread directly into model updates without field whitelist
+- security_misconfiguration: eval() usage, insecure configurations, debug mode in production
 
-Respond with ONLY a JSON object (no markdown, no explanation):
+CRITICAL PATTERNS - Set confirmed=true for these:
+1. IDOR: req.body.UserId OR req.body.id in where clauses without ownership verification (e.g., findOne({{where: {{UserId: req.body.UserId}}}}))
+2. NoSQL $where: $where with string concatenation (e.g., {{$where: 'this.product == ' + req.body.id}})
+3. JSON.parse in where: JSON.parse(req.params.id) passed directly to where clause
+4. Insecure cookies: res.cookie('token', value) without httpOnly: true
+5. Weak random for secrets: Math.random() used as JWT secret (e.g., secret: '' + Math.random())
+6. Basket/Order IDOR: findOne({{where: {{id: req.params.id}}}}) without UserId ownership check
+
+IMPORTANT INSTRUCTIONS:
+1. ONLY confirm this finding if it ACTUALLY matches the {vuln_type} type above
+2. If the code shows a DIFFERENT vulnerability type, set confirmed=false
+3. If the code is SAFE (e.g., uses parameterized queries, validates input), set confirmed=false
+4. Provide a SPECIFIC explanation referencing the exact code pattern found
+5. Include a DETAILED fix suggestion with actual code examples
+
+Respond with ONLY this JSON format:
 {{
   "confirmed": true/false,
   "confidence": 0.0-1.0,
-  "reason": "brief explanation",
-  "fix_suggestion": "how to fix this vulnerability",
+  "reason": "Detailed explanation of what vulnerability was found or why it's safe",
+  "fix_suggestion": "Specific code changes needed to fix this vulnerability",
   "severity": "critical/high/medium/low"
 }}"""
 
-    # DEBUG: Log the prompt being sent
-    logger.info("  [OPENROUTER] Sending verification request...")
-    logger.info(f"  [OPENROUTER] URL: {settings.openrouter_base_url}/chat/completions")
-    logger.info(f"  [OPENROUTER] Prompt (first 500 chars):\n{prompt[:500]}...")
+    # DEBUG: Log summary only
+    logger.debug(f"  [OPENROUTER] Verifying with {settings.openrouter_primary_model}")
 
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
@@ -379,33 +472,61 @@ Respond with ONLY a JSON object (no markdown, no explanation):
                     json={
                         "model": model,
                         "messages": [
+                            {"role": "system", "content": "You are a security expert. Respond only with valid JSON."},
                             {"role": "user", "content": prompt}
                         ],
-                        "response_format": {"type": "json_object"},
                         "temperature": 0.0,
-                        "max_tokens": 200,
+                        "max_tokens": 500,
+                        "provider": {
+                            "order": ["Together", "DeepInfra", "Fireworks", "Nebius"],
+                            "allow_fallbacks": True,
+                            "ignore": ["Cloudflare"]
+                        }
                     },
                 )
                 response.raise_for_status()
                 result = response.json()
 
-                # DEBUG: Log the raw response
-                logger.info(f"  [OPENROUTER] Raw response: {result}")
+                # Debug: Log the full response structure
+                logger.debug(f"  [OPENROUTER] Response keys: {list(result.keys())}")
+                
+                # Check for errors in response
+                if "error" in result:
+                    logger.warning(f"  [OPENROUTER] API error with {model}: {result['error']}")
+                    continue
 
                 # Extract content from response
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                logger.info(f"  [OPENROUTER] Extracted content (first 500 chars):\n{content[:500] if content else 'EMPTY'}...")
+                choices = result.get("choices", [])
+                if not choices:
+                    logger.warning(f"  [OPENROUTER] No choices in response for {model}")
+                    continue
+                    
+                message = choices[0].get("message", {})
+                content = message.get("content", "")
+                
+                # Debug log
+                logger.debug(f"  [OPENROUTER] Content length: {len(content)}, content preview: {content[:200] if content else 'EMPTY'}")
+                
+                if not content or not content.strip():
+                    logger.warning(f"  [OPENROUTER] Empty response from {model}")
+                    continue
                 
                 parsed = _parse_json_response(content)
-                logger.info(f"  [OPENROUTER] Parsed result: {parsed}")
 
                 if parsed:
-                    logger.info(f"  [OPENROUTER] SUCCESS with model: {model}")
+                    logger.info(f"  [OPENROUTER] ✓ {model} → confirmed={parsed.get('confirmed')} confidence={parsed.get('confidence')}")
                     return parsed
+                else:
+                    logger.warning(f"  [OPENROUTER] ✗ {model} - failed to parse response (content: {content[:200]}...)")
 
             except httpx.HTTPStatusError as e:
                 logger.warning(f"  [OPENROUTER] API error with {model}: {e}")
-                logger.warning(f"  [OPENROUTER] Response body: {e.response.text if hasattr(e, 'response') else 'N/A'}")
+                if e.response:
+                    try:
+                        error_body = e.response.json()
+                        logger.warning(f"  [OPENROUTER] Error response: {error_body}")
+                    except:
+                        logger.warning(f"  [OPENROUTER] Error response text: {e.response.text[:500]}")
                 continue
             except Exception as e:
                 logger.warning(f"  [OPENROUTER] Verification failed with {model}: {e}")
@@ -427,34 +548,60 @@ def _parse_json_response(text: str) -> dict[str, Any] | None:
     Returns:
         Parsed dict or None
     """
-    logger.info(f"  [JSON_PARSE] Attempting to parse response (length: {len(text)})")
+    if not text or not text.strip():
+        logger.debug(f"  [JSON_PARSE] Empty text provided")
+        return None
     
+    text = text.strip()
+    
+    # Try direct parse
     try:
-        # Try direct parse
         result = json.loads(text)
-        logger.info(f"  [JSON_PARSE] Direct parse succeeded")
-        logger.info(f"  [JSON_PARSE] Parsed keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
-        return result
-    except json.JSONDecodeError as e:
-        logger.warning(f"  [JSON_PARSE] Direct parse failed: {e}")
+        if isinstance(result, dict):
+            return result
+    except json.JSONDecodeError:
+        pass
 
-    # Try to extract JSON from text
+    # Try to extract JSON from markdown code blocks
     try:
-        # Find JSON object boundaries
+        # Match JSON in ```json ... ``` blocks
+        import re
+        # Try with explicit json tag first
+        json_block_match = re.search(r'```json\s*(\{[\s\S]*?\})\s*```', text)
+        if not json_block_match:
+            # Try without json tag
+            json_block_match = re.search(r'```\s*(\{[\s\S]*?\})\s*```', text)
+        if json_block_match:
+            json_str = json_block_match.group(1)
+            result = json.loads(json_str)
+            if isinstance(result, dict):
+                return result
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # Try to extract JSON object boundaries
+    try:
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
             json_str = text[start:end]
-            logger.info(f"  [JSON_PARSE] Extracted JSON substring (length: {len(json_str)})")
             result = json.loads(json_str)
-            logger.info(f"  [JSON_PARSE] Extracted parse succeeded")
-            logger.info(f"  [JSON_PARSE] Parsed keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
+            if isinstance(result, dict):
+                return result
+    except json.JSONDecodeError:
+        pass
+    
+    # Try to fix common JSON issues
+    try:
+        # Replace single quotes with double quotes
+        fixed_text = text.replace("'", '"')
+        result = json.loads(fixed_text)
+        if isinstance(result, dict):
             return result
-    except json.JSONDecodeError as e:
-        logger.warning(f"  [JSON_PARSE] Extracted parse failed: {e}")
+    except json.JSONDecodeError:
+        pass
 
-    logger.warning(f"  [JSON_PARSE] FAILED - Could not parse JSON from response")
-    logger.warning(f"  [JSON_PARSE] Response text (first 200 chars): {text[:200]}...")
+    logger.debug(f"  [JSON_PARSE] Failed to parse JSON (length: {len(text)}, preview: {text[:200]}...)")
     return None
 
 
@@ -537,53 +684,121 @@ async def propagate_pattern(
         return []
 
 
+async def embed_with_openrouter(text: str, settings: Any) -> list[float] | None:
+    """
+    Generate embedding using OpenRouter cloud API.
+    
+    Uses sentence-transformers/all-MiniLM-L6-v2 which is efficient
+    and has broad provider support on OpenRouter.
+    
+    Args:
+        text: Text to embed
+        settings: Application settings
+    
+    Returns:
+        Embedding vector or None if failed
+    """
+    if not settings.openrouter_api_key:
+        logger.debug("OpenRouter API key not configured, skipping cloud embedding")
+        return None
+    
+    headers = {
+        "Authorization": f"Bearer {settings.openrouter_api_key}",
+        "HTTP-Referer": settings.openrouter_http_referer,
+        "Content-Type": "application/json",
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.openrouter_base_url}/embeddings",
+                headers=headers,
+                json={
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                    "input": text,
+                    "provider": {
+                        "order": ["DeepInfra", "Novita", "Fireworks"],
+                        "allow_fallbacks": True
+                    }
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # OpenAI-compatible response format
+            embedding = result.get("data", [{}])[0].get("embedding")
+            if embedding:
+                logger.debug(f"Cloud embedding generated, dimensions: {len(embedding)}")
+                return embedding
+    except Exception as e:
+        logger.debug(f"Cloud embedding failed: {e}")
+    
+    return None
+
+
 async def embed_with_ollama(text: str) -> list[float]:
     """
-    Generate embedding using Ollama nomic-embed-text.
+    Generate embedding using Ollama nomic-embed-text with cloud fallback.
 
     Supports both old and new Ollama API endpoints:
     - New (Ollama 0.1.27+): POST /api/embed with {"model": ..., "input": ...}
     - Old: POST /api/embeddings with {"model": ..., "prompt": ...}
+    
+    Falls back to OpenRouter cloud embedding if Ollama is unavailable.
 
     Args:
         text: Text to embed
 
     Returns:
-        Embedding vector
+        Embedding vector (empty list if all methods fail)
     """
     settings = get_settings()
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Try new /api/embed endpoint first (Ollama 0.1.27+)
-        try:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/embed",
-                json={
-                    "model": settings.ollama_embed_model,
-                    "input": text,
-                },
-            )
-            response.raise_for_status()
-            result = response.json()
-            # New API returns {"embeddings": [[...], ...]}
-            embeddings = result.get("embeddings", [])
-            if embeddings and len(embeddings) > 0:
-                return embeddings[0]
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:
-                raise
-            # Fall back to old /api/embeddings endpoint
-            logger.debug("/api/embed not available, falling back to /api/embeddings")
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/embeddings",
-                json={
-                    "model": settings.ollama_embed_model,
-                    "prompt": text,
-                },
-            )
-            response.raise_for_status()
-            result = response.json()
-            # Old API returns {"embedding": [...]}
-            return result.get("embedding", [])
-        
-        return []
+    # First try Ollama local embedding
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Try new /api/embed endpoint first (Ollama 0.1.27+)
+            try:
+                response = await client.post(
+                    f"{settings.ollama_base_url}/api/embed",
+                    json={
+                        "model": settings.ollama_embed_model,
+                        "input": text,
+                    },
+                )
+                response.raise_for_status()
+                result = response.json()
+                # New API returns {"embeddings": [[...], ...]}
+                embeddings = result.get("embeddings", [])
+                if embeddings and len(embeddings) > 0:
+                    return embeddings[0]
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 404:
+                    raise
+                # Fall back to old /api/embeddings endpoint
+                logger.debug("/api/embed not available, falling back to /api/embeddings")
+                response = await client.post(
+                    f"{settings.ollama_base_url}/api/embeddings",
+                    json={
+                        "model": settings.ollama_embed_model,
+                        "prompt": text,
+                    },
+                )
+                response.raise_for_status()
+                result = response.json()
+                # Old API returns {"embedding": [...]}
+                embedding = result.get("embedding", [])
+                if embedding:
+                    return embedding
+    except Exception as e:
+        logger.debug(f"Ollama embedding failed: {e}")
+
+    # Fallback to cloud embedding via OpenRouter
+    logger.debug("Ollama embedding unavailable, trying cloud fallback...")
+    cloud_embedding = await embed_with_openrouter(text, settings)
+    if cloud_embedding:
+        logger.info("Pattern propagation using cloud embedding fallback")
+        return cloud_embedding
+    
+    logger.warning("All embedding methods failed, pattern propagation skipped")
+    return []

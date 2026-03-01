@@ -1,32 +1,121 @@
 import { useState } from 'react';
-import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import Chat from './pages/Chat';
-import Scan from './pages/Scan';
+import { Shield, Github, MessageSquare, GitBranch, Network } from 'lucide-react';
+import bgImage from './background.mp4';
+import { Landing } from './Landing';
+import { Dashboard } from './Dashboard';
+import { TeamChat } from './pages/TeamChat';
+import { Pipeline } from './pages/Pipeline';
+import { Swarm } from './pages/Swarm';
+
+type ViewType = 'landing' | 'dashboard' | 'chat' | 'pipeline' | 'swarm';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [currentView, setCurrentView] = useState<ViewType>('landing');
 
-  const renderContent = () => {
-    switch (activeTab) {
+  const renderView = () => {
+    switch (currentView) {
+      case 'landing':
+        return <Landing />;
       case 'dashboard':
         return <Dashboard />;
       case 'chat':
-        return <Chat />;
-      case 'scans':
-        return <Scan />;
+        return <TeamChat />;
+      case 'pipeline':
+        return <Pipeline />;
+      case 'swarm':
+        return <Swarm />;
       default:
-        return (
-          <div className="flex items-center justify-center h-full text-gray-500 font-mono">
-            {activeTab} module under construction...
-          </div>
-        );
+        return <Landing />;
     }
   };
 
   return (
-    <Layout activeTab={activeTab} setActiveTab={setActiveTab}>
-      {renderContent()}
-    </Layout>
+    <div className="min-h-screen bg-[#050505] text-white font-sans overflow-hidden relative selection:bg-emerald-500/30">
+      {/* Background Video - hidden when on swarm view */}
+      {currentView !== 'swarm' && (
+        <div className="absolute inset-0 z-0">
+          <video
+            autoPlay
+            muted
+            loop
+            playsInline
+            className="w-full h-full object-cover"
+            poster={bgImage}
+          >
+            <source src={bgImage} type="video/mp4" />
+          </video>
+          {/* Reduced overlay opacity for better visibility */}
+          <div className="absolute inset-0 bg-black/40 mix-blend-multiply"></div>
+          {/* Subtle radial gradient */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[600px] bg-emerald-900/20 blur-[120px] rounded-full pointer-events-none"></div>
+          {/* Bottom gradient for depth - lighter */}
+          <div className="absolute bottom-0 left-0 right-0 h-1/3 bg-gradient-to-t from-[#050505]/90 via-[#050505]/60 to-transparent"></div>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <nav className="relative z-10 flex items-center justify-between px-6 py-6 max-w-7xl mx-auto w-full">
+        <div className="flex items-center gap-12">
+          {/* VibeCheck Logo - Now clickable to return to landing */}
+          <button
+            onClick={() => setCurrentView('landing')}
+            className="flex items-center gap-2 text-xl font-bold tracking-tighter hover:opacity-80 transition-opacity"
+          >
+            <Shield className="w-6 h-6 text-white" />
+            <span className="hidden sm:inline-block">VibeCheck</span>
+          </button>
+          <div className="hidden md:flex items-center gap-8 text-sm font-medium text-gray-300">
+            <button
+              onClick={() => setCurrentView('dashboard')}
+              className={`hover:text-white transition-colors ${currentView === 'dashboard' ? 'text-white' : ''}`}
+            >
+              Dashboard
+            </button>
+            <button
+              onClick={() => setCurrentView('pipeline')}
+              className={`hover:text-white transition-colors flex items-center gap-1 ${currentView === 'pipeline' ? 'text-white' : ''}`}
+            >
+              <GitBranch className="w-4 h-4" />
+              Pipeline
+            </button>
+            <button
+              onClick={() => setCurrentView('chat')}
+              className={`hover:text-white transition-colors flex items-center gap-1 ${currentView === 'chat' ? 'text-white' : ''}`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              Team Chat
+            </button>
+            <button
+              onClick={() => setCurrentView('swarm')}
+              className={`hover:text-white transition-colors flex items-center gap-1 ${currentView === 'swarm' ? 'text-white' : ''}`}
+            >
+              <Network className="w-4 h-4" />
+              Swarm
+            </button>
+            <button
+              onClick={() => setCurrentView('landing')}
+              className={`hover:text-white transition-colors ${currentView === 'landing' ? 'text-white' : ''}`}
+            >
+              About
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center gap-6 text-sm font-medium">
+          <a href="#" className="hidden md:flex items-center gap-2 text-gray-300 hover:text-white transition-colors">
+            <Github className="w-4 h-4" />
+            GitHub
+          </a>
+          <button
+            onClick={() => setCurrentView('pipeline')}
+            className="px-4 py-2 bg-white text-black rounded-md hover:bg-gray-200 transition-colors font-medium"
+          >
+            Start Scanning
+          </button>
+        </div>
+      </nav>
+
+      {/* Main Content Area */}
+      {renderView()}
+    </div>
   );
 }

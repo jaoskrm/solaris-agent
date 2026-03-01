@@ -385,3 +385,160 @@ rules:
     message: "Possible JWT algorithm confusion or secret injection: user-controlled value used as JWT secret or algorithm — attacker may forge tokens"
     languages: [javascript, typescript]
     severity: ERROR
+
+  # ============================================================
+
+  - id: taint-express-idor-userid
+    mode: taint
+    pattern-sources:
+      - pattern: req.body.UserId
+      - pattern: req.body.userId
+      - pattern: req.body.user_id
+      - pattern: req.body.ownerId
+      - pattern: req.body.owner_id
+      - pattern: req.body.customerId
+      - pattern: req.params.id
+      - pattern: req.body.id
+    pattern-sinks:
+      # Database queries with user-controlled ID in where clause
+      - pattern: "$MODEL.findOne({ where: { UserId: $SINK } })"
+      - pattern: "$MODEL.findAll({ where: { UserId: $SINK } })"
+      - pattern: "$MODEL.findOne({ where: { id: $SINK, UserId: $SINK2 } })"
+      - pattern: "$MODEL.findByPk($SINK)"
+      - pattern: "$MODEL.update({ ... }, { where: { UserId: $SINK } })"
+      - pattern: "$MODEL.destroy({ where: { UserId: $SINK } })"
+      - pattern: "$MODEL.create({ UserId: $SINK, ... })"
+      # MongoDB/NoSQL patterns
+      - pattern: "$DB.findOne({ userId: $SINK })"
+      - pattern: "$DB.find({ userId: $SINK })"
+      - pattern: "$DB.findOne({ UserId: $SINK })"
+      - pattern: "$DB.find({ UserId: $SINK })"
+    message: "IDOR vulnerability: UserId from request body/params used in database query without ownership verification — any user can access other users' data"
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  # ============================================================
+
+  - id: taint-express-nosql-where-injection
+    mode: taint
+    pattern-sources:
+      - pattern: req.params.$X
+      - pattern: req.query.$X
+      - pattern: req.body.$X
+      - pattern: req.body
+    pattern-sinks:
+      # MongoDB $where with string concatenation
+      - pattern: "$DB.find({ $where: $EXPR })"
+      - pattern: "$DB.findOne({ $where: $EXPR })"
+      - pattern: "$DB.find({ $where: $SINK + $REST })"
+      - pattern: "$DB.findOne({ $where: $SINK + $REST })"
+      - pattern: "$DB.find({ $where: `$SINK${$REST}` })"
+      - pattern: "$DB.findOne({ $where: \"$PRE\" + $SINK + \"$POST\" })"
+      # String concatenation patterns in $where
+      - pattern: >
+          $WHERE.this.product == '" + $SINK
+      - pattern: >
+          $WHERE.this.product == " + $SINK
+      - pattern: >
+          this.product == '" + $SINK
+      - pattern: >
+          this.product == " + $SINK
+    message: "NoSQL Injection via $where: User input concatenated into JavaScript expression for MongoDB $where — allows arbitrary code execution in database query"
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  # ============================================================
+
+  - id: taint-express-orm-operator-injection
+    mode: taint
+    pattern-sources:
+      - pattern: req.params.$X
+      - pattern: req.query.$X
+      - pattern: req.body.$X
+    pattern-sinks:
+      # JSON.parse result used directly in where clause
+      - pattern: "$MODEL.findOne({ where: JSON.parse($SINK) })"
+      - pattern: "$MODEL.findAll({ where: JSON.parse($SINK) })"
+      - pattern: "$MODEL.find({ where: JSON.parse($SINK) })"
+      - pattern: "$DB.findOne(JSON.parse($SINK))"
+      - pattern: "$DB.find(JSON.parse($SINK))"
+      - pattern: "$DB.findOne({ $where: JSON.parse($SINK) })"
+      # Raw JSON parsing in query
+      - pattern: "$MODEL.findOne(JSON.parse($SINK))"
+      - pattern: "$MODEL.findAll(JSON.parse($SINK))"
+    message: "ORM Operator Injection: JSON.parse on user input passed directly to where clause — allows MongoDB/Sequelize operators like {$gt: 0} or {$ne: null} to bypass authentication"
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  # ============================================================
+
+  - id: taint-express-insecure-cookie
+    mode: taint
+    pattern-sources:
+      - pattern: res.cookie
+    pattern-sinks:
+      # Cookie without httpOnly flag
+      - pattern: "res.cookie($NAME, $VALUE)"
+      - pattern: "res.cookie($NAME, $VALUE, { ... })"
+      # Cookie with httpOnly: false explicitly
+      - pattern: "res.cookie($NAME, $VALUE, { httpOnly: false, ... })"
+      # Pattern removed - Semgrep doesn't support { ... prop: val ... } syntax
+      # The patterns above already cover:
+      #   - No options object (line 481)
+      #   - Options object present (line 482)
+      #   - httpOnly: false at start (line 484)
+    message: "Insecure cookie: Cookie set without httpOnly flag — vulnerable to XSS theft. Use { httpOnly: true, secure: true, sameSite: 'strict' }"
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-1004: Sensitive Cookie Without 'HttpOnly' Flag"
+
+  # ============================================================
+
+  - id: taint-express-weak-random-secret
+    mode: taint
+    pattern-sources:
+      - pattern: Math.random()
+      - pattern: "'' + Math.random()"
+      - pattern: String(Math.random())
+    pattern-sinks:
+      # JWT signing with weak random
+      - pattern: "jwt.sign($PAYLOAD, $SINK, ...)"
+      - pattern: "jwt.verify($TOKEN, $SINK, ...)"
+      - pattern: "expressJwt({ secret: $SINK, ... })"
+      - pattern: "expressJwt({ secret: $SINK })"
+      - pattern: "jwt.sign(..., $SINK, ...)"
+      # Generic secret usage
+      - pattern: "secret: $SINK"
+      - pattern: "SECRET: $SINK"
+      - pattern: "JWT_SECRET: $SINK"
+      - pattern: "{ secret: $SINK }"
+    message: "Cryptographically weak secret: Math.random() used for JWT secret or token generation — not cryptographically secure. Use crypto.randomBytes() or crypto.randomUUID()"
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-338: Use of Cryptographically Weak Pseudo-Random Number Generator (PRNG)"
+
+  # ============================================================
+
+  - id: taint-express-basket-order-idor
+    mode: taint
+    pattern-sources:
+      - pattern: req.params.id
+      - pattern: req.params.basketId
+      - pattern: req.params.orderId
+      - pattern: req.body.id
+    pattern-sinks:
+      # Basket access without ownership check
+      - pattern: "BasketModel.findOne({ where: { id: $SINK } })"
+      - pattern: BasketModel.findByPk($SINK)
+      - pattern: "BasketModel.findAll({ where: { id: $SINK } })"
+      # Order access without ownership check  
+      - pattern: "OrderModel.findOne({ where: { id: $SINK } })"
+      - pattern: OrderModel.findByPk($SINK)
+      - pattern: "OrderModel.findAll({ where: { id: $SINK } })"
+      # Generic order/basket patterns
+      - pattern: "$MODEL.findOne({ where: { id: $SINK } })"
+    message: "IDOR vulnerability: Accessing basket/order by ID from URL params without verifying ownership — any user can access other users' baskets/orders"
+    languages: [javascript, typescript]
+    severity: ERROR

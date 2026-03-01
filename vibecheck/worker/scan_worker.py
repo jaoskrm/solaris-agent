@@ -9,11 +9,11 @@ This is the main worker process that:
 5. Runs N+1 detection (Week 2)
 6. Reports results to Supabase (Week 2)
 
-Week 3 Additions:
-- Semgrep static analysis (Stage 5a)
-- Semantic lifting with Ollama (Stage 5b)
-- LLM verification two-tier (Stage 5c)
-- Pattern propagation via Qdrant (Stage 5d)
+    Week 3 Additions:
+    - Semgrep static analysis (Stage 5a)
+    - Semantic lifting with LLM (Kilo primary, OpenRouter secondary, Ollama fallback) (Stage 5b)
+    - LLM verification three-tier (Kilo primary, OpenRouter secondary, Ollama fallback) (Stage 5c)
+    - Pattern propagation via Qdrant (Stage 5d)
 
 Week 2 Exit Criteria:
 - Worker parses code with Tree-Sitter
@@ -33,6 +33,26 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+# Configure logging FIRST (before importing modules that use httpx)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+# Suppress noisy low-level HTTP/network loggers BEFORE importing httpx-using modules
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("hpack").setLevel(logging.WARNING)
+logging.getLogger("h2").setLevel(logging.WARNING)
+logging.getLogger("httpcore.http2").setLevel(logging.WARNING)
+logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
+logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
+
+# Keep DEBUG only for our own modules
+logging.getLogger("worker").setLevel(logging.DEBUG)
+logging.getLogger("core").setLevel(logging.DEBUG)
+
 import git
 from git import Repo, GitCommandError
 
@@ -47,15 +67,7 @@ from core.redis_bus import (
     get_redis_bus,
 )
 from worker.semgrep_runner import run_semgrep, semgrep_to_parsed_nodes
-from worker.semantic_lifter import lift_directory
 from worker.llm_verifier import verify_candidate, propagate_pattern, embed_with_ollama
-
-# Configure logging with DEBUG level for more visibility
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +88,8 @@ class ScanWorker:
     3. Builds a knowledge graph in FalkorDB
     4. Runs N+1 detection query
     5. Week 3: Semgrep static analysis
-    6. Week 3: Semantic lifting with Ollama
-    7. Week 3: LLM verification (two-tier)
+    6. Week 3: Semantic lifting (Kilo primary, OpenRouter secondary, Ollama fallback)
+    7. Week 3: LLM verification (Kilo primary, OpenRouter secondary, Ollama fallback)
     8. Week 3: Pattern propagation
     9. Reports results to Supabase
     """
@@ -307,15 +319,42 @@ class ScanWorker:
             semgrep_findings = run_semgrep(clone_dir, scan_id)
             logger.info(f"Semgrep found {len(semgrep_findings)} raw findings")
             
-            # Convert Semgrep findings to parsed nodes
-            semgrep_nodes = semgrep_to_parsed_nodes(semgrep_findings, scan_id)
+            # Convert Semgrep findings to parsed nodes with stats
+            semgrep_nodes, semgrep_stats = semgrep_to_parsed_nodes(semgrep_findings, scan_id)
             logger.info(f"Converted {len(semgrep_nodes)} Semgrep findings to parsed nodes")
             
-            # Update progress: Semgrep complete (50%)
+            # Log detailed Semgrep stats
+            logger.info("=" * 80)
+            logger.info("SEMGREP STAGE STATS:")
+            logger.info(f"  Raw findings from Semgrep: {semgrep_stats['total_findings']}")
+            logger.info(f"  Before deduplication: {semgrep_stats['before_dedup']}")
+            logger.info(f"  After line-based dedup: {semgrep_stats['after_line_dedup']}")
+            logger.info(f"  After adjacent-line dedup: {semgrep_stats['after_adjacent_dedup']}")
+            logger.info(f"  Final unique candidates: {semgrep_stats['final_candidates']}")
+            logger.info(f"  Total deduplicated: {semgrep_stats['deduped_count']}")
+            logger.info(f"  Skipped (test fixtures): {semgrep_stats['skipped_test_fixtures']}")
+            logger.info(f"  Skipped (non-dict): {semgrep_stats['skipped_non_dict']}")
+            logger.info(f"  Unique files affected: {semgrep_stats['unique_files']}")
+            logger.info("=" * 80)
+            
+            # Update progress: Semgrep complete (50%) with detailed stats
             await supabase.update_scan_status(
                 scan_id, "running", 50,
                 current_stage="Semgrep Analysis",
-                stage_output={"stage": "semgrep", "status": "completed", "findings": len(semgrep_findings), "nodes_created": len(semgrep_nodes)}
+                stage_output={
+                    "stage": "semgrep",
+                    "status": "completed",
+                    "raw_findings": semgrep_stats["total_findings"],
+                    "before_dedup": semgrep_stats["before_dedup"],
+                    "after_line_dedup": semgrep_stats["after_line_dedup"],
+                    "after_adjacent_dedup": semgrep_stats["after_adjacent_dedup"],
+                    "final_candidates": semgrep_stats["final_candidates"],
+                    "deduped_count": semgrep_stats["deduped_count"],
+                    "skipped_test_fixtures": semgrep_stats["skipped_test_fixtures"],
+                    "skipped_non_dict": semgrep_stats["skipped_non_dict"],
+                    "unique_files": semgrep_stats["unique_files"],
+                    "nodes_created": len(semgrep_nodes)
+                }
             )
             
             # Extract unique file paths from Semgrep findings for targeted semantic lifting
@@ -325,38 +364,21 @@ class ScanWorker:
                     file_path = node.get("file_path", "")
                     if file_path:
                         semgrep_target_files.add(file_path)
-            logger.info(f"Identified {len(semgrep_target_files)} unique files with Semgrep findings for semantic lifting")
-            
+            logger.info(f"Identified {len(semgrep_target_files)} unique files with Semgrep findings")
+
             # ========================================
-            # Week 3: Semantic Lifting (Stage 5b)
+            # Week 3: Semantic Lifting (DISABLED)
             # ========================================
-            # CRITICAL: Skip semantic lifting entirely if no Semgrep findings
-            # This prevents ~45 minutes of wasted work on large repos
-            if not semgrep_target_files:
-                logger.info("No Semgrep findings — skipping semantic lifting entirely")
-                semantic_summaries = []
-            else:
-                logger.info(f"Lifting {len(semgrep_target_files)} files with findings...")
-                # Place semantic output outside the cloned repo to avoid Semgrep scanning it
-                semantic_clone_dir = self.clone_base_dir / "semantic" / scan_id
-                semantic_summaries = await lift_directory(
-                    str(clone_dir),
-                    nodes,  # All parsed nodes from Tree-Sitter
-                    str(semantic_clone_dir),
-                    target_files=semgrep_target_files,
-                )
-            logger.info(f"Generated {len(semantic_summaries)} semantic summaries")
-            
-            # Update progress: Semantic lifting complete (65%)
+            # Semantic lifting is disabled - we pass raw Semgrep findings
+            # directly to the LLM verifier with their code snippets
+            logger.info("Semantic lifting disabled - using raw Semgrep findings with code snippets")
+
+            # Update progress: Skipping semantic lifting (65%)
             await supabase.update_scan_status(
                 scan_id, "running", 65,
-                current_stage="Semantic Lifting",
-                stage_output={"stage": "semantic_lifting", "status": "completed", "summaries_generated": len(semantic_summaries), "files_lifted": len(semgrep_target_files)}
+                current_stage="LLM Verification",
+                stage_output={"stage": "semantic_lifting", "status": "skipped", "reason": "using_raw_findings"}
             )
-            
-            # Store function summaries in Qdrant for pattern matching
-            if semantic_summaries:
-                await self._store_function_summaries(semantic_summaries)
             
             # ========================================
             # Week 3: LLM Verification (Stage 5c)
@@ -422,12 +444,29 @@ class ScanWorker:
             verified_vulns = []  # Only CONFIRMED vulnerabilities (for pattern propagation)
             all_verified_results = []  # ALL verified results (for saving to DB)
             verification_results = []  # Track all verification results for debugging
+            recently_verified = []  # Recently verified findings for real-time display (last 10)
+            
+            # Progress tracking for real-time updates
+            total_candidates = len(all_candidates)
+            processed_count = 0
+            confirmed_count = 0
+            rejected_count = 0
+            error_count = 0
+            saved_count = 0  # Track how many vulns saved to DB in real-time
             
             # Process candidates in batches for parallel LLM verification
             BATCH_SIZE = 5  # Process 5 candidates in parallel
             
+            logger.info("=" * 80)
+            logger.info(f"STARTING LLM VERIFICATION: {total_candidates} candidates to process")
+            logger.info("=" * 80)
+            
             for batch_start in range(0, len(all_candidates), BATCH_SIZE):
                 batch = all_candidates[batch_start:batch_start + BATCH_SIZE]
+                batch_num = batch_start // BATCH_SIZE + 1
+                total_batches = (total_candidates + BATCH_SIZE - 1) // BATCH_SIZE
+                
+                logger.info(f"\n[Batch {batch_num}/{total_batches}] Processing {len(batch)} candidates...")
                 
                 # Create tasks for parallel processing
                 tasks = []
@@ -435,7 +474,8 @@ class ScanWorker:
                     if not isinstance(candidate, dict):
                         continue
                     
-                    logger.info(f"VERIFYING: {candidate.get('file_path', 'unknown')}:{candidate.get('line_start', 0)}")
+                    processed_count += 1
+                    logger.info(f"[{processed_count}/{total_candidates}] VERIFYING: {candidate.get('file_path', 'unknown')}:{candidate.get('line_start', 0)}")
                     tasks.append(verify_candidate(candidate))
                 
                 # Run all verifications in parallel
@@ -464,34 +504,7 @@ class ScanWorker:
                                 "needs_llm_verification": False,
                             }
                         
-                        all_verified_results.append(verified)
-                        
-                        # Track verification result
-                        verification_results.append({
-                            "file": verified.get('file_path', 'unknown'),
-                            "line": verified.get('line_start', 0),
-                            "type": verified.get('vuln_type', 'unknown'),
-                            "confirmed": verified.get('confirmed', False),
-                            "confidence": verified.get('confidence', 'unknown'),
-                            "reason": verified.get('verification_reason', 'no reason'),
-                        })
-                        
-                        if verified.get("confirmed"):
-                            verified_vulns.append(verified)
-                            logger.info(f"*** CONFIRMED VULNERABILITY ***")
-                            logger.info(f"    Type: {verified.get('vuln_type')}")
-                            logger.info(f"    File: {verified.get('file_path')}:{verified.get('line_start')}")
-                            
-                            # Pattern propagation
-                            similar_funcs = await propagate_pattern(
-                                verified,
-                                self.qdrant_client.client,
-                                embed_with_ollama,
-                            )
-                            if similar_funcs:
-                                logger.info(f"Pattern propagation found {len(similar_funcs)} similar functions")
-                        
-                        # Defensive type check for verified result
+                        # Defensive type check for verified result - MUST happen before storing
                         # BUG FIX: Don't skip entirely - use fallback with default values
                         # This ensures candidates are still saved even if LLM verification fails
                         if verified is None:
@@ -528,10 +541,18 @@ class ScanWorker:
                                 "needs_llm_verification": False,
                             }
                         
-                        # Store ALL verified results for saving to DB
+                        # Store ALL verified results for saving to DB (single append - BUG FIX)
                         all_verified_results.append(verified)
                         
-                        # Log the verification result
+                        # Update progress counters
+                        if verified.get("confirmed"):
+                            confirmed_count += 1
+                        else:
+                            rejected_count += 1
+                        
+                        # Log the verification result with progress
+                        current_progress = len(all_verified_results)
+                        progress_pct = (current_progress / total_candidates) * 100
                         verification_results.append({
                             "file": verified.get('file_path', 'unknown'),
                             "line": verified.get('line_start', 0),
@@ -542,13 +563,22 @@ class ScanWorker:
                             "is_test_fixture": verified.get('is_test_fixture', False)
                         })
                         
+                        # Process confirmed vulnerabilities (single check - BUG FIX)
                         if verified.get("confirmed"):
                             verified_vulns.append(verified)
-                            logger.info(f"*** CONFIRMED VULNERABILITY ***")
-                            logger.info(f"    Type: {verified.get('vuln_type')}")
-                            logger.info(f"    File: {verified.get('file_path')}:{verified.get('line_start')}")
-                            logger.info(f"    Confidence: {verified.get('confidence')}")
-                            logger.info(f"    Reason: {verified.get('verification_reason')}")
+                            logger.info(f"✓ [{current_progress}/{total_candidates}] CONFIRMED: {verified.get('vuln_type')} in {verified.get('file_path')}:{verified.get('line_start')}")
+                            logger.info(f"    Confidence: {verified.get('confidence')} | Reason: {verified.get('verification_reason')[:80]}...")
+                            
+                            # ========================================
+                            # REAL-TIME: Save confirmed vulnerability to DB immediately
+                            # ========================================
+                            try:
+                                vuln_record = self._build_vulnerability_record(verified)
+                                await supabase.insert_vulnerability(scan_id, vuln_record)
+                                saved_count += 1
+                                logger.info(f"    💾 Saved to database (real-time)")
+                            except Exception as save_err:
+                                logger.warning(f"    ⚠️ Failed to save in real-time: {save_err}")
                             
                             # ========================================
                             # Week 3: Pattern Propagation (Stage 5d)
@@ -559,11 +589,53 @@ class ScanWorker:
                                 embed_with_ollama,
                             )
                             if similar_funcs:
-                                logger.info(f"Pattern propagation found {len(similar_funcs)} similar functions")
+                                logger.info(f"    Pattern propagation: found {len(similar_funcs)} similar functions")
                         else:
-                            logger.info(f"NOT CONFIRMED: {verified.get('verification_reason', 'no reason')}")
+                            logger.info(f"✗ [{current_progress}/{total_candidates}] REJECTED: {verified.get('file_path')}:{verified.get('line_start')}")
+                            logger.info(f"    Reason: {verified.get('verification_reason', 'no reason')[:80]}...")
+                        
+                        # Track recently verified for display (keep last 10)
+                        recently_verified.append({
+                            "file_path": verified.get('file_path', 'unknown'),
+                            "line_start": verified.get('line_start', 0),
+                            "vuln_type": verified.get('vuln_type', 'unknown'),
+                            "confirmed": verified.get('confirmed', False),
+                            "confidence": verified.get('confidence', 'unknown'),
+                        })
+                        if len(recently_verified) > 10:
+                            recently_verified.pop(0)
+                        
+                        # Real-time progress update to console
+                        if current_progress % 5 == 0 or current_progress == total_candidates:
+                            logger.info("-" * 60)
+                            logger.info(f"LLM VERIFICATION PROGRESS: {current_progress}/{total_candidates} ({progress_pct:.1f}%)")
+                            logger.info(f"  Confirmed: {confirmed_count} | Rejected: {rejected_count} | Errors: {error_count}")
+                            logger.info("-" * 60)
+                            
+                        # Update Supabase status more frequently (every candidate) with recent findings
+                        try:
+                            await supabase.update_scan_status(
+                                scan_id, "running", 70 + int((current_progress / total_candidates) * 15),
+                                current_stage=f"LLM Verification ({current_progress}/{total_candidates})",
+                                stage_output={
+                                    "stage": "llm_verification",
+                                    "status": "in_progress",
+                                    "progress": current_progress,
+                                    "total": total_candidates,
+                                    "percentage": round(progress_pct, 1),
+                                    "confirmed": confirmed_count,
+                                    "rejected": rejected_count,
+                                    "errors": error_count,
+                                    "saved_to_db": saved_count,
+                                    "recently_verified": recently_verified[-5:],  # Last 5 verified
+                                    "latest_finding": recently_verified[-1] if recently_verified else None,
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update progress in Supabase: {e}")
                             
                     except Exception as e:
+                        error_count += 1
                         logger.warning(f"Failed to verify candidate: {e}", exc_info=True)
                         verification_results.append({
                             "file": candidate.get('file_path', 'unknown') if isinstance(candidate, dict) else 'unknown',
@@ -576,18 +648,11 @@ class ScanWorker:
             logger.info("")
             logger.info("=" * 80)
             logger.info("VERIFICATION SUMMARY:")
-            logger.info(f"  Total candidates: {len(all_candidates)}")
-            logger.info(f"  Confirmed vulnerabilities: {len(verified_vulns)}")
-            logger.info(f"  Verification results count: {len(verification_results)}")
-            
-            # Count by status
-            confirmed_count = sum(1 for r in verification_results if r.get('confirmed') == True)
-            not_confirmed_count = sum(1 for r in verification_results if r.get('confirmed') == False)
-            error_count = sum(1 for r in verification_results if r.get('status') in ['ERROR', 'EXCEPTION'])
-            
-            logger.info(f"  Confirmed: {confirmed_count}")
-            logger.info(f"  Not confirmed: {not_confirmed_count}")
+            logger.info(f"  Total candidates: {total_candidates}")
+            logger.info(f"  Confirmed vulnerabilities: {confirmed_count}")
+            logger.info(f"  Rejected: {rejected_count}")
             logger.info(f"  Errors: {error_count}")
+            logger.info(f"  Total processed: {len(all_verified_results)}")
             
             # Log all results for debugging
             for r in verification_results:
@@ -595,117 +660,66 @@ class ScanWorker:
             logger.info("=" * 80)
             
             # ========================================
-            # Save ALL candidates to Supabase with verification results merged
+            # Save remaining candidates (non-confirmed) to Supabase
+            # Confirmed vulnerabilities were already saved in real-time during verification
             # ========================================
-            logger.info(f"Total candidates to save: {len(all_candidates)}")
+            logger.info(f"Total candidates to process: {len(all_candidates)}")
+            logger.info(f"Already saved in real-time: {saved_count} confirmed vulnerabilities")
             
             if all_candidates:
-                logger.info("Saving ALL vulnerability candidates to Supabase...")
+                logger.info("Saving remaining vulnerability candidates to Supabase...")
                 supabase = get_supabase_client()
                 
                 # Build a lookup of ALL verified results by (file_path, line_start)
-                # This ensures verification results are used when saving
                 verified_lookup = {
                     (v.get("file_path"), v.get("line_start")): v
                     for v in all_verified_results
                     if isinstance(v, dict)
                 }
-                logger.info(f"Verified lookup has {len(verified_lookup)} entries (from {len(all_verified_results)} verified results)")
+                logger.info(f"Verified lookup has {len(verified_lookup)} entries")
                 
-                # Convert all candidates to records, using verified data when available
+                # Convert candidates to records, but skip confirmed ones already saved
                 vulns = []
+                skipped_already_saved = 0
                 for v in all_candidates:
-                    # Defensive type check
                     if not isinstance(v, dict):
                         logger.warning(f"Skipping non-dict candidate: {type(v)}")
                         continue
                     
-                    # Use verified version if available, otherwise use raw candidate
                     key = (v.get("file_path"), v.get("line_start"))
                     source = verified_lookup.get(key, v)
                     
-                    # Log if we're using verified data
-                    if key in verified_lookup:
-                        logger.info(f"Using VERIFIED data for {key}: confirmed={source.get('confirmed')}")
+                    # Skip confirmed vulnerabilities - they were already saved in real-time
+                    if source.get("confirmed", False):
+                        skipped_already_saved += 1
+                        continue
                     
-                    # BUG FIX: Properly propagate severity from verified result
-                    # The LLM may return "critical" which should override the default "high"
-                    severity = source.get("severity")
-                    if not severity:
-                        severity = self._map_severity(source.get("vuln_type", "unknown"))
-                    
-                    # BUG FIX: Create a deep copy of source for details to prevent
-                    # mutable dict issues where one row's details overwrite another
-                    import copy
-                    source_copy = copy.deepcopy(source)
-                    
-                    # BUG FIX: Extract fix_suggestion from verified result (was only in details JSON)
-                    fix_suggestion = source_copy.get("fix_suggestion", "") or ""
-                    
-                    # BUG FIX: Use actual confidence from LLM instead of hardcoded 0.8
-                    # LLM returns confidence as string (high/medium/low), convert to score
-                    confidence_str = source_copy.get("confidence", "medium")
-                    if isinstance(confidence_str, (int, float)):
-                        confidence_score = float(confidence_str)
-                    elif confidence_str.lower() == "high":
-                        confidence_score = 0.90
-                    elif confidence_str.lower() == "medium":
-                        confidence_score = 0.70
-                    else:  # low
-                        confidence_score = 0.50
-                    
-                    # BUG FIX: Detect false positives for safe Sequelize scalar lookups
-                    # Pattern: Model.findOne({where: {key: req.body.x}}) is SAFE
-                    # Only Model.findOne({where: req.body}) is dangerous (operator injection)
-                    false_positive = False
-                    rule_id = source_copy.get("rule_id", "")
-                    snippet = source_copy.get("code_snippet", "") or ""
-                    
-                    # Check for safe Sequelize scalar lookup pattern
-                    if rule_id == "taint-express-nosqli":
-                        # Safe patterns: {where: {key: value}} - scalar lookup
-                        # Dangerous patterns: {where: req.body} - whole object as where
-                        import re
-                        safe_pattern = r'\{where:\s*\{[^}]+\}\}'  # where: {key: value}
-                        dangerous_pattern = r'\{where:\s*(req\.(body|params|query)|[^{])'  # where: req.body
-                    
-                        if re.search(safe_pattern, snippet) and not re.search(dangerous_pattern, snippet):
-                            false_positive = True
-                            logger.info(f"Marking as FP - safe Sequelize scalar lookup: {snippet[:50]}...")
-                    
-                    # BUG FIX: Strip trailing colon from vuln_type in title
-                    vuln_type_clean = source_copy.get("vuln_type", "Unknown").replace(":", "").strip()
-                    
-                    vuln = {
-                        "type": source_copy.get("vuln_type", "unknown"),
-                        "severity": severity,
-                        "category": source_copy.get("rule_id", ""),
-                        "title": f"{vuln_type_clean}: {source_copy.get('function_name', source_copy.get('rule_id', 'unknown'))}",
-                        "description": source_copy.get("verification_reason", source_copy.get("message", "Candidate vulnerability")),
-                        "file_path": str(source_copy.get("file_path", "") or ""),
-                        "line_start": source_copy.get("line_start", 0),
-                        "line_end": source_copy.get("line_end", 0),
-                        "code_snippet": str(source_copy.get("code_snippet", "") or ""),
-                        "confirmed": bool(source_copy.get("confirmed", False)),
-                        "confidence_score": confidence_score,
-                        "false_positive": false_positive,
-                        "fix_suggestion": fix_suggestion,
-                        "details": json.loads(json.dumps(source_copy, default=str)),
-                    }
+                    # Use the helper method to build the record
+                    vuln = self._build_vulnerability_record(source)
                     vulns.append(vuln)
+                
+                logger.info(f"Skipped {skipped_already_saved} already-saved confirmed vulnerabilities")
+                logger.info(f"Prepared {len(vulns)} remaining vulnerability records for insert")
                 
                 logger.info(f"Prepared {len(vulns)} vulnerability records for insert")
                 
                 try:
                     result = await supabase.insert_vulnerabilities_batch(scan_id, vulns)
                     logger.info(f"Supabase insert result: {result}")
-                    logger.info(f"Saved {len(vulns)} vulnerability candidates to Supabase")
+                    logger.info(f"Saved {len(vulns)} additional vulnerability candidates to Supabase")
+                    logger.info(f"Total vulnerabilities in database: {saved_count + len(vulns)} ({saved_count} confirmed + {len(vulns)} unconfirmed)")
                     
                     # Update progress: Results saved (95%)
                     await supabase.update_scan_status(
                         scan_id, "running", 95,
                         current_stage="Save Results",
-                        stage_output={"stage": "save_results", "status": "completed", "vulnerabilities_saved": len(vulns)}
+                        stage_output={
+                            "stage": "save_results",
+                            "status": "completed",
+                            "confirmed_saved": saved_count,
+                            "unconfirmed_saved": len(vulns),
+                            "total_saved": saved_count + len(vulns)
+                        }
                     )
                 except Exception as insert_error:
                     logger.error(f"Failed to insert vulnerabilities: {insert_error}", exc_info=True)
@@ -1081,6 +1095,76 @@ class ScanWorker:
                 return f"{size:.1f}{unit}"
             size /= 1024
         return f"{size:.1f}TB"
+    
+    def _build_vulnerability_record(self, source: dict[str, Any]) -> dict[str, Any]:
+        """
+        Build a vulnerability record from a verified source.
+        
+        Args:
+            source: The verified vulnerability data
+            
+        Returns:
+            Dictionary formatted for Supabase insertion
+        """
+        import copy
+        import re
+        
+        # BUG FIX: Properly propagate severity from verified result
+        severity = source.get("severity")
+        if not severity:
+            severity = self._map_severity(source.get("vuln_type", "unknown"))
+        
+        # BUG FIX: Create a deep copy of source for details to prevent
+        # mutable dict issues where one row's details overwrite another
+        source_copy = copy.deepcopy(source)
+        
+        # BUG FIX: Extract fix_suggestion from verified result
+        fix_suggestion = source_copy.get("fix_suggestion", "") or ""
+        
+        # BUG FIX: Use actual confidence from LLM
+        confidence_str = source_copy.get("confidence", "medium")
+        if isinstance(confidence_str, (int, float)):
+            confidence_score = float(confidence_str)
+        elif confidence_str.lower() == "high":
+            confidence_score = 0.90
+        elif confidence_str.lower() == "medium":
+            confidence_score = 0.70
+        else:  # low
+            confidence_score = 0.50
+        
+        # BUG FIX: Detect false positives for safe Sequelize scalar lookups
+        false_positive = False
+        rule_id = source_copy.get("rule_id", "")
+        snippet = source_copy.get("code_snippet", "") or ""
+        
+        if rule_id == "taint-express-nosqli":
+            safe_pattern = r'\{where:\s*\{[^}]+\}\}'
+            dangerous_pattern = r'\{where:\s*(req\.(body|params|query)|[^{])'
+            if re.search(safe_pattern, snippet) and not re.search(dangerous_pattern, snippet):
+                false_positive = True
+        
+        # Generate proper title
+        vuln_type_clean = source_copy.get("vuln_type", "Unknown").replace("_", " ").title()
+        file_name = str(source_copy.get("file_path", "") or "").split("/")[-1] or "Unknown"
+        line_num = source_copy.get("line_start", 0)
+        location_info = source_copy.get('function_name', f"{file_name}:{line_num}")
+        
+        return {
+            "type": source_copy.get("vuln_type", "unknown") if source_copy.get("confirmed", False) else "unconfirmed",
+            "severity": severity,
+            "category": source_copy.get("rule_id", ""),
+            "title": f"{vuln_type_clean} in {location_info}",
+            "description": source_copy.get("verification_reason") or source_copy.get("message") or "Security vulnerability detected",
+            "file_path": str(source_copy.get("file_path", "") or ""),
+            "line_start": source_copy.get("line_start", 0),
+            "line_end": source_copy.get("line_end", 0),
+            "code_snippet": str(source_copy.get("code_snippet", "") or ""),
+            "confirmed": bool(source_copy.get("confirmed", False)),
+            "confidence_score": confidence_score,
+            "false_positive": false_positive,
+            "fix_suggestion": fix_suggestion,
+            "details": json.loads(json.dumps(source_copy, default=str)),
+        }
 
 
 # Global worker instance

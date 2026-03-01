@@ -169,3 +169,107 @@ For your use case, the most pragmatic path is probably: keep Semgrep with your i
 text
 Created 0 Endpoint->Function HAS_ROUTE edges
 421 endpoints were parsed but none were linked to functions. This means the route-to-handler relationship graph is empty — N+1 detection and any graph-based analysis that traverses Endpoint→Function→ORMCall won't work. This is a separate bug in your graph builder's HAS_ROUTE edge creation logic, not blocking for today's scan but worth filing.
+🟡 One Thing Worth Noting
+Candidate 2 (insecurity.ts:191) was confirmed as hardcoded_secret with jwt.verify(token, publicKey, ...) — but publicKey is a public key, not a secret. This is technically a false positive — using a public key for RS256 verification is correct and intentional. The model is flagging it because the rule name says "hardcoded-jwt-secret" and it sees a hardcoded key, but RS256 public keys are meant to be embedded.
+
+Worth adding to your verifier prompt:
+
+text
+Note: RS256/ES256 JWT verification using a hardcoded PUBLIC key is NOT a 
+vulnerability. Only flag hardcoded SYMMETRIC secrets (HS256) or hardcoded 
+PRIVATE keys as vulnerabilities.
+The Real Issue With Your NoSQL Rule
+Your taint-express-nosqli rule is firing on safe Sequelize ORM patterns. The rule is too broad — it treats any req.body flowing into a findAll({where: ...}) as injection, but Sequelize's ORM layer handles parameterization automatically.
+
+Actual dangerous patterns (what you actually want to catch):
+
+typescript
+// ❌ REAL injection — raw query with string concat
+sequelize.query(`SELECT * FROM users WHERE id = ${req.body.id}`)
+
+// ❌ REAL injection — operator injection via req.body object spread
+Model.findAll({ where: req.body })  // attacker can inject {$gt: ""} etc.
+
+// ✅ SAFE — Sequelize parameterizes this automatically
+Model.findAll({ where: { UserId: req.body.UserId } })
+Fix for your verifier prompt — add this instruction:
+
+text
+Note: Sequelize ORM calls like Model.findOne({where: {key: req.body.value}}) 
+are NOT injection vulnerabilities — Sequelize parameterizes these automatically. 
+Only flag as injection if:
+1. Raw sequelize.query() is used with string concatenation/template literals
+2. The entire req.body object is spread directly into where: {} without field selection
+3. MongoDB $where operator receives user input
+15/48 done, running at ~4s per candidate. But the false positive problem is now very clear and systemic.
+
+The Pattern Being Mass-Confirmed as False Positives
+Every single taint-express-nosqli finding on Sequelize where: { key: req.body.x } is being confirmed incorrectly. This is JUICE SHOP — a deliberately vulnerable app — so some are real, but the model is confirming all of them including safe ones.
+
+The real split is:
+
+typescript
+// ✅ SAFE — Sequelize parameterizes scalar values automatically
+Model.findOne({ where: { id: req.params.id } })
+Model.findAll({ where: { UserId: req.body.UserId } })
+
+// ❌ REAL VULN — whole body object as where clause (operator injection)
+Model.findAll({ where: req.body })
+
+// ❌ REAL VULN — raw query with template literal
+sequelize.query(`SELECT * FROM users WHERE id = ${req.body.id}`)
+Immediate Fix — Update the Semgrep Rule
+The nosqli rule's Sequelize patterns should only flag the dangerous forms, not scalar lookups:
+
+text
+# REMOVE these patterns — they fire on safe scalar lookups:
+- pattern: "$MODEL.findOne({where: {$KEY: $SINK}})"
+- pattern: "$MODEL.findAll({where: {$KEY: $SINK}})"
+
+# KEEP these — these are genuinely dangerous:
+- pattern: "$MODEL.findOne({where: $SINK})"
+- pattern: "$MODEL.findAll({where: $SINK})"
+# ^ These only fire when the ENTIRE where value is user input,
+#   i.e. Model.findAll({where: req.body}) — real operator injection risk
+This single change will eliminate the bulk of your false positives in this scan category. The {$KEY: $SINK} patterns are too broad — they fire whenever any value inside a where clause comes from user input, which is normal and safe in Sequelize.
+
+Semgrep is still one of the **top 5 SAST tools in 2026** for speed, custom rules, and developer experience—**don't ditch it entirely**. It beats legacy tools (SonarQube, Fortify) on false positives and CI speed, and it's free/open-source with great JS/TS support for your stack. [aikido](https://www.aikido.dev/blog/semgrep-alternatives)
+
+That said, here are **better complements/alternatives** that excel where Semgrep is weaker (deep data flow, binary analysis, AI‑native detection, broader coverage):
+
+### Top Open-Source/Free Alternatives
+
+| Tool | Why Better Than Semgrep | Languages | Best For | Integration |
+|------|--------------------------|-----------|----------|-------------|
+| **CodeQL** (GitHub Advanced Security) | Semantic data flow + taint tracking; finds complex issues like SQLi chains Semgrep misses. Free for public repos, integrates with your GitHub workflow. | 15+ (strong JS/Python/Java) | Deep vuln chains, inter‑file flows | GitHub Actions, CLI |
+| **SonarQube Community** | Broader code quality + security rules (OWASP Top 10, CWE); better dashboard/reporting. Self‑hosted. | 30+ | Code smells + basic SAST | Docker, CI/CD |
+| **Bandit** (Python‑only) | Python‑specific depth (e.g., pickle deserialization); pair with Semgrep for JS. | Python | Python projects | Pip, CI |
+
+### Commercial/Enterprise with Free Tiers
+
+| Tool | Why Better | Languages | Free Tier | Best For |
+|------|------------|-----------|-----------|----------|
+| **Snyk Code** | 50x faster scans, AI fix suggestions, SCA+SAST combo. Lower false positives than Semgrep. | 30+ | 100 tests/month | Full workflow (IDE→CI), auto‑fixes |
+| **Checkmarx One** | Gartner leader, 35+ langs, binary analysis (no source needed), deep data flow. | 35+ | Trial | Enterprise depth, compliance |
+| **Cycode** | AI‑powered (94% less FPs, exploitability scoring), code‑to‑cloud tracing. 31% faster than legacy. | Broad | Trial | Risk prioritization |
+| **CodeAnt AI** | AI‑native end‑to‑end (pre‑commit blocking, PR fixes); beats Semgrep on workflow coverage. | Broad | Trial | Automation, IDE blocking |
+
+### Hybrid Recommendation for Your Stack
+
+**Keep Semgrep as your lightweight/fast first pass**, then layer on:
+
+1. **CodeQL** for semantic depth: `codeql database create` → `codeql database analyze` → parse JSON output into your `allcandidates` alongside Semgrep. Zero cost, perfect for JS/TS, finds inter‑file flows Semgrep can't. [appsecsanta](https://appsecsanta.com/sast-tools)
+2. **Snyk Code free tier** for AI‑powered fixes and SCA combo: CLI integrates easily, outputs structured JSON you can merge with your verifier. [stackhawk](https://www.stackhawk.com/blog/best-sast-tools-comparison/)
+
+This gives you Semgrep's speed + CodeQL's precision + Snyk's polish without replacing your LLM verifier/Qdrant pipeline. Total added cost: $0 initially.
+
+**Implementation sketch**:
+```python
+# In scan_worker.py, after semgrep:
+codeql_results = run_codeql(repo_dir, scan_id)  # parse to candidate schema
+snyk_results = run_snyk_code(repo_dir)  # parse JSON
+allcandidates.extend(codeql_results + snyk_results)
+# → your LLM verifier handles everything uniformly
+```
+
+CodeQL + Semgrep covers 95% of cases better than any single tool. [appsecsanta](https://appsecsanta.com/sast-tools)

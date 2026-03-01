@@ -284,7 +284,7 @@ def run_semgrep(repo_path: Path, scan_id: str) -> list[dict[str, Any]]:
     # Note: We do NOT delete the taint rule file - it's a persistent rule file, not a temporary one
 
 
-def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str, Any]]:
+def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Convert Semgrep findings to vulnerability candidate records.
 
@@ -300,7 +300,9 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
         scan_id: Unique scan identifier
 
     Returns:
-        List of vulnerability candidate dictionaries
+        Tuple of (candidates, stats) where:
+        - candidates: List of vulnerability candidate dictionaries
+        - stats: Dictionary with conversion statistics
     """
     logger.info("=" * 80)
     logger.info("SEMGREP TO PARSED NODES: Converting findings to candidates")
@@ -337,14 +339,25 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
             extra = finding.get("extra", {})
             if not isinstance(extra, dict):
                 extra = {}
+            # BUG FIX: Ensure proper UTF-8 encoding for message to prevent mojibake
             message = extra.get("message", "")
+            if message:
+                # Normalize Unicode and ensure UTF-8 encoding
+                import unicodedata
+                message = unicodedata.normalize('NFKC', str(message))
             severity = extra.get("severity", "INFO")
             # BUG FIX: Read actual source code with context instead of using extra.lines
             # which only returns the matched line text (e.g., "requires login" for juice-shop)
             code_snippet = _extract_code_context(path, start_line, end_line)
             # Debug log to verify we're getting real code, not "requires login"
             logger.debug(f"  Snippet preview [{start_line}]: {repr(code_snippet[:80]) if code_snippet else 'EMPTY'}")
+            # BUG FIX: Capture fingerprint with fallback to generated hash
             fingerprint = finding.get("fingerprint", "")
+            if not fingerprint:
+                # Generate fingerprint from finding content if semgrep doesn't provide one
+                import hashlib
+                fp_content = f"{check_id}:{path}:{start_line}:{code_snippet[:100]}"
+                fingerprint = hashlib.md5(fp_content.encode('utf-8')).hexdigest()
 
             # Skip test fixtures for secrets
             if _is_test_fixture(path, check_id):
@@ -416,6 +429,9 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
     candidates = _dedup_adjacent_findings(candidates, window=30)
     after_second_dedup = len(candidates)
 
+    # Calculate unique files affected
+    unique_files = set(c["file_path"] for c in candidates if isinstance(c, dict) and c.get("file_path"))
+    
     logger.info("-" * 80)
     logger.info(f"SEMGREP CONVERSION SUMMARY:")
     logger.info(f"  Total findings: {len(findings)}")
@@ -424,8 +440,23 @@ def semgrep_to_parsed_nodes(findings: list[dict], scan_id: str) -> list[dict[str
     logger.info(f"  After adjacent dedup: {after_second_dedup} unique candidates")
     logger.info(f"  Skipped (test fixtures): {skipped_test_fixtures}")
     logger.info(f"  Skipped (non-dict): {skipped_non_dict}")
+    logger.info(f"  Unique files affected: {len(unique_files)}")
     logger.info("=" * 80)
-    return candidates
+    
+    # Build stats dictionary for reporting
+    stats = {
+        "total_findings": len(findings),
+        "before_dedup": original_count,
+        "after_line_dedup": after_first_dedup,
+        "after_adjacent_dedup": after_second_dedup,
+        "final_candidates": len(candidates),
+        "skipped_test_fixtures": skipped_test_fixtures,
+        "skipped_non_dict": skipped_non_dict,
+        "unique_files": len(unique_files),
+        "deduped_count": len(findings) - len(candidates),
+    }
+    
+    return candidates, stats
 
 
 def _dedup_adjacent_findings(candidates: list[dict], window: int = 30) -> list[dict]:

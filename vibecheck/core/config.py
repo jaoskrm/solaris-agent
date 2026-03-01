@@ -65,12 +65,15 @@ class Settings(BaseSettings):
     # -------------------------------------------
     # OpenRouter LLM Configuration
     # -------------------------------------------
+    # NOTE: Models are chosen based on reliability with OpenRouter providers
+    # Avoid Hyperbolic-hosted models (qwen/qwen-2.5-coder-32b-instruct) - they frequently fail
+    # Prefer Together, DeepInfra, Fireworks, Nebius providers
     openrouter_primary_model: str = Field(
-        default="qwen/qwen2.5-72b-instruct:free",
+        default="deepseek/deepseek-r1-distill-qwen-32b",
         description="Primary OpenRouter model for verification",
     )
     openrouter_fallback_model: str = Field(
-        default="meta-llama/llama-3.2-3b-instruct:free",
+        default="meta-llama/llama-3.3-70b-instruct",
         description="Fallback OpenRouter model if primary fails",
     )
     openrouter_http_referer: str = Field(
@@ -87,6 +90,26 @@ class Settings(BaseSettings):
         description="Directory for cloning repositories",
     )
     max_repo_size_mb: int = Field(default=500, description="Maximum repository size in MB")
+
+    # -------------------------------------------
+    # Concurrency Settings
+    # -------------------------------------------
+    max_concurrent_llm_calls: int = Field(
+        default=10,
+        description="Maximum concurrent LLM API calls for verification",
+    )
+    llm_verification_batch_size: int = Field(
+        default=20,
+        description="Number of candidates to process in each verification batch",
+    )
+    max_concurrent_file_parsing: int = Field(
+        default=8,
+        description="Maximum concurrent files to parse with Tree-Sitter",
+    )
+    enable_semantic_lifting: bool = Field(
+        default=False,
+        description="Enable semantic lifting stage (disabled by default for performance)",
+    )
 
     @field_validator("environment")
     @classmethod

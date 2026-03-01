@@ -304,6 +304,81 @@ async def cancel_scan(scan_id: str) -> dict[str, str]:
         )
 
 
+class ScanReportResponse(BaseModel):
+    """Response model for scan report with findings."""
+    scan_id: str
+    repo_url: str
+    status: str
+    summary: dict[str, Any]
+    findings: list[dict[str, Any]]
+    report_path: str | None = None
+    created_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+@router.get(
+    "/{scan_id}/results",
+    response_model=ScanReportResponse,
+    summary="Get scan results",
+    description="Get the full scan report with all vulnerability findings.",
+)
+async def get_scan_results(scan_id: str) -> ScanReportResponse:
+    """
+    Get the full scan report including all vulnerability findings.
+    
+    Returns scan metadata and a list of confirmed vulnerabilities
+    with details, severity, and fix suggestions.
+    """
+    try:
+        supabase = get_supabase_client()
+        report_data = await supabase.get_report(scan_id)
+        
+        if not report_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Scan report not found: {scan_id}",
+            )
+        
+        scan_data = report_data.get("scan", {})
+        vulnerabilities = report_data.get("vulnerabilities", [])
+        
+        # Calculate summary statistics
+        confirmed_vulns = [v for v in vulnerabilities if v.get("confirmed", False)]
+        critical_count = sum(1 for v in confirmed_vulns if v.get("severity") == "critical")
+        high_count = sum(1 for v in confirmed_vulns if v.get("severity") == "high")
+        medium_count = sum(1 for v in confirmed_vulns if v.get("severity") == "medium")
+        low_count = sum(1 for v in confirmed_vulns if v.get("severity") == "low")
+        
+        summary = {
+            "total": len(vulnerabilities),
+            "confirmed": len(confirmed_vulns),
+            "critical": critical_count,
+            "high": high_count,
+            "medium": medium_count,
+            "low": low_count,
+        }
+        
+        return ScanReportResponse(
+            scan_id=scan_id,
+            repo_url=scan_data.get("repo_url", ""),
+            status=scan_data.get("status", "unknown"),
+            summary=summary,
+            findings=vulnerabilities,
+            report_path=scan_data.get("report_path"),
+            created_at=scan_data.get("created_at"),
+            completed_at=scan_data.get("completed_at"),
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get scan results: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get scan results: {str(e)}",
+        )
+
+
 # -------------------------------------------
 # Webhook Endpoints (for GitHub integration)
 # -------------------------------------------

@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VibeCheck — Purple Team Operations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400;1,600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --void:    #030406;
+  --deep:    #060a10;
+  --chamber: #0b1220;
+  --veil:    rgba(255,255,255,0.04);
+  --veil2:   rgba(255,255,255,0.08);
+  --veil3:   rgba(255,255,255,0.14);
+  --mist:    rgba(255,255,255,0.28);
+  --fog:     rgba(255,255,255,0.52);
+  --light:   rgba(255,255,255,0.82);
+  --white:   rgba(255,255,255,0.95);
+  --amber:       #c8a96e;
+  --amber-dim:   rgba(200,169,110,0.12);
+  --amber-glow:  rgba(200,169,110,0.06);
+  --amber-edge:  rgba(200,169,110,0.22);
+  --crit: rgba(240,140,140,0.85);
+  --high: rgba(230,170,110,0.85);
+  --med:  rgba(200,200,140,0.80);
+  --low:  rgba(140,180,210,0.75);
+  --serif: 'Cormorant Garamond', Georgia, serif;
+  --mono:  'JetBrains Mono', monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width:100%; height:100%; overflow:hidden; background:var(--void); color:var(--fog); font-family:var(--mono); cursor:default; }
+
+#app { position:relative; z-index:1; display:grid; grid-template-rows:56px 1fr 234px; height:100vh; opacity:0; animation:appReveal 1.2s cubic-bezier(0.16,1,0.3,1) 0.8s forwards; }
+@keyframes appReveal { to { opacity:1; } }
+
+#hdr { display:flex; align-items:center; padding:0 28px; background:linear-gradient(180deg,rgba(3,4,6,0.95) 0%,rgba(3,4,6,0.6) 100%); backdrop-filter:blur(24px); border-bottom:1px solid var(--veil2); position:relative; z-index:50; }
+#hdr::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent 0%,var(--amber-edge) 20%,rgba(200,169,110,0.5) 50%,var(--amber-edge) 80%,transparent 100%); }
+.logo { font-family:var(--serif); font-size:20px; font-weight:300; letter-spacing:0.25em; color:var(--white); text-transform:uppercase; flex-shrink:0; line-height:1; }
+.logo em { font-style:italic; font-weight:600; color:var(--amber); letter-spacing:0.1em; }
+.hdr-sep { width:1px; height:18px; background:var(--veil2); margin:0 24px; flex-shrink:0; }
+.hdr-badge { display:flex; align-items:center; gap:7px; font-size:8px; letter-spacing:0.18em; color:var(--mist); }
+.hdr-badge b { color:var(--fog); font-weight:400; }
+.hdr-pulse { width:5px; height:5px; border-radius:50%; background:var(--amber); box-shadow:0 0 8px var(--amber-edge),0 0 16px var(--amber-dim); animation:pulse 2.8s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
+.hdr-right { margin-left:auto; display:flex; align-items:center; gap:0; }
+.hdr-stat { display:flex; flex-direction:column; align-items:center; padding:0 20px; gap:2px; border-left:1px solid var(--veil); }
+.hdr-stat:last-child { border-right:1px solid var(--veil); }
+.hdr-stat-n { font-family:var(--serif); font-size:18px; font-weight:300; color:var(--white); line-height:1; letter-spacing:0.06em; }
+.hdr-stat-l { font-size:7px; letter-spacing:0.2em; color:var(--mist); }
+.mission-clock { padding:0 0 0 24px; font-size:8px; letter-spacing:0.14em; color:var(--mist); font-variant-numeric:tabular-nums; }
+.mission-clock span { color:var(--amber); }
+
+#mid { display:grid; grid-template-columns:1fr 340px; overflow:hidden; position:relative; }
+#gp { position:relative; overflow:hidden; cursor:crosshair; }
+#gc { position:absolute; inset:0; }
+#lo { position:absolute; inset:0; pointer-events:none; z-index:10; }
+
+#kc { position:absolute; top:18px; left:50%; transform:translateX(-50%); z-index:20; display:flex; align-items:center; background:rgba(3,4,6,0.7); backdrop-filter:blur(16px); border:1px solid var(--veil2); padding:6px 16px; }
+#kc::before { content:''; position:absolute; top:-1px; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,var(--amber-edge),transparent); }
+.kc-ph { display:flex; align-items:center; gap:6px; padding:0 12px; font-size:7.5px; letter-spacing:0.2em; font-family:var(--mono); }
+.kc-ph:not(:first-child) { border-left:1px solid var(--veil); }
+.kc-ph.done{color:var(--mist);} .kc-ph.live{color:var(--amber);} .kc-ph.pend{color:var(--veil3);}
+.kc-dot { width:4px; height:4px; border-radius:50%; background:currentColor; flex-shrink:0; }
+.kc-ph.live .kc-dot { animation:pulse 1.4s ease-in-out infinite; box-shadow:0 0 6px currentColor; }
+
+.corner { position:absolute; width:18px; height:18px; z-index:5; pointer-events:none; opacity:0.25; }
+.corner::before,.corner::after { content:''; position:absolute; background:var(--amber); }
+.corner::before{width:100%;height:1px;} .corner::after{width:1px;height:100%;}
+.corner.tl{top:20px;left:20px;} .corner.tl::after{top:0;left:0;}
+.corner.tr{top:20px;right:20px;} .corner.tr::before{right:0;} .corner.tr::after{top:0;right:0;}
+.corner.bl{bottom:20px;left:20px;} .corner.bl::before{bottom:0;top:auto;left:0;} .corner.bl::after{bottom:0;top:auto;left:0;}
+.corner.br{bottom:20px;right:20px;} .corner.br::before{bottom:0;top:auto;right:0;} .corner.br::after{bottom:0;top:auto;right:0;}
+
+.nlabel { position:absolute; transform:translate(-50%,0); font-size:7.5px; letter-spacing:0.14em; white-space:nowrap; text-align:center; pointer-events:none; line-height:1.6; color:var(--mist); transition:color 0.3s,opacity 0.3s; }
+.nlabel.sel { color:var(--white); }
+
+#ticker { position:absolute; bottom:26px; left:22px; z-index:20; pointer-events:none; display:flex; flex-direction:column; gap:3px; }
+.tick { font-size:7.5px; letter-spacing:0.1em; color:var(--mist); animation:ticklife 4s ease forwards; display:flex; align-items:center; gap:8px; }
+.tick-line { width:24px; height:1px; background:var(--amber-edge); }
+@keyframes ticklife { 0%{opacity:0;transform:translateY(3px)} 8%{opacity:1;transform:none} 72%{opacity:1} 100%{opacity:0} }
+.g-hint { position:absolute; bottom:10px; right:22px; font-size:7px; letter-spacing:0.14em; color:var(--veil3); z-index:5; pointer-events:none; }
+
+#ins { border-left:1px solid var(--veil2); background:linear-gradient(180deg,rgba(6,10,16,0.95) 0%,rgba(3,4,6,0.98) 100%); backdrop-filter:blur(20px); display:flex; flex-direction:column; overflow:hidden; position:relative; }
+#ins::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,var(--amber-edge),transparent); }
+.panel-head { padding:12px 18px 10px; border-bottom:1px solid var(--veil); display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.panel-eyebrow { font-size:7.5px; letter-spacing:0.25em; color:var(--mist); text-transform:uppercase; }
+.panel-rule { flex:1; height:1px; background:var(--veil); }
+.panel-id { font-size:7.5px; color:var(--veil3); }
+#ins-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:20px; }
+.empty-circle { width:48px; height:48px; border-radius:50%; border:1px solid var(--veil2); display:flex; align-items:center; justify-content:center; opacity:0.4; }
+.empty-circle::after { content:''; width:10px; height:10px; border-radius:50%; background:var(--veil2); }
+#ins-empty p { font-family:var(--serif); font-size:13px; font-style:italic; color:var(--mist); text-align:center; line-height:1.7; opacity:0.5; }
+#ins-body { flex:1; overflow:hidden; display:flex; flex-direction:column; padding:16px 18px 0; }
+.a-eyebrow { font-size:7px; letter-spacing:0.22em; color:var(--mist); margin-bottom:4px; text-transform:uppercase; }
+.a-name { font-family:var(--serif); font-size:20px; font-weight:300; font-style:italic; color:var(--white); letter-spacing:0.04em; line-height:1.2; margin-bottom:10px; }
+.a-statusrow { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.a-status { font-size:7px; letter-spacing:0.18em; padding:2px 9px; border:1px solid; border-radius:1px; }
+.a-iter { font-size:7.5px; color:var(--mist); letter-spacing:0.08em; }
+.a-task { font-size:9.5px; color:var(--mist); line-height:1.75; margin-bottom:14px; font-family:var(--mono); }
+.sec-label { font-size:7px; letter-spacing:0.22em; color:var(--veil3); border-bottom:1px solid var(--veil); padding-bottom:5px; margin-bottom:8px; }
+.logs { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:1px; padding-bottom:12px; }
+.logs::-webkit-scrollbar{width:2px;} .logs::-webkit-scrollbar-thumb{background:var(--veil2);border-radius:2px;}
+.le { display:flex; gap:8px; font-size:8px; line-height:1.65; padding:2.5px 0; border-bottom:1px solid rgba(255,255,255,0.022); animation:lefade 0.4s ease; }
+@keyframes lefade{from{opacity:0;transform:translateX(5px)}to{opacity:1}}
+.lt{color:var(--veil3);flex-shrink:0;width:36px;font-size:7.5px;}
+.lk{flex-shrink:0;width:44px;font-size:7px;letter-spacing:0.1em;}
+.lk.info{color:rgba(140,190,240,0.75);} .lk.warn{color:var(--amber);} .lk.error{color:var(--crit);} .lk.action{color:var(--fog);} .lk.success{color:rgba(150,210,170,0.8);} .lk.cmd{color:var(--high);}
+.lm{color:var(--mist);font-size:8px;}
+.cmd-blk{font-size:7.5px;margin:2px 0 3px;padding:4px 10px;background:rgba(200,169,110,0.04);border-left:1px solid var(--amber-edge);color:rgba(200,169,110,0.65);word-break:break-all;line-height:1.6;}
+
+#bot{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--veil2);position:relative;}
+#bot::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--amber-edge) 30%,var(--amber-edge) 70%,transparent);}
+#trm{background:linear-gradient(180deg,rgba(4,8,6,0.98) 0%,rgba(3,4,6,0.99) 100%);display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--veil2);position:relative;}
+#trm::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:2;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.06) 2px,rgba(0,0,0,0.06) 3px);}
+.trm-bar{padding:7px 14px 6px;border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;gap:7px;flex-shrink:0;background:rgba(255,255,255,0.018);position:relative;z-index:3;}
+.trm-dots{display:flex;gap:5px;}
+.td{width:7px;height:7px;border-radius:50%;opacity:0.45;}
+.td.r{background:#c0392b;} .td.y{background:#d4ac0d;} .td.g{background:#27ae60;}
+.trm-name{font-size:7.5px;letter-spacing:0.16em;color:var(--mist);flex:1;text-align:center;}
+.trm-cnt{font-size:7.5px;color:var(--veil3);}
+.trm-body{flex:1;overflow-y:auto;padding:10px 14px;font-size:8.5px;line-height:1.85;position:relative;z-index:3;}
+.trm-body::-webkit-scrollbar{width:2px;} .trm-body::-webkit-scrollbar-thumb{background:var(--veil2);}
+.tl{display:flex;gap:8px;} .tpr{color:rgba(200,169,110,0.25);flex-shrink:0;} .tcm{color:rgba(200,169,110,0.7);}
+.tou{color:rgba(255,255,255,0.25);padding-left:12px;} .tok{color:rgba(150,210,170,0.65);padding-left:12px;} .ter{color:rgba(230,140,140,0.65);padding-left:12px;}
+.cur{display:inline-block;width:5px;height:9px;background:rgba(200,169,110,0.6);vertical-align:text-bottom;margin-left:2px;animation:cur 1.2s step-end infinite;}
+@keyframes cur{0%,100%{opacity:1;}50%{opacity:0;}}
+
+#rpt{background:linear-gradient(180deg,rgba(6,10,16,0.97) 0%,rgba(3,4,6,0.99) 100%);display:flex;flex-direction:column;overflow:hidden;}
+.rpt-top{padding:7px 14px 6px;border-bottom:1px solid var(--veil);display:flex;align-items:center;gap:0;flex-shrink:0;}
+.rpt-title{font-family:var(--serif);font-size:13px;font-style:italic;font-weight:300;color:var(--fog);}
+.rpt-stats{margin-left:auto;display:flex;gap:0;}
+.rst{display:flex;flex-direction:column;align-items:center;gap:1px;padding:0 14px;border-left:1px solid var(--veil);}
+.rst-n{font-family:var(--serif);font-size:18px;font-weight:300;color:var(--white);line-height:1.1;}
+.rst-l{font-size:7px;letter-spacing:0.15em;color:var(--mist);}
+.rpt-body{flex:1;overflow-y:auto;padding:7px 8px;display:flex;flex-direction:column;gap:4px;}
+.rpt-body::-webkit-scrollbar{width:2px;} .rpt-body::-webkit-scrollbar-thumb{background:var(--veil2);}
+.fc{background:rgba(255,255,255,0.016);border:1px solid var(--veil);border-radius:1px;padding:7px 10px;cursor:pointer;position:relative;overflow:hidden;transition:background 0.2s,border-color 0.2s;}
+.fc:hover{background:rgba(255,255,255,0.032);border-color:var(--veil2);}
+.fc::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;}
+.fc.critical::before{background:var(--crit);box-shadow:0 0 8px var(--crit);} .fc.high::before{background:var(--high);box-shadow:0 0 8px var(--high);} .fc.medium::before{background:var(--med);} .fc.low::before{background:var(--low);}
+.fc.confirmed{background:rgba(150,210,170,0.028);border-color:rgba(150,210,170,0.12);}
+.fc-top{display:flex;align-items:center;gap:7px;margin-bottom:3px;}
+.fc-sev{font-size:6.5px;letter-spacing:0.14em;padding:1px 6px;border:1px solid currentColor;border-radius:1px;flex-shrink:0;}
+.fc-sev.critical{color:var(--crit);} .fc-sev.high{color:var(--high);} .fc-sev.medium{color:var(--med);} .fc-sev.low{color:var(--low);}
+.fc-title{font-size:10px;color:var(--fog);flex:1;letter-spacing:0.01em;}
+.fc-tag{font-size:6.5px;letter-spacing:0.12em;padding:1px 6px;border-radius:1px;background:rgba(150,210,170,0.06);border:1px solid rgba(150,210,170,0.18);color:rgba(150,210,170,0.75);}
+.fc-static{font-size:6.5px;letter-spacing:0.12em;padding:1px 6px;border-radius:1px;background:var(--veil);border:1px solid var(--veil2);color:var(--mist);}
+.fc-meta{font-size:7px;color:var(--mist);letter-spacing:0.06em;display:flex;gap:10px;}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="hdr">
+    <div class="logo">Vibe<em>Check</em></div>
+    <div class="hdr-sep"></div>
+    <div class="hdr-badge"><div class="hdr-pulse"></div>MISSION ACTIVE</div>
+    <div class="hdr-sep"></div>
+    <div class="hdr-badge">ID <b>b6dda26e</b></div>
+    <div class="hdr-sep"></div>
+    <div class="hdr-badge">TARGET <b>localhost:3000</b></div>
+    <div class="hdr-right">
+      <div class="hdr-stat"><div class="hdr-stat-n">11</div><div class="hdr-stat-l">AGENTS</div></div>
+      <div class="hdr-stat"><div class="hdr-stat-n" style="color:var(--high)">7</div><div class="hdr-stat-l">FINDINGS</div></div>
+      <div class="hdr-stat"><div class="hdr-stat-n" style="color:rgba(150,210,170,0.9)">2</div><div class="hdr-stat-l">CONFIRMED</div></div>
+      <div class="mission-clock">ELAPSED <span id="clock">00:00:00</span></div>
+    </div>
+  </header>
+  <div id="mid">
+    <div id="gp">
+      <canvas id="gc"></canvas>
+      <div id="lo"></div>
+      <div id="kc">
+        <div class="kc-ph done"><div class="kc-dot"></div>RECON</div>
+        <div class="kc-ph done"><div class="kc-dot"></div>WEAPONIZE</div>
+        <div class="kc-ph live"><div class="kc-dot"></div>EXPLOIT</div>
+        <div class="kc-ph pend"><div class="kc-dot"></div>POST-EXPLOIT</div>
+        <div class="kc-ph pend"><div class="kc-dot"></div>REPORT</div>
+      </div>
+      <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+      <div id="ticker"></div>
+      <div class="g-hint">drag — scroll — click</div>
+    </div>
+    <div id="ins">
+      <div class="panel-head">
+        <div class="panel-eyebrow">Inspector</div>
+        <div class="panel-rule"></div>
+        <div class="panel-id" id="panel-id">—</div>
+      </div>
+      <div id="ins-empty"><div class="empty-circle"></div><p>Select a node<br>to inspect the agent</p></div>
+      <div id="ins-body" style="display:none">
+        <div class="a-eyebrow" id="a-eyebrow"></div>
+        <div class="a-name" id="a-name"></div>
+        <div class="a-statusrow"><div class="a-status" id="a-status"></div><div class="a-iter" id="a-iter"></div></div>
+        <div class="a-task" id="a-task"></div>
+        <div class="sec-label">ACTIVITY LOG</div>
+        <div class="logs" id="logs"></div>
+      </div>
+    </div>
+  </div>
+  <div id="bot">
+    <div id="trm">
+      <div class="trm-bar">
+        <div class="trm-dots"><div class="td r"></div><div class="td y"></div><div class="td g"></div></div>
+        <div class="trm-name">vibecheck-sandbox — privileged / host network</div>
+        <div class="trm-cnt" id="tcnt">0 exec</div>
+      </div>
+      <div class="trm-body" id="trm-body"></div>
+    </div>
+    <div id="rpt">
+      <div class="rpt-top">
+        <div class="rpt-title">Findings Report</div>
+        <div class="rpt-stats">
+          <div class="rst"><div class="rst-n" style="color:var(--high)">4</div><div class="rst-l">SAST</div></div>
+          <div class="rst"><div class="rst-n">7</div><div class="rst-l">TOTAL</div></div>
+          <div class="rst"><div class="rst-n" style="color:rgba(150,210,170,0.85)">2</div><div class="rst-l">CONFIRMED</div></div>
+        </div>
+      </div>
+      <div class="rpt-body" id="rpt-body"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+let elapsed=0;
+const clockEl=document.getElementById('clock');
+setInterval(()=>{elapsed++;const h=String(Math.floor(elapsed/3600)).padStart(2,'0'),m=String(Math.floor((elapsed%3600)/60)).padStart(2,'0'),s=String(elapsed%60).padStart(2,'0');clockEl.textContent=`${h}:${m}:${s}`;},1000);
+
+const NODES=[
+  {id:'purple-cmd',lbl:'PURPLE CMD',team:'purple',x:0,y:2.4,z:0,r:.26,desc:'Purple Commander'},
+  {id:'kg-agent',lbl:'KNOWLEDGE GR.',team:'blue',x:-3.9,y:1.0,z:-.7,r:.17,desc:'Knowledge Graph'},
+  {id:'sast-agent',lbl:'SAST ENGINE',team:'blue',x:-4.8,y:-.2,z:.7,r:.17,desc:'SAST Semgrep'},
+  {id:'llm-verify',lbl:'LLM VERIFIER',team:'blue',x:-3.6,y:-1.4,z:-.3,r:.15,desc:'LLM Verifier'},
+  {id:'traffic-mon',lbl:'TRAFFIC MON',team:'blue2',x:-2.0,y:.7,z:-2.9,r:.17,desc:'Traffic Monitor'},
+  {id:'sig-detect',lbl:'SIG DETECTOR',team:'blue2',x:-2.9,y:-.3,z:-3.9,r:.15,desc:'Signature Det.'},
+  {id:'redis-pub',lbl:'REDIS BRIDGE',team:'blue2',x:-1.2,y:-1.1,z:-3.7,r:.14,desc:'Redis IPC'},
+  {id:'red-cmd',lbl:'RED COMMANDER',team:'red',x:3.0,y:1.0,z:-.7,r:.22,desc:'Red Commander'},
+  {id:'alpha-recon',lbl:'ALPHA RECON',team:'red',x:4.3,y:-.1,z:.7,r:.17,desc:'Alpha Recon'},
+  {id:'gamma-exploit',lbl:'GAMMA EXPLOIT',team:'red',x:3.9,y:-1.3,z:-.7,r:.17,desc:'Gamma Exploit'},
+  {id:'critic',lbl:'CRITIC AGENT',team:'red',x:2.2,y:-1.2,z:.7,r:.14,desc:'Critic Agent'},
+  {id:'sandbox',lbl:'SANDBOX CTR',team:'sand',x:0,y:-2.7,z:0,r:.24,desc:'vibecheck-sandbox'},
+];
+const EDGES=[
+  {a:'purple-cmd',b:'kg-agent',p:true},{a:'purple-cmd',b:'traffic-mon',p:false},{a:'purple-cmd',b:'red-cmd',p:true},
+  {a:'kg-agent',b:'sast-agent',p:false},{a:'sast-agent',b:'llm-verify',p:false},
+  {a:'traffic-mon',b:'sig-detect',p:false},{a:'sig-detect',b:'redis-pub',p:false},{a:'redis-pub',b:'red-cmd',p:true},
+  {a:'red-cmd',b:'alpha-recon',p:false},{a:'red-cmd',b:'gamma-exploit',p:false},{a:'red-cmd',b:'critic',p:false},
+  {a:'alpha-recon',b:'sandbox',p:true},{a:'gamma-exploit',b:'sandbox',p:true},{a:'kg-agent',b:'sandbox',p:false},
+];
+const TC={purple:[0.68,0.64,0.92],blue:[0.52,0.74,0.95],blue2:[0.38,0.56,0.82],red:[0.92,0.58,0.58],sand:[0.80,0.70,0.46]};
+const TC_CSS={purple:'rgba(174,164,235,0.75)',blue:'rgba(133,189,242,0.72)',blue2:'rgba(97,143,210,0.65)',red:'rgba(235,148,148,0.75)',sand:'rgba(200,175,118,0.80)'};
+
+// ── SHADERS ─────────────────────────────────────────────
+
+// Flat-shaded crystal: per-face normals via non-indexed geometry + faceNormal attribute
+const crystalVert=`
+  attribute vec3 faceNormal;
+  attribute float aFaceId;
+  varying vec3 vFN;
+  varying float vFaceId;
+  void main(){
+    vFN=normalize(normalMatrix*faceNormal);
+    vFaceId=aFaceId;
+    gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
+  }
+`;
+const crystalFrag=`
+  varying vec3 vFN;
+  varying float vFaceId;
+  uniform vec3 uColor;
+  uniform float uTime;
+  uniform float uSelected;
+  uniform float uPhase;
+  void main(){
+    vec3 N=normalize(vFN);
+    // Three lights: cool top key, warm fill, ambient
+    float d1=max(dot(N,normalize(vec3(-0.3,1.0,0.7))),0.0);
+    float d2=max(dot(N,normalize(vec3(0.7,-0.4,0.3))),0.0)*0.35;
+    float d3=max(dot(N,normalize(vec3(0.0,0.0,1.0))),0.0)*0.2;
+    float light=0.15+d1*0.72+d2+d3;
+    // Per-face brightness variation — makes each facet a distinct value
+    float fv=fract(sin(vFaceId*127.1+311.7)*43758.5)*0.14;
+    // Specular
+    float spec=pow(max(dot(N,normalize(vec3(-0.3,1.0,0.7)+vec3(0.0,0.0,1.0))),0.0),32.0)*0.55;
+    float pulse=sin(uTime*3.0+uPhase)*0.5+0.5;
+    vec3 col=uColor*(light+fv+uSelected*pulse*0.22);
+    col+=vec3(0.85,0.92,1.0)*spec*(0.4+uSelected*0.5);
+    gl_FragColor=vec4(clamp(col,0.0,1.6),0.78+uSelected*0.14);
+  }
+`;
+
+// Crystal edges — sharp wireframe overlay
+const wireVert=`void main(){gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`;
+const wireFrag=`
+  uniform vec3 uColor;
+  uniform float uSelected;
+  uniform float uTime;
+  uniform float uPhase;
+  void main(){
+    float p=sin(uTime*2.5+uPhase)*0.5+0.5;
+    float a=0.28+uSelected*(0.28+p*0.22);
+    gl_FragColor=vec4(uColor*1.5,a);
+  }
+`;
+
+// Precision reticle — billboarded, two counter-rotating rings + tick marks + crosshairs
+const reticleVert=`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`;
+const reticleFrag=`
+  varying vec2 vUv;
+  uniform vec3 uColor;
+  uniform float uTime;
+  uniform float uSelected;
+  uniform float uPhase;
+  #define PI 3.14159265359
+  #define TAU 6.28318530718
+  void main(){
+    vec2 uv=vUv-0.5;
+    float d=length(uv);
+    float angle=atan(uv.y,uv.x);
+    float norm=(angle+PI)/TAU;
+
+    // Outer ring + ticks
+    float rot1=fract(norm+uTime*0.07);
+    float outerR=smoothstep(0.008,0.0,abs(d-0.44));
+    float maj=step(fract(rot1*8.0),0.05);
+    float mino=step(fract(rot1*24.0),0.03)*(1.0-maj);
+    float tickR=smoothstep(0.007,0.0,abs(d-(0.44+maj*0.045+mino*0.022)))*(maj*0.6+mino*0.35);
+
+    // Inner dashed ring — counter-rotation
+    float rot2=fract(norm-uTime*0.13+uPhase);
+    float dash=step(fract(rot2*12.0),0.58);
+    float innerR=smoothstep(0.007,0.0,abs(d-0.31))*dash;
+
+    // 4 crosshair segments between rings
+    float crossAngle=norm*4.0;
+    float crossA=fract(crossAngle+uTime*0.29);
+    float isCross=step(crossA,0.06);
+    float crossMask=step(0.32,d)*step(d,0.42);
+    float cross=isCross*crossMask*0.45;
+
+    // Small center diamond marker (4 tiny pips at 45-degree offsets)
+    float pipAngle=fract(norm*4.0+0.125); // rotated 45deg
+    float isPip=step(pipAngle,0.08);
+    float pipMask=smoothstep(0.008,0.0,abs(d-0.17))*isPip;
+
+    float a=(outerR*0.65+tickR+innerR*0.5+cross+pipMask*0.8)*(0.38+uSelected*0.55);
+    gl_FragColor=vec4(uColor+0.2,a);
+  }
+`;
+
+// Nebula background
+const bgVert=`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`;
+const bgFrag=`
+  varying vec2 vUv;
+  uniform float uTime;
+  float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+  float n(vec2 p){vec2 i=floor(p),f=fract(p),u=f*f*(3.0-2.0*f);return mix(mix(h(i),h(i+vec2(1,0)),u.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),u.x),u.y);}
+  float fbm(vec2 p){float v=0.0,a=0.5;for(int i=0;i<4;i++){v+=a*n(p);p*=2.1;a*=0.5;}return v;}
+  void main(){
+    vec2 uv=vUv;
+    float n1=fbm(uv*2.2+vec2(uTime*.012,uTime*.008));
+    float n2=fbm(uv*4.5-vec2(uTime*.007,uTime*.018));
+    float blueZ=smoothstep(0.7,0.1,uv.x)*smoothstep(0.0,0.5,uv.y);
+    float amberZ=smoothstep(0.3,0.9,uv.x)*smoothstep(0.5,0.9,uv.y);
+    vec2 c=uv-0.5;float vig=1.0-dot(c,c)*1.1;
+    vec3 col=vec3(0.010,0.015,0.022);
+    col+=vec3(0.02,0.05,0.12)*n1*blueZ*1.6;
+    col+=vec3(0.10,0.06,0.02)*n2*amberZ*0.8;
+    col+=vec3(0.005,0.01,0.025)*n1*(1.0-blueZ)*0.5;
+    col*=vig;
+    gl_FragColor=vec4(col,1.0);
+  }
+`;
+
+// ── BUILD FLAT-SHADED GEO ────────────────────────────────
+function buildFlatGeo(baseGeo){
+  const idx=baseGeo.toNonIndexed();
+  const pos=idx.getAttribute('position');
+  const count=pos.count;
+  const faceNormals=new Float32Array(count*3);
+  const faceIds=new Float32Array(count);
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),tmp=new THREE.Vector3();
+  for(let i=0;i<count;i+=3){
+    a.fromBufferAttribute(pos,i);b.fromBufferAttribute(pos,i+1);c.fromBufferAttribute(pos,i+2);
+    tmp.crossVectors(b.clone().sub(a),c.clone().sub(a)).normalize();
+    const fid=i/3;
+    for(let v=0;v<3;v++){faceNormals[(i+v)*3]=tmp.x;faceNormals[(i+v)*3+1]=tmp.y;faceNormals[(i+v)*3+2]=tmp.z;faceIds[i+v]=fid;}
+  }
+  idx.setAttribute('faceNormal',new THREE.BufferAttribute(faceNormals,3));
+  idx.setAttribute('aFaceId',new THREE.BufferAttribute(faceIds,1));
+  return idx;
+}
+
+// ── THREE INIT ───────────────────────────────────────────
+const canvas=document.getElementById('gc');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setClearColor(0x030406,1);
+const scene=new THREE.Scene();
+const cam=new THREE.PerspectiveCamera(44,1,0.1,80);
+cam.position.z=13.5;
+const pivot=new THREE.Group();
+scene.add(pivot);
+const nodeByID={};
+NODES.forEach(n=>nodeByID[n.id]=n);
+
+// Background
+const bgMat=new THREE.ShaderMaterial({vertexShader:bgVert,fragmentShader:bgFrag,uniforms:{uTime:{value:0}},depthWrite:false});
+const bgMesh=new THREE.Mesh(new THREE.PlaneGeometry(65,45),bgMat);
+bgMesh.position.z=-20;
+scene.add(bgMesh);
+
+// Stars
+const sGeo=new THREE.BufferGeometry();
+const sPos=new Float32Array(220*3);
+for(let i=0;i<220;i++){sPos[i*3]=(Math.random()-.5)*55;sPos[i*3+1]=(Math.random()-.5)*38;sPos[i*3+2]=-11+(Math.random()-.5)*4;}
+sGeo.setAttribute('position',new THREE.BufferAttribute(sPos,3));
+scene.add(new THREE.Points(sGeo,new THREE.PointsMaterial({color:0xffffff,size:.038,transparent:true,opacity:.09})));
+
+// ── NODES ────────────────────────────────────────────────
+const meshes=[],nodeMap={};
+NODES.forEach(def=>{
+  const [r,g,b]=TC[def.team];
+  const col=new THREE.Color(r,g,b);
+  const ph=Math.random()*Math.PI*2;
+
+  const uniforms={
+    uColor:{value:new THREE.Color(r,g,b)},
+    uTime:{value:0},uSelected:{value:0},uPhase:{value:ph}
+  };
+
+  // Octahedron — classic sharp diamond
+  const baseGeo=new THREE.OctahedronGeometry(def.r,1);
+  // Squash/stretch per team for variety
+  const scales={purple:[1,1.18,1],blue:[0.88,1.12,0.88],blue2:[1,1,1],red:[1.08,0.95,1.08],sand:[1,0.88,1]};
+  const [sx,sy,sz]=scales[def.team];
+  const pa=baseGeo.getAttribute('position');
+  for(let i=0;i<pa.count;i++) pa.setXYZ(i,pa.getX(i)*sx,pa.getY(i)*sy,pa.getZ(i)*sz);
+  pa.needsUpdate=true; baseGeo.computeVertexNormals();
+
+  const mat=new THREE.ShaderMaterial({
+    vertexShader:crystalVert,fragmentShader:crystalFrag,uniforms,transparent:true,side:THREE.DoubleSide
+  });
+  const m=new THREE.Mesh(buildFlatGeo(baseGeo),mat);
+  m.position.set(def.x,def.y,def.z);
+  m.userData={id:def.id,phase:ph};
+  pivot.add(m); meshes.push(m);
+
+  // Sharp wireframe via EdgesGeometry
+  const wireUni={
+    uColor:{value:new THREE.Color(Math.min(r+0.2,1),Math.min(g+0.2,1),Math.min(b+0.2,1))},
+    uTime:{value:0},uSelected:{value:0},uPhase:{value:ph}
+  };
+  const wireMat=new THREE.ShaderMaterial({vertexShader:wireVert,fragmentShader:wireFrag,uniforms:wireUni,transparent:true});
+  const wf=new THREE.LineSegments(new THREE.EdgesGeometry(baseGeo,12),wireMat);
+  wf.position.set(def.x,def.y,def.z);
+  pivot.add(wf);
+
+  // Billboarded reticle
+  const retSize=def.r*6.8;
+  const retUni={
+    uColor:{value:new THREE.Color(r,g,b)},
+    uTime:{value:0},uSelected:{value:0},uPhase:{value:ph}
+  };
+  const retMat=new THREE.ShaderMaterial({vertexShader:reticleVert,fragmentShader:reticleFrag,uniforms:retUni,transparent:true,depthWrite:false,side:THREE.DoubleSide});
+  const ret=new THREE.Mesh(new THREE.PlaneGeometry(retSize,retSize),retMat);
+  ret.position.set(def.x,def.y,def.z);
+  pivot.add(ret);
+
+  // Faint glow
+  const glowMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.02,side:THREE.BackSide});
+  const glow=new THREE.Mesh(new THREE.SphereGeometry(def.r*3.5,6,6),glowMat);
+  glow.position.set(def.x,def.y,def.z);
+  pivot.add(glow);
+
+  nodeMap[def.id]={m,wf,ret,glow,uniforms,wireUni,retUni,glowMat,def};
+});
+
+// ── EDGES ────────────────────────────────────────────────
+const edgeObjs=[];
+EDGES.forEach(e=>{
+  const a=nodeByID[e.a],b=nodeByID[e.b];
+  const pts=[new THREE.Vector3(a.x,a.y,a.z),new THREE.Vector3(b.x,b.y,b.z)];
+  const ba=e.p?0.12:0.05;
+  const mat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:ba});
+  pivot.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),mat));
+  edgeObjs.push({mat,ba});
+});
+
+// ── PARTICLES ────────────────────────────────────────────
+const PC=80,pPos=new Float32Array(PC*3),pGeo=new THREE.BufferGeometry();
+pGeo.setAttribute('position',new THREE.BufferAttribute(pPos,3));
+pivot.add(new THREE.Points(pGeo,new THREE.PointsMaterial({color:0xffffff,size:0.038,transparent:true,opacity:0.36})));
+const pState=Array.from({length:PC},(_,i)=>({eid:i%EDGES.length,t:Math.random(),spd:0.003+Math.random()*0.006}));
+
+// ── CONTROLS ─────────────────────────────────────────────
+let rX=0.14,rY=0,dragging=false,lx=0,ly=0,zoom=13.5;
+canvas.addEventListener('mousedown',e=>{dragging=true;lx=e.clientX;ly=e.clientY;});
+window.addEventListener('mouseup',()=>{dragging=false;});
+window.addEventListener('mousemove',e=>{
+  if(!dragging)return;
+  rY+=(e.clientX-lx)*0.007;rX+=(e.clientY-ly)*0.004;
+  rX=Math.max(-.85,Math.min(.85,rX));lx=e.clientX;ly=e.clientY;
+});
+canvas.addEventListener('wheel',e=>{zoom=Math.max(7.5,Math.min(20,zoom+e.deltaY*0.016));});
+
+// ── RAYCASTING ───────────────────────────────────────────
+const rc=new THREE.Raycaster(),mv=new THREE.Vector2();
+let selID=null;
+canvas.addEventListener('click',e=>{
+  const rect=canvas.getBoundingClientRect();
+  mv.x=((e.clientX-rect.left)/rect.width)*2-1;
+  mv.y=-((e.clientY-rect.top)/rect.height)*2+1;
+  rc.setFromCamera(mv,cam);
+  const hits=rc.intersectObjects(meshes);
+  if(hits.length){selID=hits[0].object.userData.id;openInspector(selID);}
+});
+
+// ── RESIZE ───────────────────────────────────────────────
+function resize(){
+  const el=document.getElementById('gp');
+  const w=el.clientWidth,h=el.clientHeight;
+  renderer.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();
+}
+resize();
+new ResizeObserver(resize).observe(document.getElementById('gp'));
+
+// ── LABELS ───────────────────────────────────────────────
+const lo=document.getElementById('lo');
+function updateLabels(){
+  lo.innerHTML='';
+  const rect=canvas.getBoundingClientRect();
+  NODES.forEach(def=>{
+    const p=new THREE.Vector3(def.x,def.y,def.z);
+    p.applyEuler(new THREE.Euler(rX,rY,0,'XYZ'));
+    const proj=p.clone().project(cam);
+    if(proj.z>=1)return;
+    const x=(proj.x*.5+.5)*rect.width,y=(1-(proj.y*.5+.5))*rect.height;
+    const lbl=document.createElement('div');
+    lbl.className='nlabel'+(selID===def.id?' sel':'');
+    lbl.style.left=x+'px';lbl.style.top=(y+def.r*60+10)+'px';
+    lbl.style.color=TC_CSS[def.team];
+    lbl.style.opacity=Math.max(0.2,Math.min(1,(p.z+8)/16+0.2));
+    lbl.textContent=def.lbl;lo.appendChild(lbl);
+  });
+}
+
+// ── TICKER ───────────────────────────────────────────────
+const activeEdges=new Set();
+let edgeTmr=0;
+const ticker=document.getElementById('ticker');
+function addTick(a,b){
+  const d=document.createElement('div');d.className='tick';
+  d.innerHTML=`<div class="tick-line"></div>${a} <span style="color:var(--amber);opacity:.5">→</span> ${b}`;
+  ticker.appendChild(d);setTimeout(()=>d.remove(),4000);
+  if(ticker.children.length>4)ticker.firstChild?.remove();
+}
+
+// ── RENDER ───────────────────────────────────────────────
+let T=0;
+const _quat=new THREE.Quaternion(),_euler=new THREE.Euler();
+function loop(){
+  requestAnimationFrame(loop);T+=0.016;
+  pivot.rotation.x=rX;pivot.rotation.y=rY;cam.position.z=zoom;
+  bgMat.uniforms.uTime.value=T;
+
+  // Billboard quaternion
+  _euler.set(-rX,-rY,0,'YXZ');_quat.setFromEuler(_euler);
+
+  NODES.forEach(def=>{
+    const nm=nodeMap[def.id];if(!nm)return;
+    const sel=def.id===selID?1.0:0.0;
+    nm.uniforms.uTime.value=T;
+    nm.uniforms.uSelected.value+=(sel-nm.uniforms.uSelected.value)*0.10;
+    nm.wireUni.uTime.value=T;nm.wireUni.uSelected.value=nm.uniforms.uSelected.value;
+    nm.retUni.uTime.value=T;nm.retUni.uSelected.value=nm.uniforms.uSelected.value;
+    // Billboard reticle
+    nm.ret.quaternion.copy(_quat);
+    // Slow Y rotation on crystal
+    nm.m.rotation.y=T*0.20+def.y*0.4;
+    nm.wf.rotation.y=nm.m.rotation.y;
+    // Scale on select
+    const ts=1.0+nm.uniforms.uSelected.value*0.13;
+    nm.m.scale.setScalar(nm.m.scale.x+(ts-nm.m.scale.x)*0.08);
+    nm.wf.scale.copy(nm.m.scale);
+    nm.glowMat.opacity=0.015+nm.uniforms.uSelected.value*0.055;
+  });
+
+  edgeTmr+=0.016;
+  if(edgeTmr>1.0){
+    edgeTmr=0;const idx=Math.floor(Math.random()*EDGES.length);
+    activeEdges.add(idx);setTimeout(()=>activeEdges.delete(idx),1600);
+    const e=EDGES[idx];addTick(nodeByID[e.a].desc,nodeByID[e.b].desc);
+  }
+  edgeObjs.forEach(({mat,ba},i)=>{const t=activeEdges.has(i)?Math.min(0.65,ba+0.45):ba;mat.opacity+=(t-mat.opacity)*0.1;});
+
+  pState.forEach((ps,i)=>{
+    ps.t=(ps.t+ps.spd)%1;const e=EDGES[ps.eid],a=nodeByID[e.a],b=nodeByID[e.b];
+    pPos[i*3]=a.x+(b.x-a.x)*ps.t;pPos[i*3+1]=a.y+(b.y-a.y)*ps.t;pPos[i*3+2]=a.z+(b.z-a.z)*ps.t;
+  });
+  pGeo.attributes.position.needsUpdate=true;
+  updateLabels();renderer.render(scene,cam);
+}
+loop();
+
+// ── AGENT DATA ───────────────────────────────────────────
+const AGENT_DATA={
+  'purple-cmd':{team:'purple',eyebrow:'PURPLE TEAM',name:'Purple Commander',status:'ORCHESTRATING',iter:'ITERATION 2/3',task:'Coordinating Blue + Red team strategy. Consuming defense analytics. Adapting attack surface in real time.',
+    logs:[{t:'16:19:01',k:'info',m:'Mission b6dda26e initialized — target localhost:3000'},{t:'16:19:03',k:'action',m:'Dispatching Alpha Recon: nmap + service fingerprint'},{t:'16:19:15',k:'warn',m:'Blue intel: HIGH severity /api/login (SQLi)'},{t:'16:19:16',k:'action',m:'FORBIDDEN: /api/login — 5-iteration cooldown applied'},{t:'16:19:20',k:'info',m:'Routing Gamma → CUPS :631 (CVE-2022-2587)'},{t:'16:19:45',k:'warn',m:'CUPS exploit inconclusive — requesting Critic review'},{t:'16:19:50',k:'info',m:'Critic: try /api/SecurityQuestion + SSRF via file upload'}]},
+  'kg-agent':{team:'blue',eyebrow:'BLUE ANALYTIC',name:'Knowledge Graph',status:'COMPLETE',iter:'PHASE: COMPLETE',task:'Full AST parse with tree-sitter. Call graph and dependency map built and passed to SAST engine.',
+    logs:[{t:'16:18:20',k:'info',m:'Initializing tree-sitter parser'},{t:'16:18:31',k:'cmd',m:'tree-sitter parse src/**/*.js --output graph.json'},{t:'16:18:44',k:'success',m:'847 files — 21,403 AST nodes parsed'},{t:'16:18:52',k:'success',m:'Graph complete: 1,204 nodes / 3,891 edges'},{t:'16:18:53',k:'info',m:'Forwarding to SAST Semgrep Engine'}]},
+  'sast-agent':{team:'blue',eyebrow:'BLUE ANALYTIC',name:'SAST Semgrep',status:'COMPLETE',iter:'PHASE: COMPLETE',task:'Full ruleset scan. Deduped 47 → 12 findings. All candidates forwarded for LLM verification.',
+    logs:[{t:'16:18:54',k:'cmd',m:'semgrep --config=auto --json -o findings.json ./src'},{t:'16:19:00',k:'info',m:'Scan complete. Raw: 47'},{t:'16:19:01',k:'info',m:'Deduplication: 47 → 12 unique'},{t:'16:19:02',k:'warn',m:'routes/user.js:142 — SQLi sink'},{t:'16:19:03',k:'warn',m:'frontend/basket.js:89 — XSS innerHTML'},{t:'16:19:05',k:'info',m:'12 candidates → LLM Verifier'}]},
+  'llm-verify':{team:'blue',eyebrow:'BLUE ANALYTIC',name:'LLM Verifier',status:'COMPLETE',iter:'PHASE: COMPLETE',task:'Verified SAST candidates via chain-of-thought reasoning. 8 false positives removed. 4 confirmed.',
+    logs:[{t:'16:19:06',k:'info',m:'12 candidates received'},{t:'16:19:07',k:'action',m:'CONFIRMED: routes/user.js:142 — SQLi'},{t:'16:19:09',k:'action',m:'CONFIRMED: basket.js:89 — Stored XSS'},{t:'16:19:11',k:'info',m:'FALSE POS: models/order.js:201 — parameterized query'},{t:'16:19:13',k:'success',m:'4 confirmed / 8 false positive'},{t:'16:19:14',k:'info',m:'Publishing to Purple Report'}]},
+  'traffic-mon':{team:'blue2',eyebrow:'BLUE DEFENSIVE',name:'Traffic Monitor',status:'ACTIVE',iter:'LIVE',task:'Real-time request analysis on localhost:3000. Publishing severity-classified alerts to Redis stream.',
+    logs:[{t:'16:19:10',k:'warn',m:'POST /api/login — SQLi pattern in body'},{t:'16:19:15',k:'error',m:'ALERT: SQL_INJECTION /api/login — HIGH'},{t:'16:19:16',k:'action',m:'Published to defense_analytics'},{t:'16:19:22',k:'warn',m:'GET /rest/products/search — XSS in ?q='},{t:'16:19:38',k:'warn',m:'GET /api/users/1→2 — IDOR probe detected'}]},
+  'sig-detect':{team:'blue2',eyebrow:'BLUE DEFENSIVE',name:'Signature Detector',status:'ACTIVE',iter:'LIVE',task:'Pattern matching: SQLi, XSS, IDOR, SSRF, path traversal. Severity classification engine.',
+    logs:[{t:'16:19:10',k:'warn',m:'Match: UNION SELECT — SQLi'},{t:'16:19:15',k:'error',m:'HIGH: SQLi on /api/login'},{t:'16:19:22',k:'warn',m:'Match: <script>alert — XSS'},{t:'16:19:38',k:'warn',m:'Match: sequential ID enum — IDOR'}]},
+  'redis-pub':{team:'blue2',eyebrow:'BLUE DEFENSIVE',name:'Redis IPC Bridge',status:'ACTIVE',iter:'STREAM: defense_analytics',task:'Publishing defense_analytics stream on :6381. Red Commander consumes for real-time strategy adaptation.',
+    logs:[{t:'16:19:15',k:'action',m:'XADD: {type:SQLi, sev:HIGH, ep:/api/login}'},{t:'16:19:23',k:'action',m:'XADD: {type:XSS, sev:MEDIUM, ep:/rest/products/search}'},{t:'16:19:40',k:'success',m:'Red Commander consumed. /api/login FORBIDDEN.'}]},
+  'red-cmd':{team:'red',eyebrow:'RED TEAM',name:'Red Commander',status:'ADAPTING',iter:'ITERATION 2/3',task:'LangGraph orchestrator. OBSERVE → ACT loop. Consuming Blue intel. FORBIDDEN list active on 1 endpoint.',
+    logs:[{t:'16:19:01',k:'info',m:'Commander online — LangGraph state machine init'},{t:'16:19:03',k:'action',m:'OBSERVE: dispatch Alpha Recon'},{t:'16:19:16',k:'warn',m:'Intel recv: /api/login FORBIDDEN'},{t:'16:19:20',k:'action',m:'ADAPT: route Gamma → CUPS :631'},{t:'16:19:50',k:'info',m:'Critic: try /api/SecurityQuestion + SSRF'}]},
+  'alpha-recon':{team:'red',eyebrow:'RED TEAM',name:'Alpha Recon',status:'COMPLETE',iter:'PHASE: COMPLETE',task:'Port scan, service enumeration, endpoint discovery. 3 open ports found, 9 API endpoints mapped.',
+    logs:[{t:'16:19:04',k:'cmd',m:'nmap -sV -p 1-65535 --open localhost'},{t:'16:19:08',k:'success',m:'3000: Juice Shop (Node.js)'},{t:'16:19:08',k:'success',m:'631: CUPS 2.4.1 — CVE-2022-2587'},{t:'16:19:08',k:'success',m:'8000: uvicorn ASGI'},{t:'16:19:11',k:'info',m:'Target map forwarded to Commander'}]},
+  'gamma-exploit':{team:'red',eyebrow:'RED TEAM',name:'Gamma Exploit',status:'RUNNING',iter:'ITERATION 2/3',task:'Payload delivery. SQLi, XSS, auth bypass, IDOR attempts. Adapting dynamically to FORBIDDEN list.',
+    logs:[{t:'16:19:18',k:'cmd',m:"POST /api/login '{\"email\":\"' OR 1=1--\"}'"},{t:'16:19:19',k:'error',m:'BLOCKED — FORBIDDEN endpoint (Blue HIGH)'},{t:'16:19:21',k:'cmd',m:'GET /rest/products/search?q=<img src=x onerror=alert(1)>'},{t:'16:19:22',k:'warn',m:'XSS payload in response — pending Critic'},{t:'16:19:24',k:'cmd',m:'GET localhost:631/printers — IDOR probe'},{t:'16:19:25',k:'info',m:'Empty printer list — no path found'}]},
+  'critic':{team:'red',eyebrow:'RED TEAM',name:'Critic Agent',status:'REVIEWING',iter:'REVIEW CYCLE 2',task:'Validating exploit attempts. Filtering false positives. Recommending strategy pivots to Commander.',
+    logs:[{t:'16:19:45',k:'info',m:'Reviewing 3 Gamma attempts'},{t:'16:19:46',k:'error',m:'FAILED: /api/login — FORBIDDEN'},{t:'16:19:47',k:'warn',m:'PARTIAL: XSS delivered, not reflected'},{t:'16:19:48',k:'error',m:'FAILED: CUPS IDOR — empty resource'},{t:'16:19:49',k:'action',m:'Pivot: /api/SecurityQuestion'},{t:'16:19:50',k:'action',m:'Pivot: SSRF via file upload'}]},
+  'sandbox':{team:'sand',eyebrow:'SHARED INFRA',name:'vibecheck-sandbox',status:'RUNNING',iter:'CONTAINER: ALIVE',task:'Shared Docker container. Privileged + host network. All team tooling executes here. Auto-restart on failure.',
+    logs:[{t:'16:19:03',k:'info',m:'Container init: privileged + network=host'},{t:'16:19:04',k:'cmd',m:'[alpha] nmap -sV -p 1-65535 localhost'},{t:'16:19:08',k:'success',m:'nmap: 3 services'},{t:'16:19:18',k:'cmd',m:'[gamma] curl POST /api/login SQLi'},{t:'16:19:21',k:'cmd',m:'[gamma] curl GET /rest/products/search XSS'},{t:'16:19:24',k:'cmd',m:'[gamma] curl GET :631/printers'}]},
+};
+
+function openInspector(id){
+  const d=AGENT_DATA[id];if(!d)return;
+  const def=nodeByID[id];if(!def)return;
+  document.getElementById('ins-empty').style.display='none';
+  document.getElementById('ins-body').style.display='flex';
+  const col=TC_CSS[def.team];
+  document.getElementById('panel-id').textContent=def.id;
+  document.getElementById('a-eyebrow').textContent=d.eyebrow;document.getElementById('a-eyebrow').style.color=col;
+  document.getElementById('a-name').textContent=d.name;document.getElementById('a-name').style.color=col;
+  document.getElementById('a-task').textContent=d.task;document.getElementById('a-iter').textContent=d.iter;
+  const st=document.getElementById('a-status');st.textContent=d.status;st.style.color=col;
+  st.style.borderColor=col.replace('.75)','.2)').replace('.80)','.2)').replace('.72)','.2)').replace('.65)','.2)');
+  st.style.background=col.replace('.75)','.06)').replace('.80)','.06)').replace('.72)','.06)').replace('.65)','.06)');
+  const logs=document.getElementById('logs');logs.innerHTML='';
+  d.logs.forEach((l,i)=>{
+    setTimeout(()=>{
+      const row=document.createElement('div');row.className='le';
+      row.innerHTML=`<span class="lt">${l.t}</span><span class="lk ${l.k}">[${l.k}]</span><span class="lm">${l.m}</span>`;
+      logs.appendChild(row);
+      if(l.k==='cmd'){const bl=document.createElement('div');bl.className='cmd-blk';bl.textContent='$ '+l.m;logs.appendChild(bl);}
+      logs.scrollTop=logs.scrollHeight;
+    },i*75);
+  });
+}
+setTimeout(()=>{selID='purple-cmd';openInspector('purple-cmd');},1000);
+
+// ── TERMINAL ─────────────────────────────────────────────
+const TERM_LINES=[
+  {t:'cmd',s:'nmap -sV -p 1-65535 --open localhost'},
+  {t:'out',s:'PORT     STATE  SERVICE  VERSION'},
+  {t:'out',s:'631/tcp  open   ipp      CUPS 2.4.1'},
+  {t:'out',s:'3000/tcp open   http     Node.js (Express)'},
+  {t:'out',s:'8000/tcp open   http     uvicorn'},
+  {t:'ok',s:'3 services fingerprinted.'},
+  {t:'cmd',s:"curl -sX POST localhost:3000/api/login -d '{\"email\":\"' OR 1=1--\"}'"},
+  {t:'err',s:'403 Forbidden — [BLUE TEAM BLOCK] HIGH severity on endpoint'},
+  {t:'cmd',s:"curl -s 'localhost:3000/rest/products/search?q=<img src=x onerror=alert(1)>'"},
+  {t:'out',s:'{"status":"success","data":[{"id":1,"name":"Apple Juice..."}]}'},
+  {t:'ok',s:'XSS payload present in response body.'},
+  {t:'cmd',s:'curl -s localhost:631/printers'},
+  {t:'out',s:'No printers are currently configured.'},
+  {t:'err',s:'IDOR probe inconclusive — empty resource list'},
+  {t:'cmd',s:'semgrep --config=auto --json ./src'},
+  {t:'ok',s:'12 unique findings post-deduplication.'},
+];
+const tb=document.getElementById('trm-body'),tc=document.getElementById('tcnt');
+let cmdN=0,tDelay=1000;
+TERM_LINES.forEach(l=>{
+  setTimeout(()=>{
+    const div=document.createElement('div');div.className='tl';
+    if(l.t==='cmd'){cmdN++;tc.textContent=cmdN+' exec';div.innerHTML=`<span class="tpr">$</span><span class="tcm">${l.s}</span>`;}
+    else if(l.t==='out')div.innerHTML=`<span class="tou">${l.s}</span>`;
+    else if(l.t==='ok')div.innerHTML=`<span class="tok">✓  ${l.s}</span>`;
+    else if(l.t==='err')div.innerHTML=`<span class="ter">✗  ${l.s}</span>`;
+    tb.appendChild(div);tb.scrollTop=tb.scrollHeight;
+  },tDelay);
+  tDelay+=l.t==='cmd'?860:220;
+});
+setTimeout(()=>{const c=document.createElement('div');c.className='tl';c.innerHTML=`<span class="tpr">$</span><span class="cur"></span>`;tb.appendChild(c);},tDelay+300);
+
+// ── FINDINGS ─────────────────────────────────────────────
+const FINDINGS=[
+  {sev:'high',title:'SQL Injection — /api/login',type:'SQLi',src:'SAST+DAST',confirmed:true,agent:'sast / gamma',cve:''},
+  {sev:'high',title:'CUPS RCE — port 631',type:'RCE',src:'RECON',confirmed:false,agent:'alpha-recon',cve:'CVE-2022-2587'},
+  {sev:'medium',title:'Stored XSS — Basket/Product',type:'XSS',src:'SAST',confirmed:true,agent:'sast / gamma',cve:''},
+  {sev:'medium',title:'IDOR — /api/users/* enumeration',type:'IDOR',src:'DAST',confirmed:false,agent:'gamma',cve:''},
+  {sev:'medium',title:'NoSQL Injection — Product model',type:'NoSQLi',src:'SAST',confirmed:false,agent:'sast',cve:''},
+  {sev:'low',title:'uvicorn debug endpoint exposed',type:'DISC',src:'RECON',confirmed:false,agent:'alpha-recon',cve:''},
+  {sev:'low',title:'Unauth /api/SecurityQuestions',type:'AUTH',src:'RECON',confirmed:false,agent:'alpha-recon',cve:''},
+];
+const rb=document.getElementById('rpt-body');
+FINDINGS.forEach((f,i)=>{
+  setTimeout(()=>{
+    const c=document.createElement('div');c.className=`fc ${f.sev}${f.confirmed?' confirmed':''}`;
+    c.innerHTML=`<div class="fc-top"><div class="fc-sev ${f.sev}">${f.sev.toUpperCase()}</div><div class="fc-title">${f.title}</div>${f.confirmed?'<div class="fc-tag">CONFIRMED</div>':'<div class="fc-static">STATIC</div>'}</div><div class="fc-meta"><span>${f.type}</span><span>${f.src}</span>${f.cve?`<span style="color:var(--crit)">${f.cve}</span>`:''}<span style="color:var(--mist)">${f.agent}</span></div>`;
+    rb.appendChild(c);
+  },1400+i*170);
+});
+</script>
+</body>
+</html>
