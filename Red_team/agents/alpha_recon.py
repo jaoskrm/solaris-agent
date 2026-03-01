@@ -21,7 +21,7 @@ from agents.a2a.messages import (
     MessageType,
     Priority,
 )
-from agents.state import RedTeamState
+from agents.state import RedTeamState, detect_target_type
 from agents.tools.registry import tool_registry
 from core.llm_client import llm_client
 from core.config import settings
@@ -137,8 +137,13 @@ async def alpha_recon(state: RedTeamState) -> dict[str, Any]:
     """
     logger.info("Alpha: Executing recon for mission %s", state.get("mission_id", "unknown"))
 
+    # Auto-detect mode from target if not already set
+    target = state.get('target', '')
+    mode = state.get("mode") or detect_target_type(target)
+    logger.info("Alpha: Detected mode=%s for target=%s", mode, target)
+
     # STATIC MODE: Code analysis instead of network recon
-    if state.get("mode", "live") == "static":
+    if mode == "static":
         logger.info("Alpha: STATIC MODE - Analyzing source code")
         target = state.get('target', '')
         

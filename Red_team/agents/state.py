@@ -67,7 +67,72 @@ class RedTeamState(TypedDict):
 
     # ── Error Handling ─────────────────────────────────────────
     errors: list[str]  # Error messages accumulated during execution
-    
+
     # ── Mode Configuration ─────────────────────────────────────
-    mode: str  # "live" for running app, "static" for code analysis
+    # Mode is now AUTO-DETECTED from target - see detect_target_type() in graph.py
+    # "live" for running app URL, "static" for code/repo analysis
+    mode: str | None  # Optional: will be auto-detected if not provided
     fast_mode: bool  # Skip recon tools for faster execution
+
+
+def detect_target_type(target: str) -> str:
+    """
+    Auto-detect whether target is a live URL or code for static analysis.
+
+    Returns:
+        "live" for running web applications (http/https URLs)
+        "static" for code repositories (GitHub URLs, local paths)
+
+    Examples:
+        >>> detect_target_type("http://localhost:3000")
+        "live"
+        >>> detect_target_type("https://example.com")
+        "live"
+        >>> detect_target_type("github.com/user/repo")
+        "static"
+        >>> detect_target_type("/home/user/myproject")
+        "static"
+    """
+    import re
+    from pathlib import Path
+
+    if not target:
+        return "live"  # Default fallback
+
+    target_lower = target.lower().strip()
+
+    # Check for GitHub URLs first (before generic HTTP check) -> Static mode
+    if "github.com" in target_lower or target_lower.startswith("git@github.com"):
+        return "static"
+
+    # Check for HTTP/HTTPS URLs (non-GitHub) -> Live mode
+    if target_lower.startswith(("http://", "https://")):
+        return "live"
+
+    # Check if it's a local file path that exists -> Static mode
+    try:
+        path = Path(target).expanduser().resolve()
+        if path.exists():
+            return "static"
+    except (OSError, ValueError):
+        pass
+
+    # Check for absolute or relative paths that look like file paths -> Static mode
+    # Matches: /home/user/project, ./project, ../project, C:\Users\project
+    path_patterns = [
+        r"^/[^/]",           # Unix absolute: /home, /var, etc.
+        r"^\./",             # Relative: ./
+        r"^\.\./",           # Parent relative: ../
+        r"^[a-zA-Z]:\\",     # Windows absolute: C:\
+    ]
+    for pattern in path_patterns:
+        if re.match(pattern, target):
+            return "static"
+
+    # Check for common repo indicators in path -> Static mode
+    repo_indicators = [".git", "/src/", "/code/", ".py", ".js", ".ts", ".go", ".java"]
+    if any(indicator in target for indicator in repo_indicators):
+        return "static"
+
+    # Default to live for anything else (domain names, IPs, etc.)
+    return "live"

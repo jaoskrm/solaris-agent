@@ -25,7 +25,7 @@ from typing import Any
 
 from langgraph.graph import END, StateGraph
 
-from agents.state import RedTeamState
+from agents.state import RedTeamState, detect_target_type
 from agents.commander import commander_plan, commander_observe
 from agents.alpha_recon import alpha_recon
 from agents.gamma_exploit import gamma_exploit, hitl_approval_gate
@@ -151,14 +151,31 @@ def create_initial_state(
     mission_id: str | None = None,
     max_reflections: int = 3,
     fast_mode: bool = False,
-    mode: str = "live",
+    mode: str | None = None,
 ) -> RedTeamState:
     """
     Create the initial state for a red team mission.
-    
+
     Args:
-        mode: "live" for running app URL, "static" for GitHub repo or local path
+        objective: Mission objective/description
+        target: Target to analyze (URL, GitHub repo, or local path)
+        max_iterations: Maximum loop iterations before forcing completion
+        mission_id: Optional mission ID (auto-generated if not provided)
+        max_reflections: Maximum self-reflection attempts for failed exploits
+        fast_mode: Skip recon tools for faster execution (live mode only)
+        mode: Optional mode override ("live" or "static"). If not provided,
+              mode is AUTO-DETECTED from the target:
+              - "live": HTTP/HTTPS URLs (e.g., http://localhost:3000)
+              - "static": GitHub repos, local paths (e.g., github.com/user/repo)
     """
+    # Auto-detect mode from target if not explicitly provided
+    detected_mode = mode if mode else detect_target_type(target)
+
+    logger.info(
+        "Creating mission: target=%s, detected_mode=%s (explicit_mode=%s)",
+        target, detected_mode, mode or "auto"
+    )
+
     state = RedTeamState(
         mission_id=mission_id or str(uuid.uuid4())[:8],
         objective=objective,
@@ -183,7 +200,7 @@ def create_initial_state(
         report_path=None,
         errors=[],
     )
-    # Add mode and fast_mode flags
-    state["mode"] = mode
+    # Add mode and fast_mode flags (mode is auto-detected if not provided)
+    state["mode"] = detected_mode
     state["fast_mode"] = fast_mode
     return state

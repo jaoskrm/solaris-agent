@@ -120,16 +120,27 @@ class RedTeamSupabaseClient:
         mission_id: str,
         target: str,
         objective: str | None = None,
-        mode: str = "live",
+        mode: str | None = None,
     ) -> dict[str, Any] | None:
         """Create a new mission record in Supabase.
-        
+
+        Args:
+            mission_id: Unique mission identifier
+            target: Target URL, GitHub repo, or local path
+            objective: Mission objective description
+            mode: "live", "static", or None for auto-detection
+
         Returns the created mission data or None if failed.
         """
+        # Auto-detect mode if not provided
+        if mode is None:
+            from agents.state import detect_target_type
+            mode = detect_target_type(target)
+
         if not self._enabled:
             logger.debug(f"Supabase not enabled - mission {mission_id} would be created")
             return None
-        
+
         mission_data = {
             "mission_id": mission_id,
             "target": target,

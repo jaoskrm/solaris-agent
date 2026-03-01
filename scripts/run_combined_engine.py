@@ -36,8 +36,9 @@ def parse_args():
         "--mode",
         type=str,
         choices=["live", "static"],
-        default="live",
-        help="Scan mode: 'live' for running app URL, 'static' for GitHub repo or local path (default: live)"
+        default=None,
+        help="Scan mode: 'live' for running app URL, 'static' for GitHub repo or local path. "
+             "If not specified, mode is AUTO-DETECTED from target."
     )
     parser.add_argument(
         "--target",
@@ -60,7 +61,7 @@ def parse_args():
     parser.add_argument(
         "--fast-mode",
         action="store_true",
-        help="Fast mode: skip recon tools (nmap), go straight to exploits (live mode only)"
+        help="Fast mode: skip recon tools (nmap), go straight to exploits (live targets only)"
     )
     return parser.parse_args()
 
