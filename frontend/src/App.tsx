@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Shield, Github, MessageSquare, GitBranch, Network } from 'lucide-react';
-import bgImage from './background.mp4';
 import { Landing } from './Landing';
 import { Dashboard } from './Dashboard';
 import { TeamChat } from './pages/TeamChat';
@@ -32,24 +31,30 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans overflow-hidden relative selection:bg-emerald-500/30">
       {/* Background Video - hidden when on swarm view */}
+      {/* Fixed Background Video - FULL FRAME, NO CROPPING */}
       {currentView !== 'swarm' && (
-        <div className="absolute inset-0 z-0">
+        <div className="fixed inset-0 z-0 overflow-hidden">
           <video
             autoPlay
             muted
             loop
             playsInline
-            className="w-full h-full object-cover"
-            poster={bgImage}
+            className="w-screen h-screen object-fill scale-[1.05] -translate-y-[2%]"  // Key fixes
+            style={{
+              objectPosition: 'center 10%',  // Adjust vertical position
+            }}
           >
-            <source src={bgImage} type="video/mp4" />
+            <source src="/background.mp4" type="video/mp4" />
           </video>
-          {/* Reduced overlay opacity for better visibility */}
-          <div className="absolute inset-0 bg-black/40 mix-blend-multiply"></div>
-          {/* Subtle radial gradient */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[600px] bg-emerald-900/20 blur-[120px] rounded-full pointer-events-none"></div>
-          {/* Bottom gradient for depth - lighter */}
-          <div className="absolute bottom-0 left-0 right-0 h-1/3 bg-gradient-to-t from-[#050505]/90 via-[#050505]/60 to-transparent"></div>
+          
+          {/* Optimized overlay */}
+          <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-black/50 to-black/80"></div>
+          
+          {/* Subtle glow - reduced size */}
+          <div className="absolute inset-0 bg-gradient-radial from-emerald-900/30 to-transparent via-transparent blur-xl animate-pulse"></div>
+          
+          {/* Bottom fade */}
+          <div className="absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-t from-[#050505] to-transparent"></div>
         </div>
       )}
 

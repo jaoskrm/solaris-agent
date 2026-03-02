@@ -50,6 +50,60 @@ class SupabaseClient:
             logger.info("Supabase connection established")
         return self._client
 
+    def _reset_client(self) -> None:
+        """Reset the cached client to force reconnection on next use."""
+        if self._client is not None:
+            logger.warning("Resetting Supabase client connection")
+            self._client = None
+
+    def _is_connection_error(self, error: Exception) -> bool:
+        """Check if an error is a connection-related error."""
+        error_msg = str(error).lower()
+        connection_errors = [
+            "server disconnected",
+            "connection",
+            "timeout",
+            "reset",
+            "closed",
+            "broken pipe",
+            "network",
+            "winerror 10035",  # Windows non-blocking socket error
+            "non-blocking socket",
+            "socket operation",
+        ]
+        return any(err in error_msg for err in connection_errors)
+
+    def _with_retry(self, operation, *args, **kwargs):
+        """
+        Execute a Supabase operation with connection error retry logic.
+        
+        Args:
+            operation: Callable that performs the Supabase operation
+            *args, **kwargs: Arguments to pass to the operation
+            
+        Returns:
+            Result of the operation
+            
+        Raises:
+            Exception: If all retries fail
+        """
+        max_retries = 2
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                return operation(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if self._is_connection_error(e) and attempt < max_retries - 1:
+                    logger.warning(f"Connection error on attempt {attempt + 1}, retrying: {e}")
+                    self._reset_client()
+                    continue
+                raise
+        
+        # Should not reach here, but just in case
+        raise last_error if last_error else Exception("Unknown error in _with_retry")
+
     # ==================== SCAN STATUS ====================
 
     def _get_scan_status_sync(self, scan_id: str) -> dict[str, Any] | None:
@@ -62,15 +116,18 @@ class SupabaseClient:
         Returns:
             Scan record or None if not found
         """
-        client = self._get_client()
-        result = (
-            client.table("scan_queue")
-            .select("*")
-            .eq("id", scan_id)
-            .single()
-            .execute()
-        )
-        return result.data if result else None
+        def _fetch():
+            client = self._get_client()
+            result = (
+                client.table("scan_queue")
+                .select("*")
+                .eq("id", scan_id)
+                .single()
+                .execute()
+            )
+            return result.data if result else None
+        
+        return self._with_retry(_fetch)
 
     async def get_scan_status(self, scan_id: str) -> dict[str, Any] | None:
         """
@@ -364,32 +421,35 @@ class SupabaseClient:
         Returns:
             Report data with scan info and vulnerabilities
         """
-        client = self._get_client()
+        def _fetch():
+            client = self._get_client()
+
+            # Get scan info
+            scan_result = (
+                client.table("scan_queue")
+                .select("*")
+                .eq("id", scan_id)
+                .single()
+                .execute()
+            )
+
+            if not scan_result or not scan_result.data:
+                return None
+
+            # Get vulnerabilities
+            vulns_result = (
+                client.table("vulnerabilities")
+                .select("*")
+                .eq("scan_id", scan_id)
+                .execute()
+            )
+
+            return {
+                "scan": scan_result.data,
+                "vulnerabilities": vulns_result.data if vulns_result else [],
+            }
         
-        # Get scan info
-        scan_result = (
-            client.table("scan_queue")
-            .select("*")
-            .eq("id", scan_id)
-            .single()
-            .execute()
-        )
-        
-        if not scan_result or not scan_result.data:
-            return None
-        
-        # Get vulnerabilities
-        vulns_result = (
-            client.table("vulnerabilities")
-            .select("*")
-            .eq("scan_id", scan_id)
-            .execute()
-        )
-        
-        return {
-            "scan": scan_result.data,
-            "vulnerabilities": vulns_result.data if vulns_result else [],
-        }
+        return self._with_retry(_fetch)
 
     async def get_report(self, scan_id: str) -> dict[str, Any] | None:
         """
@@ -420,36 +480,39 @@ class SupabaseClient:
         Returns:
             Dict with "scans" list and "total" count
         """
-        client = self._get_client()
+        def _fetch():
+            client = self._get_client()
+            
+            # Build query for paginated results
+            query = client.table("scan_queue").select("*")
+            
+            if status:
+                query = query.eq("status", status)
+            
+            result = (
+                query.order("created_at", desc=True)
+                .limit(limit)
+                .offset(offset)
+                .execute()
+            )
+            
+            scans = result.data if result else []
+            
+            # Get total count (separate query)
+            count_query = client.table("scan_queue").select("*", count="exact")
+            
+            if status:
+                count_query = count_query.eq("status", status)
+            
+            count_result = count_query.execute()
+            total = count_result.count if count_result else len(scans)
+            
+            return {
+                "scans": scans,
+                "total": total,
+            }
         
-        # Build query for paginated results
-        query = client.table("scan_queue").select("*")
-        
-        if status:
-            query = query.eq("status", status)
-        
-        result = (
-            query.order("created_at", desc=True)
-            .limit(limit)
-            .offset(offset)
-            .execute()
-        )
-        
-        scans = result.data if result else []
-        
-        # Get total count (separate query)
-        count_query = client.table("scan_queue").select("*", count="exact")
-        
-        if status:
-            count_query = count_query.eq("status", status)
-        
-        count_result = count_query.execute()
-        total = count_result.count if count_result else len(scans)
-        
-        return {
-            "scans": scans,
-            "total": total,
-        }
+        return self._with_retry(_fetch)
 
     async def list_scans(
         self,
@@ -467,6 +530,463 @@ class SupabaseClient:
         return await loop.run_in_executor(
             None,
             lambda: self._list_scans_sync(status, limit, offset)
+        )
+
+    # ==================== SWARM MISSIONS ====================
+
+    def _create_swarm_mission_sync(
+        self,
+        mission_id: str,
+        target: str,
+        objective: str,
+        mode: str,
+        max_iterations: int,
+        scan_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync method to create a swarm mission.
+
+        Args:
+            mission_id: Unique mission identifier
+            target: Target URL or repository
+            objective: Mission objective
+            mode: Scan mode ('live' or 'static')
+            max_iterations: Maximum iterations
+            scan_id: Optional linked scan ID
+
+        Returns:
+            Created mission record
+        """
+        def _insert():
+            client = self._get_client()
+            result = (
+                client.table("swarm_missions")
+                .insert({
+                    "id": mission_id,
+                    "scan_id": scan_id,
+                    "target": target,
+                    "objective": objective,
+                    "mode": mode,
+                    "max_iterations": max_iterations,
+                    "status": "pending",
+                    "progress": 0,
+                    "iteration": 0,
+                })
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_insert)
+
+    async def create_swarm_mission(
+        self,
+        mission_id: str,
+        target: str,
+        objective: str,
+        mode: str,
+        max_iterations: int,
+        scan_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to create a swarm mission.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._create_swarm_mission_sync(
+                mission_id, target, objective, mode, max_iterations, scan_id
+            )
+        )
+
+    def _get_swarm_mission_sync(self, mission_id: str) -> dict[str, Any] | None:
+        """
+        Sync method to get a swarm mission by ID.
+
+        Args:
+            mission_id: Unique mission identifier
+
+        Returns:
+            Mission record or None if not found
+        """
+        def _fetch():
+            client = self._get_client()
+            result = (
+                client.table("swarm_missions")
+                .select("*")
+                .eq("id", mission_id)
+                .single()
+                .execute()
+            )
+            return result.data if result else None
+        
+        return self._with_retry(_fetch)
+
+    async def get_swarm_mission(self, mission_id: str) -> dict[str, Any] | None:
+        """
+        Async wrapper to get a swarm mission.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_swarm_mission_sync(mission_id)
+        )
+
+    def _update_swarm_mission_sync(
+        self,
+        mission_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Sync method to update a swarm mission.
+
+        Args:
+            mission_id: Unique mission identifier
+            updates: Dictionary of fields to update
+
+        Returns:
+            Updated mission record
+        """
+        def _update():
+            client = self._get_client()
+            result = (
+                client.table("swarm_missions")
+                .update(updates)
+                .eq("id", mission_id)
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_update)
+
+    async def update_swarm_mission(
+        self,
+        mission_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to update a swarm mission.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._update_swarm_mission_sync(mission_id, updates)
+        )
+
+    # ==================== SWARM AGENT STATES ====================
+
+    def _create_swarm_agent_state_sync(
+        self,
+        mission_id: str,
+        agent_id: str,
+        agent_name: str,
+        agent_team: str,
+        status: str,
+        iter: str | None = None,
+        task: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync method to create an agent state record.
+        """
+        def _insert():
+            client = self._get_client()
+            result = (
+                client.table("swarm_agent_states")
+                .insert({
+                    "mission_id": mission_id,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "agent_team": agent_team,
+                    "status": status,
+                    "iter": iter,
+                    "task": task,
+                    "recent_logs": [],
+                })
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_insert)
+
+    async def create_swarm_agent_state(
+        self,
+        mission_id: str,
+        agent_id: str,
+        agent_name: str,
+        agent_team: str,
+        status: str,
+        iter: str | None = None,
+        task: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to create an agent state.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._create_swarm_agent_state_sync(
+                mission_id, agent_id, agent_name, agent_team, status, iter, task
+            )
+        )
+
+    def _get_swarm_agent_states_sync(self, mission_id: str) -> list[dict[str, Any]]:
+        """
+        Sync method to get all agent states for a mission.
+        """
+        def _fetch():
+            client = self._get_client()
+            result = (
+                client.table("swarm_agent_states")
+                .select("*")
+                .eq("mission_id", mission_id)
+                .execute()
+            )
+            return result.data if result else []
+        
+        return self._with_retry(_fetch)
+
+    async def get_swarm_agent_states(self, mission_id: str) -> list[dict[str, Any]]:
+        """
+        Async wrapper to get agent states.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_swarm_agent_states_sync(mission_id)
+        )
+
+    def _update_swarm_agent_state_sync(
+        self,
+        mission_id: str,
+        agent_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Sync method to update an agent state.
+        """
+        def _update():
+            client = self._get_client()
+            result = (
+                client.table("swarm_agent_states")
+                .update(updates)
+                .eq("mission_id", mission_id)
+                .eq("agent_id", agent_id)
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_update)
+
+    async def update_swarm_agent_state(
+        self,
+        mission_id: str,
+        agent_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to update an agent state.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._update_swarm_agent_state_sync(mission_id, agent_id, updates)
+        )
+
+    # ==================== SWARM AGENT EVENTS ====================
+
+    def _create_swarm_agent_event_sync(
+        self,
+        mission_id: str,
+        agent_name: str,
+        agent_team: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        iteration: int | None = None,
+        phase: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync method to create an agent event.
+        """
+        def _insert():
+            client = self._get_client()
+            result = (
+                client.table("swarm_agent_events")
+                .insert({
+                    "mission_id": mission_id,
+                    "agent_name": agent_name,
+                    "agent_team": agent_team,
+                    "event_type": event_type,
+                    "message": message,
+                    "payload": payload or {},
+                    "iteration": iteration,
+                    "phase": phase,
+                })
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_insert)
+
+    async def create_swarm_agent_event(
+        self,
+        mission_id: str,
+        agent_name: str,
+        agent_team: str,
+        event_type: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        iteration: int | None = None,
+        phase: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to create an agent event.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._create_swarm_agent_event_sync(
+                mission_id, agent_name, agent_team, event_type, message, payload, iteration, phase
+            )
+        )
+
+    def _get_swarm_agent_events_sync(
+        self,
+        mission_id: str,
+        limit: int = 100,
+        agent_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Sync method to get agent events for a mission.
+        """
+        def _fetch():
+            client = self._get_client()
+            query = (
+                client.table("swarm_agent_events")
+                .select("*")
+                .eq("mission_id", mission_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            
+            if agent_name:
+                query = query.eq("agent_name", agent_name)
+            
+            result = query.execute()
+            return result.data if result else []
+        
+        return self._with_retry(_fetch)
+
+    async def get_swarm_agent_events(
+        self,
+        mission_id: str,
+        limit: int = 100,
+        agent_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Async wrapper to get agent events.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_swarm_agent_events_sync(mission_id, limit, agent_name)
+        )
+
+    # ==================== SWARM FINDINGS ====================
+
+    def _create_swarm_finding_sync(
+        self,
+        mission_id: str,
+        title: str,
+        severity: str,
+        description: str | None = None,
+        finding_type: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        endpoint: str | None = None,
+        confirmed: bool = False,
+        agent_name: str | None = None,
+        cve_id: str | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync method to create a swarm finding.
+        """
+        def _insert():
+            client = self._get_client()
+            result = (
+                client.table("swarm_findings")
+                .insert({
+                    "mission_id": mission_id,
+                    "title": title,
+                    "description": description,
+                    "severity": severity,
+                    "finding_type": finding_type,
+                    "source": source,
+                    "target": target,
+                    "endpoint": endpoint,
+                    "confirmed": confirmed,
+                    "agent_name": agent_name,
+                    "cve_id": cve_id,
+                    "evidence": evidence or {},
+                })
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_insert)
+
+    async def create_swarm_finding(
+        self,
+        mission_id: str,
+        title: str,
+        severity: str,
+        description: str | None = None,
+        finding_type: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        endpoint: str | None = None,
+        confirmed: bool = False,
+        agent_name: str | None = None,
+        cve_id: str | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to create a swarm finding.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._create_swarm_finding_sync(
+                mission_id, title, severity, description, finding_type, source,
+                target, endpoint, confirmed, agent_name, cve_id, evidence
+            )
+        )
+
+    def _get_swarm_findings_sync(self, mission_id: str) -> list[dict[str, Any]]:
+        """
+        Sync method to get all findings for a mission.
+        """
+        def _fetch():
+            client = self._get_client()
+            result = (
+                client.table("swarm_findings")
+                .select("*")
+                .eq("mission_id", mission_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data if result else []
+        
+        return self._with_retry(_fetch)
+
+    async def get_swarm_findings(self, mission_id: str) -> list[dict[str, Any]]:
+        """
+        Async wrapper to get swarm findings.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_swarm_findings_sync(mission_id)
         )
 
 

@@ -43,7 +43,7 @@ print('Stream deleted - clean slate')
 
 Get-WmiObject Win32_Process | Where-Object {$_.CommandLine -like "*scan_worker*"} | Select-Object ProcessId, CommandLine
 
-Stop-Process -Id 15644 -Force
+Stop-Process -Id 34888 -Force
 
 
 
@@ -96,3 +96,82 @@ NOTE FOR macOS:
 
 
 pkill -f "scan_worker" 2>/dev/null && echo "✅ All scan workers killed" || echo "ℹ️ No scan workers found running"
+
+
+## Mission Management Script Created ✅
+
+I've created tools to check and manage pending missions in Redis.
+
+### 📋 New Scripts
+
+1. **`scripts/check_missions.py`** - Python script to manage missions
+2. **`scripts/check_missions.ps1`** - PowerShell wrapper for Windows
+
+### 🚀 Usage
+
+#### Check Pending Missions (Default)
+```powershell
+.\scripts\check_missions.ps1
+```
+Shows:
+- Pending missions count
+- Message details
+- Consumer groups
+- Stream statistics
+
+#### List All Redis Streams
+```powershell
+.\scripts\check_missions.ps1 -Streams
+```
+Shows all streams and their consumer groups.
+
+#### Show Recent Missions
+```powershell
+.\scripts\check_missions.ps1 -Recent
+# Or with count
+.\scripts\check_missions.ps1 -Recent -Count 20
+```
+
+#### Claim Stuck Missions
+```powershell
+.\scripts\check_missions.ps1 -Claim
+```
+Claims pending missions and acknowledges them. Use this when missions are stuck because a worker crashed.
+
+#### Clear All Pending (Danger!)
+```powershell
+.\scripts\check_missions.ps1 -Clear
+```
+**Warning:** This permanently clears all pending missions!
+
+### 📊 Understanding Mission States
+
+| State | Description | Action |
+|-------|-------------|--------|
+| **Pending** | Mission sent to worker but not acknowledged | Check if worker is running |
+| **Claimed** | Mission claimed by a worker | Normal - being processed |
+| **Acknowledged** | Mission completed | Removed from pending |
+
+### 🔧 Common Issues
+
+**Missions stuck in pending:**
+1. Worker crashed or was stopped
+2. Use `-Claim` to recover and reprocess
+
+**No missions showing:**
+1. Redis is empty - no missions were triggered
+2. Wrong Redis port - check `.env` has port 6380
+
+**Can't connect to Redis:**
+1. Make sure Blue Team's docker-compose is running:
+   ```powershell
+   cd ..\..\vibecheck
+   docker compose up -d
+   ```
+
+
+
+.\scripts\swarm_worker.ps1 -Once
+.\scripts\health_check.ps1
+.\scripts\check_missions.ps1
+.\scripts\run_mission.ps1 -Objective "Scan for SQLi" -Target "http://localhost:8080"

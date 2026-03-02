@@ -1,5 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
+import {
+  triggerSwarmMission,
+  getSwarmMission,
+  getSwarmAgentStates,
+  getSwarmEvents,
+  getSwarmFindings,
+  createSwarmWebSocket,
+  type AgentStateResponse,
+  type SwarmFindingResponse,
+} from '../lib/api';
 
 // Types
 interface NodeDef {
@@ -440,6 +450,14 @@ export function Swarm() {
   const [execCount, setExecCount] = useState(0);
   const [findingsList, setFindingsList] = useState<Finding[]>([]);
 
+  // Mission state
+  const [missionId, setMissionId] = useState<string | null>(null);
+  const [missionStatus, setMissionStatus] = useState<string>('idle');
+  const [missionProgress, setMissionProgress] = useState(0);
+  const [agentStates, setAgentStates] = useState<Record<string, AgentStateResponse>>({});
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+
   // Clock
   useEffect(() => {
     const timer = setInterval(() => setElapsed(e => e + 1), 1000);
@@ -841,6 +859,173 @@ export function Swarm() {
     }
   };
 
+  // Fetch agent states from API
+  const fetchAgentStates = useCallback(async () => {
+    if (!missionId) return;
+    try {
+      const states = await getSwarmAgentStates(missionId);
+      const statesMap: Record<string, AgentStateResponse> = {};
+      states.forEach(state => {
+        statesMap[state.agent_id] = state;
+      });
+      setAgentStates(statesMap);
+    } catch (error) {
+      console.error('Failed to fetch agent states:', error);
+    }
+  }, [missionId]);
+
+  // Fetch mission status
+  const fetchMissionStatus = useCallback(async () => {
+    if (!missionId) return;
+    try {
+      const mission = await getSwarmMission(missionId);
+      setMissionStatus(mission.status);
+      setMissionProgress(mission.progress);
+    } catch (error) {
+      console.error('Failed to fetch mission status:', error);
+    }
+  }, [missionId]);
+
+  // Fetch findings
+  const fetchFindings = useCallback(async () => {
+    if (!missionId) return;
+    try {
+      const findings = await getSwarmFindings(missionId);
+      const mappedFindings: Finding[] = findings.map(f => ({
+        sev: f.severity as 'critical' | 'high' | 'medium' | 'low',
+        title: f.title,
+        type: f.finding_type || 'Unknown',
+        src: f.source || 'Unknown',
+        confirmed: f.confirmed,
+        agent: f.agent_name || 'Unknown',
+        cve: f.cve_id || '',
+      }));
+      setFindingsList(mappedFindings);
+    } catch (error) {
+      console.error('Failed to fetch findings:', error);
+    }
+  }, [missionId]);
+
+  // Fetch events for selected agent
+  const fetchAgentEvents = useCallback(async (agentId: string) => {
+    if (!missionId) return;
+    try {
+      const agentName = AGENT_DATA[agentId]?.name || agentId;
+      const events = await getSwarmEvents(missionId, 50, agentName);
+      const mappedLogs: AgentLog[] = events.map(e => ({
+        t: new Date(e.created_at).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        k: e.event_type,
+        m: e.message,
+      }));
+      setLogs(mappedLogs.reverse());
+    } catch (error) {
+      console.error('Failed to fetch agent events:', error);
+    }
+  }, [missionId]);
+
+  // Start a new mission
+  const startMission = useCallback(async (target: string) => {
+    try {
+      const response = await triggerSwarmMission({
+        target,
+        mode: 'live',
+        max_iterations: 3,
+      });
+      setMissionId(response.mission_id);
+      setMissionStatus('pending');
+      setMissionProgress(0);
+      
+      // Add to terminal
+      setTerminalLines(prev => [...prev,
+        { t: new Date().toLocaleTimeString(), s: `Mission ${response.mission_id.slice(0, 8)}... started` },
+        { t: new Date().toLocaleTimeString(), s: `Target: ${target}` },
+      ]);
+    } catch (error) {
+      console.error('Failed to start mission:', error);
+      setTerminalLines(prev => [...prev,
+        { t: new Date().toLocaleTimeString(), s: `Error: Failed to start mission` },
+      ]);
+    }
+  }, []);
+
+  // WebSocket connection
+  useEffect(() => {
+    if (!missionId) return;
+
+    const ws = createSwarmWebSocket(missionId);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsConnected(true);
+      console.log('WebSocket connected');
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log('WebSocket message:', data);
+      
+      switch (data.type) {
+        case 'mission_state':
+          setMissionStatus(data.data.status);
+          setMissionProgress(data.data.progress);
+          break;
+        case 'agent_state':
+          fetchAgentStates();
+          break;
+        case 'new_event':
+          if (inspectorId && data.data.agent_name === AGENT_DATA[inspectorId]?.name) {
+            fetchAgentEvents(inspectorId);
+          }
+          break;
+        case 'new_finding':
+          fetchFindings();
+          break;
+      }
+    };
+
+    ws.onclose = () => {
+      setWsConnected(false);
+      console.log('WebSocket disconnected');
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setWsConnected(false);
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [missionId, inspectorId, fetchAgentStates, fetchAgentEvents, fetchFindings]);
+
+  // Poll for updates when mission is active
+  useEffect(() => {
+    if (!missionId || missionStatus === 'completed' || missionStatus === 'failed' || missionStatus === 'cancelled') {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      fetchMissionStatus();
+      fetchAgentStates();
+      fetchFindings();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [missionId, missionStatus, fetchMissionStatus, fetchAgentStates, fetchFindings]);
+
+  // Update inspector data when agent states change
+  useEffect(() => {
+    if (inspectorId && agentStates[inspectorId]) {
+      const state = agentStates[inspectorId];
+      setInspectorData(prev => prev ? {
+        ...prev,
+        status: state.status.toUpperCase(),
+        iter: state.iter || 'N/A',
+        task: state.task || 'No active task',
+      } : null);
+    }
+  }, [agentStates, inspectorId]);
+
   return (
     <div
       className="w-full h-screen overflow-hidden text-[rgba(255,255,255,0.52)] font-mono text-[8px] leading-relaxed"
@@ -1019,6 +1204,23 @@ export function Swarm() {
         <div className="grid overflow-hidden relative" style={{ gridTemplateColumns: '1fr 340px' }}>
           {/* Graph */}
           <div ref={containerRef} className="relative overflow-hidden cursor-crosshair">
+            {/* Corner Brackets */}
+            <div className="absolute top-3 left-3 w-4 h-4 pointer-events-none z-20">
+              <div className="absolute top-0 left-0 w-full h-[1px] bg-[rgba(200,169,110,0.5)]" />
+              <div className="absolute top-0 left-0 w-[1px] h-full bg-[rgba(200,169,110,0.5)]" />
+            </div>
+            <div className="absolute top-3 right-3 w-4 h-4 pointer-events-none z-20">
+              <div className="absolute top-0 right-0 w-full h-[1px] bg-[rgba(200,169,110,0.5)]" />
+              <div className="absolute top-0 right-0 w-[1px] h-full bg-[rgba(200,169,110,0.5)]" />
+            </div>
+            <div className="absolute bottom-3 left-3 w-4 h-4 pointer-events-none z-20">
+              <div className="absolute bottom-0 left-0 w-full h-[1px] bg-[rgba(200,169,110,0.5)]" />
+              <div className="absolute bottom-0 left-0 w-[1px] h-full bg-[rgba(200,169,110,0.5)]" />
+            </div>
+            <div className="absolute bottom-3 right-3 w-4 h-4 pointer-events-none z-20">
+              <div className="absolute bottom-0 right-0 w-full h-[1px] bg-[rgba(200,169,110,0.5)]" />
+              <div className="absolute bottom-0 right-0 w-[1px] h-full bg-[rgba(200,169,110,0.5)]" />
+            </div>
             <canvas ref={canvasRef} className="absolute inset-0" />
             <div ref={labelsRef} className="absolute inset-0 pointer-events-none z-10" />
 
@@ -1060,42 +1262,6 @@ export function Swarm() {
                 </div>
               ))}
             </div>
-
-            {/* Corners */}
-            {['tl', 'tr', 'bl', 'br'].map(pos => (
-              <div
-                key={pos}
-                className={`absolute w-[18px] h-[18px] z-[5] pointer-events-none opacity-25 ${
-                  pos === 'tl' ? 'top-5 left-5' : pos === 'tr' ? 'top-5 right-5' : pos === 'bl' ? 'bottom-5 left-5' : 'bottom-5 right-5'
-                }`}
-                style={{
-                  background: `
-                    ${pos.includes('t') ? 'linear-gradient(to bottom, rgba(200,169,110,1) 0%, rgba(200,169,110,1) 100%)' : ''}
-                    ${pos.includes('b') ? 'linear-gradient(to top, rgba(200,169,110,1) 0%, rgba(200,169,110,1) 100%)' : ''}
-                  `,
-                  backgroundSize: '100% 1px, 1px 100%',
-                }}
-              >
-                <div
-                  className="absolute bg-[#c8a96e]"
-                  style={{
-                    width: pos.includes('l') ? '100%' : pos.includes('r') ? '100%' : 0,
-                    height: '1px',
-                    [pos.includes('t') ? 'top' : 'bottom']: 0,
-                    [pos.includes('l') ? 'left' : 'right']: 0,
-                  }}
-                />
-                <div
-                  className="absolute bg-[#c8a96e]"
-                  style={{
-                    width: '1px',
-                    height: pos.includes('t') ? '100%' : pos.includes('b') ? '100%' : 0,
-                    [pos.includes('t') ? 'top' : 'bottom']: 0,
-                    [pos.includes('l') ? 'left' : 'right']: 0,
-                  }}
-                />
-              </div>
-            ))}
 
             {/* Ticker */}
             <div ref={tickerRef} className="absolute bottom-[26px] left-[22px] z-20 pointer-events-none flex flex-col gap-[3px]" />

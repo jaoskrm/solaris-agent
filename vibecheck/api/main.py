@@ -17,7 +17,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import scan, report, chat
+from api.routes import scan, report, chat, swarm
 from core.config import get_settings
 from core.falkordb import get_falkordb_client
 from core.qdrant import get_qdrant_client
@@ -130,6 +130,7 @@ app.add_middleware(
 app.include_router(scan.router, prefix="/scan", tags=["Scans"])
 app.include_router(report.router, prefix="/report", tags=["Reports"])
 app.include_router(chat.router, prefix="/chat", tags=["Chat"])
+app.include_router(swarm.router, prefix="/swarm", tags=["Swarm"])
 
 
 # -------------------------------------------

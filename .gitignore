@@ -49,6 +49,7 @@ Thumbs.db
 # Logs
 *.log
 logs/
+reports/
 
 # Testing
 .pytest_cache/
@@ -60,8 +61,11 @@ htmlcov/
 # Node.js / npm
 node_modules/
 npm-debug.log*
+.vite/
 yarn-debug.log*
 yarn-error.log*
+frontend/.vite/
+../backup/
 .npm
 .yarn-integrity
 package-lock.json

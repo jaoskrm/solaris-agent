@@ -252,17 +252,27 @@ export function Pipeline() {
         setScanId(scan.scan_id);
         setScanStatus(scan);
         setStages(mapStatusToStages(scan.status, scan.progress, scan.current_stage || undefined));
+        setError(null);
         
-        if (scan.status === 'completed') {
+        // Fetch results for completed scans, or partial results for running scans
+        if (scan.status === 'completed' || scan.status === 'running') {
             try {
                 const report = await getScanResults(scan.scan_id);
                 setScanReport(report);
             } catch (err) {
                 console.error('Failed to fetch scan report:', err);
-                setError('Failed to load scan report');
+                // Don't show error for running scans - results might not be available yet
+                if (scan.status === 'completed') {
+                    setError('Failed to load scan report');
+                }
             }
         } else {
             setScanReport(null);
+        }
+        
+        // Start polling if scan is still running
+        if (scan.status === 'running') {
+            setIsLoading(true);
         }
     };
 
@@ -276,9 +286,9 @@ export function Pipeline() {
                 setScanStatus(status);
                 setStages(mapStatusToStages(status.status, status.progress, status.current_stage || undefined));
 
-                // Fetch partial results during LLM verification (progress > 70%)
+                // Fetch partial results during vulnerability detection phase (progress > 50%)
                 // This allows showing confirmed vulnerabilities in real-time
-                if (status.status === 'running' && status.progress >= 70) {
+                if (status.status === 'running' && status.progress >= 50) {
                     try {
                         const report = await getScanResults(scanId);
                         setScanReport(report);
@@ -843,7 +853,12 @@ export function Pipeline() {
                                         {/* Key Findings */}
                                         <div>
                                             <h3 className="text-sm font-medium text-gray-400 mb-3">Key Findings</h3>
-                                            {isLoading || scanStatus?.status === 'running' ? (
+                                            {isLoading ? (
+                                                <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-6 text-center">
+                                                    <Loader2 className="w-8 h-8 text-blue-400 mx-auto mb-2 animate-spin" />
+                                                    <p className="text-blue-400 font-medium">Loading findings...</p>
+                                                </div>
+                                            ) : scanReport.findings.filter(f => f.confirmed).length === 0 && scanStatus?.status === 'running' ? (
                                                 <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-6 text-center">
                                                     <Loader2 className="w-8 h-8 text-blue-400 mx-auto mb-2 animate-spin" />
                                                     <p className="text-blue-400 font-medium">Scanning in progress...</p>
