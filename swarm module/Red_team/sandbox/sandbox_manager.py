@@ -61,7 +61,10 @@ class ExecResult:
 
     @property
     def success(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out
+        # B23: Exit code 18 (partial transfer) is acceptable if we got data
+        # This happens with FTP/directory listings that hit size limits
+        acceptable_codes = (0, 18)
+        return self.exit_code in acceptable_codes and not self.timed_out
 
     def __str__(self) -> str:
         status = "OK" if self.success else f"FAIL (exit={self.exit_code})"

@@ -2,7 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6381:6379"
+      - "${REDIS_PORT:-6381}:6379"
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -17,7 +17,7 @@ services:
   juiceshop:
     image: bkimminich/juice-shop:latest
     ports:
-      - "3000:3000"
+      - "${JUICE_SHOP_PORT:-8080}:3000"
     networks:
       - redteam_net
     healthcheck:

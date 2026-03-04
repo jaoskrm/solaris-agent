@@ -13,6 +13,7 @@ Examples:
 import sys
 import json
 import redis
+import uuid
 
 
 def submit_mission(target: str, objective: str, mode: str = "live") -> str:
@@ -20,6 +21,7 @@ def submit_mission(target: str, objective: str, mode: str = "live") -> str:
     r = redis.Redis(host='localhost', port=6380, decode_responses=True)
     
     mission = {
+        'mission_id': str(uuid.uuid4()),
         'action': 'start',
         'target': target,
         'objective': objective,
@@ -48,7 +50,7 @@ if __name__ == "__main__":
     try:
         msg_id = submit_mission(target, objective)
         print(f"\n[OK] Mission submitted successfully!")
-        print(f"  Message ID: {msg_id}")
+        print(f"  Stream Message ID: {msg_id}")
         print(f"\nThe swarm worker will process this mission shortly.")
     except Exception as e:
         print(f"\n[FAIL] Failed to submit mission: {e}")

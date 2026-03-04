@@ -46,15 +46,50 @@ async def create_consumer_group():
         return False
 
 
-async def process_mission(mission_data: dict):
+async def check_mission_status(mission_id: str) -> str | None:
+    """Check if mission already exists and its status."""
+    try:
+        from core.supabase_client import get_supabase_client
+        supabase = get_supabase_client()
+        if not supabase._enabled:
+            return None
+        
+        result = await supabase.client.table("swarm_missions").select("status").eq("id", mission_id).execute()
+        if result.data and len(result.data) > 0:
+            return result.data[0].get("status")
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to check mission status: {e}")
+        return None
+
+
+async def process_mission(mission_data: dict, msg_id: str | None = None) -> bool:
     """Process a single mission."""
     mission_id = mission_data.get("mission_id", "unknown")
     objective = mission_data.get("objective", "No objective")
     target = mission_data.get("target", "No target")
     action = mission_data.get("action", "unknown")
     
+    # Generate effective mission_id if not provided
+    import uuid
+    effective_mission_id = mission_id if mission_id != "unknown" else str(uuid.uuid4())
+    
+    # Check if mission already processed (stale message handling)
+    if mission_id != "unknown":
+        existing_status = await check_mission_status(mission_id)
+        if existing_status in ("completed", "failed"):
+            logger.info(f"Mission {mission_id} already {existing_status} — ACK and skip")
+            if msg_id:
+                await redis_bus.client.xack(SWARM_STREAM, CONSUMER_GROUP, msg_id)
+            return True  # Return success to avoid retry
+        elif existing_status == "running":
+            logger.warning(f"Mission {mission_id} already running — possible duplicate, skipping")
+            if msg_id:
+                await redis_bus.client.xack(SWARM_STREAM, CONSUMER_GROUP, msg_id)
+            return True
+    
     print(f"\n{COLORS['system']}{'='*60}")
-    print(f"  PROCESSING MISSION: {mission_id}")
+    print(f"  PROCESSING MISSION: {effective_mission_id}")
     print(f"{'='*60}{COLORS['reset']}")
     print(f"  Action: {action}")
     print(f"  Target: {target}")
@@ -70,19 +105,25 @@ async def process_mission(mission_data: dict):
             from agents.tools.nuclei_tool import nuclei_tool
             from agents.tools.curl_tool import curl_tool
             from agents.tools.python_exec import python_exec_tool
+            from agents.tools.jwt_tool import jwt_tool, jwt_forge_tool
+            from agents.tools.ffuf_tool import ffuf_tool, ffuf_quick_tool
+            from agents.tools.sqlmap_tool import sqlmap_tool, sqlmap_quick_tool, sqlmap_deep_tool
             
             # Register tools
             tool_registry.register(nmap_tool)
             tool_registry.register(nuclei_tool)
             tool_registry.register(curl_tool)
             tool_registry.register(python_exec_tool)
+            tool_registry.register(jwt_tool)
+            tool_registry.register(jwt_forge_tool)
+            tool_registry.register(ffuf_tool)
+            tool_registry.register(ffuf_quick_tool)
+            tool_registry.register(sqlmap_tool)
+            tool_registry.register(sqlmap_quick_tool)
+            tool_registry.register(sqlmap_deep_tool)
             
             # Build and run graph
             graph = build_red_team_graph()
-            
-            # B19: Pass mission_id to create_initial_state (generate proper UUID if not provided)
-            import uuid
-            effective_mission_id = mission_id if mission_id != "unknown" else str(uuid.uuid4())
             
             initial_state = create_initial_state(
                 objective=objective,
@@ -190,8 +231,8 @@ async def run_worker(once: bool = False):
                         await redis_bus.client.xack(SWARM_STREAM, CONSUMER_GROUP, msg_id)
                     continue
                 
-                success = await process_mission(mission_data)
-                if msg_id is not None:
+                success = await process_mission(mission_data, msg_id)
+                if msg_id is not None and not success:  # Only ACK if not already ACKed in process_mission
                     await redis_bus.client.xack(SWARM_STREAM, CONSUMER_GROUP, msg_id)
                 if success:
                     processed += 1
@@ -231,11 +272,16 @@ async def run_worker(once: bool = False):
                     logger.info(f"Received mission: {msg_id}")
                     
                     # Process mission
-                    success = await process_mission(mission_data)
+                    success = await process_mission(mission_data, msg_id)
                     
-                    # Acknowledge message
+                    # Acknowledge message (if not already ACKed in process_mission for stale missions)
+                    # B18: Always ACK when msg_id is available, regardless of success
                     if msg_id is not None:
-                        await redis_bus.client.xack(SWARM_STREAM, CONSUMER_GROUP, msg_id)
+                        try:
+                            await redis_bus.client.xack(SWARM_STREAM, CONSUMER_GROUP, msg_id)
+                            logger.debug(f"ACKed message {msg_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to ACK message {msg_id}: {e}")
                     else:
                         logger.warning("msg_id is None, skipping xack")
                     

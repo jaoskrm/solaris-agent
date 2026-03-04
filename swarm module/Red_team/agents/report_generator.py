@@ -22,6 +22,24 @@ from agents.state import RedTeamState
 
 logger = logging.getLogger(__name__)
 
+# Impact labels mapping for kill chain narrative
+IMPACT_LABELS = {
+    "sqli": "Database Access / Auth Bypass",
+    "idor": "Unauthorized Data Access",
+    "sensitive_data_exposure": "Sensitive File Exposure",
+    "xss": "Script Injection (DOM/Stored)",
+    "auth_bypass": "Authentication Bypass",
+    "info_disclosure": "Information Leakage",
+    "xxe": "XML External Entity Injection",
+    "authentication": "Authentication Weakness",
+    "client_side_bypass": "Client-Side Security Bypass",
+    "lfi": "Local File Inclusion",
+    "rfi": "Remote File Inclusion",
+    "rce": "Remote Code Execution",
+    "broken_access_control": "Access Control Violation",
+    "security_misconfiguration": "Security Misconfiguration",
+}
+
 
 def _deduplicate_findings(findings: list[dict[str, Any]], key_fields: list[str] = None) -> list[dict[str, Any]]:
     """
@@ -54,20 +72,39 @@ def _deduplicate_findings(findings: list[dict[str, Any]], key_fields: list[str] 
 
 def _deduplicate_exploits(exploits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Deduplicate exploitation results based on key fields.
+    Deduplicate exploitation results keeping the BEST outcome per endpoint+vector.
+    
+    Priority: success=True > connection_timeout > auth_required > other failures
+    This prevents reporting both WIN and FAIL for the same endpoint.
     """
-    seen = set()
-    deduplicated = []
+    from collections import defaultdict
+    
+    # Group exploits by (target, exploit_type) - ignore success flag for grouping
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     
     for exploit in exploits:
-        # Use target and exploit_type as key
-        key = (exploit.get("target", ""), exploit.get("exploit_type", ""), exploit.get("success", False))
-        
-        if key not in seen:
-            seen.add(key)
-            deduplicated.append(exploit)
+        key = (exploit.get("target", ""), exploit.get("exploit_type", ""))
+        grouped[key].append(exploit)
     
-    logger.info(f"Deduplicated {len(exploits)} exploits to {len(deduplicated)}")
+    # Keep the best result from each group
+    deduplicated = []
+    for key, group in grouped.items():
+        # Sort by priority: success=True first, then by error type
+        def sort_priority(exploit):
+            if exploit.get("success"):
+                return (0, 0)  # Success always wins
+            error_type = exploit.get("error_type", "").lower()
+            if error_type == "connection_timeout":
+                return (1, 0)  # Network issues are "soft" failures
+            if error_type == "auth_required":
+                return (2, 0)  # Auth failures might be retryable
+            return (3, 0)  # Other failures
+        
+        # Get the best (lowest priority number) exploit
+        best = min(group, key=sort_priority)
+        deduplicated.append(best)
+    
+    logger.info(f"Deduplicated {len(exploits)} exploits to {len(deduplicated)} (kept best per endpoint)")
     return deduplicated
 
 
@@ -178,13 +215,17 @@ def _build_kill_chain_narrative(state: RedTeamState) -> list[dict[str, Any]]:
                     related_finding = finding
                     break
             
+            # Get proper impact label based on exploit type
+            exploit_type = exploit.get("exploit_type", "unknown")
+            impact_label = IMPACT_LABELS.get(exploit_type, "Security Weakness Exploited")
+            
             narrative.append({
                 "step": i + 1,
                 "phase": "exploitation",
                 "finding": related_finding.get("finding", "Unknown vulnerability") if related_finding else "Discovered weakness",
                 "asset": exploit.get("target", "Unknown"),
-                "exploit_type": exploit.get("exploit_type", "unknown"),
-                "impact": exploit.get("impact", ""),
+                "exploit_type": exploit_type,
+                "impact": impact_label,
                 "evidence": exploit.get("evidence", "")[:200],
                 "credentials_discovered": bool(credentials),
             })
@@ -261,10 +302,16 @@ def _compute_statistics(state: RedTeamState) -> dict[str, Any]:
         if isinstance(msg, A2AMessage) and msg.type == MessageType.EXPLOIT_RESULT
     )
     
+    # Count successful exploits from both state and messages (like _extract_exploit_results does)
     successful_exploits = sum(
         1 for e in state.get("exploit_results", [])
         if e.get("success", False)
     )
+    # Also count from messages
+    for msg in messages:
+        if isinstance(msg, A2AMessage) and msg.type == MessageType.EXPLOIT_RESULT:
+            if msg.payload.get("success", False):
+                successful_exploits += 1
     
     high_confidence_findings = sum(
         1 for f in state.get("recon_results", [])
@@ -423,12 +470,9 @@ def format_report_text(report: dict[str, Any]) -> str:
             lines.append(f"    ├─ Finding: {step['finding'][:80]}...")
             lines.append(f"    ├─ Asset:   {step['asset']}")
             lines.append(f"    ├─ Vector:  {step['exploit_type'].upper()}")
-            if step.get('credentials_discovered'):
-                lines.append(f"    └─ Result:  ✓ SUCCESS (Credentials Discovered)")
-            else:
-                lines.append(f"    └─ Result:  ✓ SUCCESS")
-            if step.get('impact'):
-                lines.append(f"       Impact:  {step['impact'][:100]}")
+            # Show impact label based on exploit type
+            impact = step.get('impact', 'Security Weakness Exploited')
+            lines.append(f"    └─ Result:  ✓ SUCCESS ({impact})")
             lines.append("")
         
         # Show chain summary

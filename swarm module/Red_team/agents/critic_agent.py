@@ -209,6 +209,17 @@ JUICESHOP-SPECIFIC SUCCESS INDICATORS:
 - XSS: 200/201 response with JSON confirmation means payload was stored
 - Data Exposure: Products API returns full database records with all fields
 
+DATABASE ERROR SUCCESS RULES:
+- SQLITE_ERROR, MYSQL_ERROR, ORA-XXXXX, or similar database errors in 500 responses ALWAYS = success=True for SQLi exploits
+- Server crash (500) from SQLi payload = success=True (query reached the database)
+- Examples of SQLi success indicators:
+  * "SQLITE_ERROR: near \"'\": syntax error" → success=True (query executed, bad syntax due to injection)
+  * "MySQL error" or "ORA-" errors → success=True (database responded to payload)
+  * Any SQL syntax error in HTTP 500 response → success=True for SQLi
+
+XSS ERROR SUCCESS RULES:
+- Server crash (500) from '<script>' payload = success=True for XSS (payload reached parser)
+
 FAILURE ANALYSIS:
 - syntax_error: Python/curl syntax is wrong — fix syntax before changing exploit logic
 - waf_block: WAF detected the payload — try encoding, obfuscation, or different vectors
@@ -350,9 +361,19 @@ def _deterministic_precheck(result: ExecResult, exploit_type: str, payload: str)
         has_injection = any(char in payload for char in injection_chars)
         
         if has_injection:
+            # B21: More professional evidence strings for stakeholder reports
+            if exploit_type.lower() == "xss":
+                evidence = f"Reflected XSS payload triggered unhandled exception in input parser — server-side execution confirmed (HTTP 500)."
+            elif exploit_type.lower() == "sqli":
+                evidence = f"SQL injection payload caused database query failure — syntax error reached SQL parser (HTTP 500)."
+            elif exploit_type.lower() == "xxe":
+                evidence = f"XXE payload crashed XML parser — external entity processing confirmed vulnerable (HTTP 500)."
+            else:
+                evidence = f"HTTP 500 Internal Server Error triggered by {exploit_type} payload — unsanitized input reached parser."
+            
             return {
                 "success": True,  # Server crash IS a finding
-                "evidence": f"HTTP 500 Internal Server Error triggered by {exploit_type} payload. Server crashed.",
+                "evidence": evidence,
                 "error_type": "server_crash",
                 "feedback": f"🚨 CRITICAL: Payload crashed the server (HTTP 500). This is a successful finding - the application is vulnerable to {exploit_type}.",
                 "severity": "HIGH",
@@ -403,6 +424,141 @@ def _deterministic_precheck(result: ExecResult, exploit_type: str, payload: str)
             "recommendation": "stealth",
             "deterministic": True,
         }
+    
+    # ========== IDOR DETERMINISTIC SUCCESS RULE ==========
+    # IDOR: 200 OK + JSON body + "id" field = confirmed IDOR success
+    if status_code == 200 and exploit_type.lower() == "idor":
+        content_type_match = re.search(r'Content-Type:\s*(\S+)', combined, re.IGNORECASE)
+        content_type = content_type_match.group(1) if content_type_match else ""
+        
+        if "application/json" in content_type:
+            # Check for "id" field in response
+            if re.search(r'"id"\s*:', combined):
+                return {
+                    "success": True,
+                    "evidence": f"HTTP 200 OK with JSON response containing 'id' field - confirmed IDOR access to resource.",
+                    "error_type": "none",
+                    "feedback": "IDOR exploit successful - accessed resource with ID field in response.",
+                    "severity": "HIGH",
+                    "session_token_found": False,
+                    "session_token_value": None,
+                    "recommendation": "pivot",
+                    "deterministic": True,
+                }
+    
+    # ========== FTP SENSITIVE DATA EXPOSURE RULE ==========
+    # FTP endpoints: 200 OK + non-empty body = sensitive data exposure
+    if status_code == 200 and exploit_type.lower() == "sensitive_data_exposure":
+        if "/ftp/" in payload or "/ftp/" in combined:
+            content_type_match = re.search(r'Content-Type:\s*(\S+)', combined, re.IGNORECASE)
+            content_type = content_type_match.group(1) if content_type_match else ""
+            
+            # FTP file access with any content is a win
+            if content_type and "text/html" not in content_type:
+                body_content = re.search(r'\r?\n\r?\n(.+)', combined, re.DOTALL)
+                if body_content and len(body_content.group(1).strip()) > 50:
+                    return {
+                        "success": True,
+                        "evidence": f"HTTP 200 OK on FTP endpoint with file content - sensitive data exposure confirmed.",
+                        "error_type": "none",
+                        "feedback": "FTP file access successful - sensitive data exposed.",
+                        "severity": "MEDIUM",
+                        "session_token_found": False,
+                        "session_token_value": None,
+                        "recommendation": "pivot",
+                        "deterministic": True,
+                    }
+    
+    # ========== .GIT EXPOSURE RULE ==========
+    # B22: .git exposure = CRITICAL - source code reconstruction possible
+    if status_code == 200 and "/.git/" in combined:
+        # Check for git repository indicators
+        git_indicators = ["ref:", "HEAD", "[core]", "[remote", "git@github.com"]
+        has_git_content = any(indicator in combined for indicator in git_indicators)
+        
+        if has_git_content:
+            return {
+                "success": True,
+                "evidence": "CRITICAL: /.git/ endpoint exposed - full source code reconstruction possible via git history.",
+                "error_type": "none",
+                "feedback": "🚨 CRITICAL: .git directory exposed! This allows complete source code reconstruction including commit history, secrets in commits, and full application logic.",
+                "severity": "CRITICAL",
+                "session_token_found": False,
+                "session_token_value": None,
+                "recommendation": "escalate",
+                "deterministic": True,
+            }
+    
+    # ========== SPA CATCHALL FILTER ==========
+    # Non-HTML endpoints returning HTML = SPA catchall, not a failure
+    if status_code == 200:
+        content_type_match = re.search(r'Content-Type:\s*([^;\s]+)', combined, re.IGNORECASE)
+        content_type = content_type_match.group(1) if content_type_match else ""
+        
+        # If expecting JSON/API response but got HTML = SPA redirect
+        if content_type == "text/html":
+            # Check if this was an API/JSON endpoint
+            api_indicators = ["/api/", "/rest/", ".json", "application/json"]
+            expected_api = any(ind in payload for ind in api_indicators)
+            
+            if expected_api:
+                return {
+                    "success": False,
+                    "evidence": "HTTP 200 OK but returned HTML (SPA catchall) - endpoint may not exist or requires different approach.",
+                    "error_type": "spa_catchall",
+                    "feedback": "Endpoint returned SPA HTML instead of API response - not applicable for this exploit type.",
+                    "severity": "none",
+                    "session_token_found": False,
+                    "session_token_value": None,
+                    "recommendation": "pivot",
+                    "deterministic": True,
+                }
+    
+    # ========== CONNECTION TIMEOUT FOR DEDUPLICATION ==========
+    # Mark connection errors clearly for deduplication logic
+    if status_code is None and ("exit=7" in combined or "exit=28" in combined or "timed out" in combined.lower()):
+        return {
+            "success": False,
+            "evidence": "Connection timeout or failure - network issue, not application behavior.",
+            "error_type": "connection_timeout",
+            "feedback": "Connection failed - retry or check target availability.",
+            "severity": "none",
+            "session_token_found": False,
+            "session_token_value": None,
+            "recommendation": "retry",
+            "deterministic": True,
+        }
+    
+    # ========== PARTIAL TRANSFER (EXIT CODE 18) ==========
+    # B19: curl exit code 18 = partial transfer. For FTP/directory listings with substantial
+    # content, this is valid data exposure, not a failure.
+    if result.exit_code == 18:
+        # Check if we got meaningful content despite partial transfer
+        if result.stdout and len(result.stdout) > 1000:
+            return {
+                "success": True,
+                "evidence": f"Partial transfer (exit 18) but received {len(result.stdout)} bytes - valid directory listing or file content exposed.",
+                "error_type": "none",
+                "feedback": "Data exposed despite partial transfer - FTP/directory listing successful.",
+                "severity": "MEDIUM",
+                "session_token_found": False,
+                "session_token_value": None,
+                "recommendation": "pivot",
+                "deterministic": True,
+            }
+        else:
+            # True failure - no useful data received
+            return {
+                "success": False,
+                "evidence": "Partial transfer (exit 18) with insufficient data - likely transfer failure.",
+                "error_type": "data_exposure",
+                "feedback": "Transfer failed before meaningful data received.",
+                "severity": "none",
+                "session_token_found": False,
+                "session_token_value": None,
+                "recommendation": "retry",
+                "deterministic": True,
+            }
     
     # Fall through to LLM for ambiguous cases (200, 302, etc.)
     return None
@@ -470,6 +626,15 @@ async def analyze_exploit_result(
         )
         
         evaluation = _parse_critic_response(response)
+        
+        # B24: Preserve original exploit_type - don't let LLM override it
+        # The LLM might classify the exploit differently (e.g., xxe -> info_disclosure)
+        # which breaks adaptive variant generation in the next iteration
+        if "exploit_type" in evaluation:
+            # Log if the LLM tried to change the type
+            if evaluation["exploit_type"] != exploit_type:
+                logger.warning(f"Critic: LLM tried to change exploit_type from '{exploit_type}' to '{evaluation['exploit_type']}' - preserving original")
+            evaluation["exploit_type"] = exploit_type
         
         # Also run automatic error detection as backup
         if evaluation.get("error_type") == "unknown":

@@ -36,6 +36,35 @@ logger = logging.getLogger(__name__)
 BOLD_YELLOW = "\033[1;33m"
 RESET = "\033[0m"
 
+# B20: Grammar-constrained JSON schema for Ollama (prevents 0-task outputs)
+# This schema is passed to Ollama's format parameter for grammar-based decoding
+COMMANDER_OUTPUT_SCHEMA = {
+    "type": "object",
+    "required": ["analysis", "next_phase", "strategy", "stealth_mode", "tasks"],
+    "properties": {
+        "analysis": {"type": "string"},
+        "next_phase": {"type": "string", "enum": ["recon", "exploitation", "complete"]},
+        "strategy": {"type": "string"},
+        "stealth_mode": {"type": "boolean"},
+        "tasks": {
+            "type": "array",
+            "minItems": 1,  # Hard constraint: cannot return 0 tasks
+            "items": {
+                "type": "object",
+                "required": ["agent", "description", "target", "tools_allowed", "priority", "exploit_type"],
+                "properties": {
+                    "agent": {"type": "string", "enum": ["agent_alpha", "agent_gamma"]},
+                    "description": {"type": "string"},
+                    "target": {"type": "string"},
+                    "tools_allowed": {"type": "array", "items": {"type": "string"}},
+                    "priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+                    "exploit_type": {"type": "string", "enum": ["sqli", "xss", "idor", "lfi", "auth_bypass", "info_disclosure", "sensitive_data_exposure", "xxe", "client_side_bypass", "authentication", "broken_access_control"]}
+                }
+            }
+        }
+    }
+}
+
 def _truncate_to_tokens(text: str, max_tokens: int = 4096, avg_chars_per_token: int = 4) -> str:
     """Truncate text to stay within token limit for Ollama speed optimization."""
     max_chars = max_tokens * avg_chars_per_token
@@ -166,32 +195,168 @@ Based on the intelligence reports from your agents AND the Blue Team's defensive
 4. **CRITICAL**: If an exploit was successful, mark endpoint as COMPROMISED and rotate to a different vector
 5. If blocked or detection is high, activate STEALTH MODE and pivot to a different approach
 6. Decide the next phase: continue recon, move to exploitation, or complete the mission
-7. Issue new task assignments OR declare mission complete
+
+**MANDATORY TASK GENERATION RULE:**
+- You MUST generate AT LEAST 3 new tasks for the next iteration
+- If next_phase is NOT "complete", tasks array MUST contain 3-5 task objects
+- Never return empty tasks unless you are declaring mission complete
+- Each task MUST target a DIFFERENT endpoint or use a DIFFERENT exploit type
+
+**TASK PRIORITY GUIDELINES:**
+- HIGH: Critical vulnerabilities (SQLi, Auth Bypass, RCE) on high-value endpoints
+- MEDIUM: IDOR, Info Disclosure, XSS on secondary endpoints
+- LOW: Recon tasks when no clear vulnerabilities are found
 
 **MANDATORY RULES:**
 - Never target FORBIDDEN ENDPOINTS until the 5-iteration ban expires
 - Never repeat successful exploit types on the same endpoint
 - Always rotate through different OWASP categories (SQLi → XSS → IDOR → LFI → Auth Bypass)
+- ALWAYS generate new tasks - the mission only ends when you explicitly set next_phase="complete"
 
-Respond with a JSON object:
+**MANDATORY JSON SCHEMA - YOUR RESPONSE MUST MATCH THIS EXACT STRUCTURE:**
+```json
 {{
-  "analysis": "Your analysis of the intelligence",
-  "next_phase": "recon" or "exploitation" or "complete",
-  "strategy": "Updated strategy with specific vector rotation plan",
-  "stealth_mode": true or false,
+  "type": "object",
+  "required": ["analysis", "next_phase", "strategy", "stealth_mode", "tasks"],
+  "properties": {{
+    "analysis": {{
+      "type": "string",
+      "description": "Brief analysis of the intelligence received"
+    }},
+    "next_phase": {{
+      "type": "string",
+      "enum": ["recon", "exploitation", "complete"],
+      "description": "Next phase of the mission"
+    }},
+    "strategy": {{
+      "type": "string",
+      "description": "Updated attack strategy"
+    }},
+    "stealth_mode": {{
+      "type": "boolean",
+      "description": "Whether to use stealth techniques"
+    }},
+    "tasks": {{
+      "type": "array",
+      "minItems": 3,
+      "description": "MUST contain at least 3 tasks if next_phase is not 'complete'",
+      "items": {{
+        "type": "object",
+        "required": ["agent", "description", "target", "tools_allowed", "priority", "exploit_type"],
+        "properties": {{
+          "agent": {{
+            "type": "string",
+            "enum": ["agent_alpha", "agent_gamma"],
+            "description": "Which agent to assign"
+          }},
+          "description": {{
+            "type": "string",
+            "description": "Detailed task description"
+          }},
+          "target": {{
+            "type": "string",
+            "description": "Full URL to target"
+          }},
+          "tools_allowed": {{
+            "type": "array",
+            "items": {{"type": "string"}},
+            "description": "Tools the agent can use"
+          }},
+          "priority": {{
+            "type": "string",
+            "enum": ["HIGH", "MEDIUM", "LOW"]
+          }},
+          "exploit_type": {{
+            "type": "string",
+            "enum": ["sqli", "xss", "idor", "lfi", "auth_bypass", "info_disclosure", "sensitive_data_exposure", "xxe", "client_side_bypass"]
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+```
+
+**CRITICAL RULES - VIOLATION WILL CAUSE SYSTEM FAILURE:**
+1. If next_phase is NOT "complete", the "tasks" array MUST contain at least 3 objects
+2. Each task MUST have ALL required fields: agent, description, target, tools_allowed, priority, exploit_type
+3. NEVER return prose or markdown - ONLY return valid JSON matching the schema above
+4. Do NOT include comments or explanations outside the JSON
+5. Only set tasks to empty list [] when next_phase="complete"
+
+**EXAMPLE VALID RESPONSE:**
+```json
+{{
+  "analysis": "Successfully exploited IDOR on basket endpoints. Auth token available for further attacks.",
+  "next_phase": "exploitation",
+  "strategy": "Continue IDOR exploitation on basket IDs 6-10 and pivot to user endpoints",
+  "stealth_mode": false,
   "tasks": [
     {{
-      "agent": "agent_alpha" or "agent_gamma",
-      "description": "What to do next - MUST be a different vector than before",
-      "target": "Specific target",
-      "tools_allowed": ["nmap", "nuclei", "curl", "python"],
-      "priority": "HIGH" or "MEDIUM" or "LOW",
-      "exploit_type": "sqli|xss|idor|lfi|auth_bypass|info_disclosure"
+      "agent": "agent_gamma",
+      "description": "Test IDOR on /rest/basket/6 with auth token",
+      "target": "http://localhost:8080/rest/basket/6",
+      "tools_allowed": ["curl"],
+      "priority": "HIGH",
+      "exploit_type": "idor"
+    }},
+    {{
+      "agent": "agent_gamma",
+      "description": "Test IDOR on /rest/basket/7 with auth token",
+      "target": "http://localhost:8080/rest/basket/7",
+      "tools_allowed": ["curl"],
+      "priority": "HIGH",
+      "exploit_type": "idor"
+    }},
+    {{
+      "agent": "agent_gamma",
+      "description": "Test SQLi on login endpoint",
+      "target": "http://localhost:8080/rest/user/login",
+      "tools_allowed": ["curl"],
+      "priority": "MEDIUM",
+      "exploit_type": "sqli"
     }}
   ]
 }}
+```
 
-If next_phase is "complete", set tasks to an empty list.
+**EXAMPLE 2 — Blue Team findings available, targeting untested endpoints:**
+```json
+{{
+  "analysis": "SQLi confirmed on login. Blue Team reports untested SSRF at line 24 and path traversal at line 14.",
+  "next_phase": "exploitation",
+  "strategy": "Target 2 confirmed Blue Team high-severity endpoints",
+  "stealth_mode": false,
+  "tasks": [
+    {{
+      "agent": "agent_gamma",
+      "description": "Test SSRF at /api/profile-image-url-upload (line 24) with metadata endpoint",
+      "target": "http://localhost:8080/api/profile-image-url-upload",
+      "tools_allowed": ["curl"],
+      "priority": "HIGH",
+      "exploit_type": "ssrf"
+    }},
+    {{
+      "agent": "agent_gamma",
+      "description": "Test path traversal at /api/Key (line 14) with ../../etc/passwd",
+      "target": "http://localhost:8080/api/Key",
+      "tools_allowed": ["curl"],
+      "priority": "HIGH",
+      "exploit_type": "lfi"
+    }},
+    {{
+      "agent": "agent_alpha",
+      "description": "Deep reconnaissance with ffuf for hidden admin endpoints",
+      "target": "http://localhost:8080",
+      "tools_allowed": ["ffuf", "curl"],
+      "priority": "MEDIUM",
+      "exploit_type": "recon"
+    }}
+  ]
+}}
+```
+
+YOUR RESPONSE (valid JSON only):
 """
 
 
@@ -252,6 +417,7 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
             ],
             temperature=0.3,
             fallback_model=fallback_model,
+            format="json",
         )
         logger.debug("Commander using %s with primary model %s (fallback: %s)", client_type, primary_model, fallback_model)
     except Exception as e:
@@ -333,11 +499,38 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
         if shared_tokens:
             task_payload["found_tokens"] = shared_tokens
         # B15: Safely convert agent string to AgentRole
-        try:
-            recipient_role = AgentRole(agent)
-        except ValueError:
-            # Map unknown agents to known roles or skip
-            logger.warning(f"Unknown agent '{agent}', mapping to GAMMA")
+        # Normalize agent names - LLM may return "Agent Alpha", "alpha", "recon", etc.
+        agent_normalized = agent.lower().strip().replace(" ", "_").replace("-", "_")
+        
+        # Map common variations to standard roles
+        role_mapping = {
+            # Alpha variations
+            "agent_alpha": AgentRole.ALPHA,
+            "alpha": AgentRole.ALPHA,
+            "recon": AgentRole.ALPHA,
+            "reconnaissance": AgentRole.ALPHA,
+            "scanner": AgentRole.ALPHA,
+            # Gamma variations  
+            "agent_gamma": AgentRole.GAMMA,
+            "gamma": AgentRole.GAMMA,
+            "exploit": AgentRole.GAMMA,
+            "exploitation": AgentRole.GAMMA,
+            "attacker": AgentRole.GAMMA,
+            # Critic variations
+            "agent_critic": AgentRole.CRITIC,
+            "critic": AgentRole.CRITIC,
+            "reviewer": AgentRole.CRITIC,
+            "evaluator": AgentRole.CRITIC,
+            # Beta variations
+            "agent_beta": AgentRole.BETA,
+            "beta": AgentRole.BETA,
+            # Commander
+            "commander": AgentRole.COMMANDER,
+        }
+        
+        recipient_role = role_mapping.get(agent_normalized)
+        if not recipient_role:
+            logger.warning(f"Unknown agent '{agent}' (normalized: '{agent_normalized}'), mapping to GAMMA")
             recipient_role = AgentRole.GAMMA
         
         msg = A2AMessage(
@@ -521,6 +714,9 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
     user_prompt = _truncate_to_tokens(prompt, max_tokens=4096)
     
     try:
+        # B20: Use grammar-constrained JSON schema to force valid output with minItems: 1
+        # This prevents the model from returning 0 tasks
+        schema = COMMANDER_OUTPUT_SCHEMA if primary_model and "/" not in primary_model else "json"
         response = await client.chat(
             model=primary_model,
             messages=[
@@ -529,6 +725,7 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
             ],
             temperature=0.3,
             fallback_model=fallback_model,
+            format=schema,  # Grammar-based JSON constraint for Ollama
         )
         logger.debug("Commander using %s with primary model %s (fallback: %s)", client_type, primary_model, fallback_model)
     except Exception as e:
@@ -545,6 +742,10 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
         result = _parse_json_response(response)
     except Exception as e:
         logger.error("Commander observe parse failed: %s", e)
+        # Disable stealth mode on parse failure to prevent false suppression of tasks
+        if stealth_mode:
+            stealth_mode = False
+            logger.warning("🛡️ Commander: Disabling STEALTH MODE due to parse failure - preventing false task suppression")
         # B16: Fix infinite recon loop - track parse failures and increment iteration
         iteration = state.get("iteration", 0)
         max_iter = state.get("max_iterations", 5)
@@ -634,6 +835,102 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
         next_phase = result.get("next_phase", "recon")  # Default to recon, not complete
     strategy = result.get("strategy", state.get("strategy", ""))
     tasks = result.get("tasks", [])
+    
+    # B17: Force task generation when next_phase is not "complete" but tasks is empty
+    # The LLM sometimes ignores the "MUST generate at least 3 tasks" instruction
+    if next_phase != "complete" and (not tasks or len(tasks) == 0):
+        logger.warning(f"Commander: LLM returned 0 tasks but next_phase={next_phase}, forcing fallback tasks")
+        target = state.get("target", "http://localhost:3000")
+        # Get successful vectors from strategy memory to inform task generation
+        blackboard = state.get("blackboard", {})
+        successful_vectors = blackboard.get("successful_vectors", [])
+        
+        # Generate context-aware fallback tasks based on successful vectors
+        if "idor" in successful_vectors:
+            # If IDOR worked, try more basket IDs or other IDOR endpoints
+            tasks = [
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Continue IDOR exploitation on {target}/rest/basket/ with IDs 6-10",
+                    "target": f"{target}/rest/basket/6",
+                    "tools_allowed": ["curl"],
+                    "priority": "HIGH",
+                    "exploit_type": "idor",
+                },
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Test IDOR on {target}/rest/user/ endpoints",
+                    "target": f"{target}/rest/user/1",
+                    "tools_allowed": ["curl"],
+                    "priority": "HIGH",
+                    "exploit_type": "idor",
+                },
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Test for SQLi on {target}/rest/user/login with time-based payload",
+                    "target": f"{target}/rest/user/login",
+                    "tools_allowed": ["curl"],
+                    "priority": "HIGH",
+                    "exploit_type": "sqli",
+                },
+            ]
+        elif "sqli" in successful_vectors or "auth_bypass" in successful_vectors:
+            # If SQLi worked, try more SQLi endpoints or escalate to priv escalation
+            tasks = [
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Test SQLi on {target}/rest/products with orderby payload",
+                    "target": f"{target}/rest/products",
+                    "tools_allowed": ["curl"],
+                    "priority": "HIGH",
+                    "exploit_type": "sqli",
+                },
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Test for XSS on {target}/#/search with reflected payload",
+                    "target": f"{target}/#/search",
+                    "tools_allowed": ["curl"],
+                    "priority": "MEDIUM",
+                    "exploit_type": "xss",
+                },
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Test info disclosure on {target}/api/Products",
+                    "target": f"{target}/api/Products",
+                    "tools_allowed": ["curl"],
+                    "priority": "MEDIUM",
+                    "exploit_type": "info_disclosure",
+                },
+            ]
+        else:
+            # Default fallback tasks for early iterations
+            tasks = [
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Test authentication bypass on {target}/rest/user/login",
+                    "target": f"{target}/rest/user/login",
+                    "tools_allowed": ["curl"],
+                    "priority": "HIGH",
+                    "exploit_type": "auth_bypass",
+                },
+                {
+                    "agent": "agent_gamma",
+                    "description": f"Test IDOR on {target}/rest/basket/1",
+                    "target": f"{target}/rest/basket/1",
+                    "tools_allowed": ["curl"],
+                    "priority": "HIGH",
+                    "exploit_type": "idor",
+                },
+                {
+                    "agent": "agent_alpha",
+                    "description": f"Deep reconnaissance on {target} with ffuf for hidden endpoints",
+                    "target": target,
+                    "tools_allowed": ["ffuf", "curl"],
+                    "priority": "MEDIUM",
+                    "exploit_type": "recon",
+                },
+            ]
+        logger.info(f"Commander: Generated {len(tasks)} fallback tasks based on successful vectors: {successful_vectors}")
 
     new_messages: list[A2AMessage] = []
     task_dicts: list[dict[str, Any]] = []
@@ -657,11 +954,38 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
         if shared_tokens_obs:
             task_payload["found_tokens"] = shared_tokens_obs
         # B15: Safely convert agent string to AgentRole
-        try:
-            recipient_role = AgentRole(agent)
-        except ValueError:
-            # Map unknown agents to known roles or skip
-            logger.warning(f"Unknown agent '{agent}', mapping to GAMMA")
+        # Normalize agent names - LLM may return "Agent Alpha", "alpha", "recon", etc.
+        agent_normalized = agent.lower().strip().replace(" ", "_").replace("-", "_")
+        
+        # Map common variations to standard roles
+        role_mapping = {
+            # Alpha variations
+            "agent_alpha": AgentRole.ALPHA,
+            "alpha": AgentRole.ALPHA,
+            "recon": AgentRole.ALPHA,
+            "reconnaissance": AgentRole.ALPHA,
+            "scanner": AgentRole.ALPHA,
+            # Gamma variations  
+            "agent_gamma": AgentRole.GAMMA,
+            "gamma": AgentRole.GAMMA,
+            "exploit": AgentRole.GAMMA,
+            "exploitation": AgentRole.GAMMA,
+            "attacker": AgentRole.GAMMA,
+            # Critic variations
+            "agent_critic": AgentRole.CRITIC,
+            "critic": AgentRole.CRITIC,
+            "reviewer": AgentRole.CRITIC,
+            "evaluator": AgentRole.CRITIC,
+            # Beta variations
+            "agent_beta": AgentRole.BETA,
+            "beta": AgentRole.BETA,
+            # Commander
+            "commander": AgentRole.COMMANDER,
+        }
+        
+        recipient_role = role_mapping.get(agent_normalized)
+        if not recipient_role:
+            logger.warning(f"Unknown agent '{agent}' (normalized: '{agent_normalized}'), mapping to GAMMA")
             recipient_role = AgentRole.GAMMA
         
         msg = A2AMessage(

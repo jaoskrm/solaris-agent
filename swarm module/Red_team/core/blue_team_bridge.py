@@ -311,7 +311,11 @@ class BlueTeamBridge:
         include_unconfirmed: bool,
     ) -> list[BlueTeamFinding]:
         """Query Supabase for Blue Team findings."""
-        supabase = await self._get_supabase()
+        try:
+            supabase = await self._get_supabase()
+        except RuntimeError as e:
+            logger.debug(f"Supabase not initialized: {e}")
+            return []
 
         if not supabase or not getattr(supabase, '_enabled', True):
             logger.debug("Supabase not available for Blue Team query")
@@ -335,12 +339,12 @@ class BlueTeamBridge:
             # First, find matching scan_ids from scan_queue
             scan_ids = []
             if repo_name:
-                # Query scan_queue for matching repos
+                # Query scan_queue for matching repos - get ALL matching scans
                 scan_query = (
                     supabase.table("scan_queue")
                     .select("id, repo_url")
                     .ilike("repo_url", f"%{repo_name}%")
-                    .limit(10)
+                    .limit(500)  # Increased limit to get more scans
                 )
                 scan_result = await loop.run_in_executor(None, lambda: scan_query.execute())
                 if scan_result and hasattr(scan_result, 'data'):
@@ -349,72 +353,91 @@ class BlueTeamBridge:
             
             # For Juice Shop targets, try to find Juice Shop scans
             if not scan_ids and ("juice" in target.lower() or "3000" in target or "8080" in target):
-                print(f"[DEBUG] Searching for Juice Shop scans in Supabase for target: {target}")
+                logger.info(f"[DEBUG] Searching for Juice Shop scans in Supabase for target: {target}")
                 try:
                     scan_query = (
                         supabase.table("scan_queue")
                         .select("id, repo_url, created_at")
                         .ilike("repo_url", "%juice%")
                         .order("created_at", desc=True)
-                        .limit(4)
+                        .limit(50)  # Get up to 50 scans
                     )
-                    print(f"[DEBUG] Executing scan query...")
                     scan_result = await loop.run_in_executor(None, lambda: scan_query.execute())
-                    print(f"[DEBUG] Scan query result type: {type(scan_result)}")
-                    if scan_result:
-                        print(f"[DEBUG] Scan query has data attr: {hasattr(scan_result, 'data')}")
-                        if hasattr(scan_result, 'data') and scan_result.data:
-                            scan_ids = [row['id'] for row in scan_result.data]
-                            print(f"[DEBUG] Found {len(scan_ids)} Juice Shop scans: {scan_ids[:3]}...")
-                        else:
-                            print(f"[WARNING] No scan data found. Result: {scan_result}")
-                    else:
-                        print("[WARNING] Scan query returned None")
+                    if scan_result and hasattr(scan_result, 'data') and scan_result.data:
+                        scan_ids = [row['id'] for row in scan_result.data]
+                        logger.info(f"[DEBUG] Found {len(scan_ids)} Juice Shop scans")
                 except Exception as e:
-                    print(f"[ERROR] Error querying scan_queue: {e}")
-                    import traceback
-                    print(traceback.format_exc())
+                    logger.error(f"[ERROR] Error querying scan_queue: {e}")
             
             # Query vulnerabilities table
             logger.info("Querying vulnerabilities table...")
+            findings = []
+            
             try:
-                query = (
-                    supabase.table("vulnerabilities")
-                    .select("*")
-                    .order("severity", desc=True)
-                    .limit(100)
-                )
-                
-                # Filter by scan_ids if we found matching scans
+                # Strategy 1: Filter by scan_ids if we found matching scans
                 if scan_ids:
-                    query = query.in_("scan_id", scan_ids)
-                    logger.info(f"Filtering vulnerabilities by {len(scan_ids)} scan IDs")
-                else:
-                    logger.info("No matching scans found, fetching all recent vulnerabilities")
-
-                # Execute query
-                result = await loop.run_in_executor(None, lambda: query.execute())
-                logger.info(f"Vulnerabilities query result type: {type(result)}")
-                if result and hasattr(result, 'data'):
-                    logger.info(f"Vulnerabilities query returned {len(result.data)} rows")
-                else:
-                    logger.warning(f"No vulnerabilities data. Result: {result}")
+                    query = (
+                        supabase.table("vulnerabilities")
+                        .select("*")
+                        .in_("scan_id", scan_ids)
+                        .order("severity", desc=True)
+                        .limit(500)
+                    )
+                    result = await loop.run_in_executor(None, lambda: query.execute())
+                    if result and hasattr(result, 'data'):
+                        findings = result.data
+                        logger.info(f"Found {len(findings)} vulnerabilities matching scan_ids")
+                
+                # Strategy 2: If no findings, search by file_path containing repo name
+                if not findings and repo_name:
+                    logger.info(f"No scan_id matches, trying file_path search for: {repo_name}")
+                    query = (
+                        supabase.table("vulnerabilities")
+                        .select("*")
+                        .ilike("file_path", f"%juice-shop%")
+                        .order("severity", desc=True)
+                        .limit(500)
+                    )
+                    result = await loop.run_in_executor(None, lambda: query.execute())
+                    if result and hasattr(result, 'data'):
+                        findings = result.data
+                        logger.info(f"Found {len(findings)} vulnerabilities by file_path pattern")
+                
+                # Strategy 3: Last resort - fetch recent high-severity vulnerabilities
+                if not findings:
+                    logger.info("No specific matches, fetching recent high-severity vulnerabilities")
+                    query = (
+                        supabase.table("vulnerabilities")
+                        .select("*")
+                        .in_("severity", ["critical", "high"])
+                        .order("created_at", desc=True)
+                        .limit(50)
+                    )
+                    result = await loop.run_in_executor(None, lambda: query.execute())
+                    if result and hasattr(result, 'data'):
+                        findings = result.data
+                        logger.info(f"Found {len(findings)} recent high-severity vulnerabilities")
+                
+                if not findings:
+                    logger.warning("No vulnerabilities found in database")
+                    return []
+                    
             except Exception as e:
                 logger.error(f"Error querying vulnerabilities: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
                 return []
             
-            if not result or not hasattr(result, 'data'):
+            if not findings:
                 logger.warning(f"Supabase query returned no data for target: {target}")
                 return []
             
-            logger.info(f"Supabase query returned {len(result.data)} vulnerabilities")
+            logger.info(f"Supabase query returned {len(findings)} vulnerabilities")
 
             # Convert to BlueTeamFinding objects with deduplication
             findings_map = {}  # key: (file_path, vuln_type) -> finding
             
-            for row in result.data:
+            for row in findings:
                 # Filter by severity level
                 row_severity = row.get("severity", "low").lower()
                 if severity_levels.get(row_severity, 0) < min_level:
@@ -539,6 +562,18 @@ class BlueTeamBridge:
         match = re.search(r'github\.com:([^/]+)/([^/]+)', target)
         if match:
             return match.group(2).replace('.git', '')
+
+        # Localhost with port - check for known app patterns
+        localhost_match = re.search(r'localhost:(\d+)', target.lower())
+        if localhost_match:
+            port = localhost_match.group(1)
+            # Map common ports to app names
+            port_to_app = {
+                '3000': 'juice-shop',
+                '8080': 'juice-shop',
+                '8000': 'app',
+            }
+            return port_to_app.get(port)
 
         # Just repo name
         if '/' not in target and len(target) > 0:

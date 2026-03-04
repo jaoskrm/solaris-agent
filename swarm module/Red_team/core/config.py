@@ -62,41 +62,41 @@ class Settings(BaseSettings):
     
     # Commander - Ollama primary
     commander_model: str = Field(
-        default="qwen2.5-coder:7b",
+        default="qwen2.5-coder:7b-instruct",
         description="Ollama model for Commander agent (primary)",
     )
     commander_model_fallback: str = Field(
-        default="llama3:latest",
+        default="qwen2.5-coder:7b-instruct",  # Use qwen for JSON reliability
         description="Ollama fallback for Commander agent",
     )
 
     # Alpha Recon - Ollama primary
     recon_model: str = Field(
-        default="qwen2.5-coder:7b",
+        default="qwen2.5-coder:7b-instruct",
         description="Ollama model for Alpha Recon agent (primary)",
     )
     recon_model_fallback: str = Field(
-        default="llama3:latest",
+        default="qwen2.5-coder:7b-instruct",  # Use qwen for JSON reliability
         description="Ollama fallback for Alpha Recon agent",
     )
 
     # Gamma Exploit - Ollama primary (coder model best for exploits)
     exploit_model: str = Field(
-        default="qwen2.5-coder:7b",
+        default="qwen2.5-coder:7b-instruct",
         description="Ollama model for Gamma Exploit agent (primary)",
     )
     exploit_model_fallback: str = Field(
-        default="llama3:latest",
+        default="qwen2.5-coder:7b-instruct",  # Use qwen for JSON reliability
         description="Ollama fallback for Gamma Exploit agent",
     )
 
     # Critic Agent - Ollama primary
     critic_model: str = Field(
-        default="qwen2.5-coder:7b",
+        default="qwen2.5-coder:7b-instruct",
         description="Ollama model for Critic agent (primary)",
     )
     critic_model_fallback: str = Field(
-        default="llama3:latest",
+        default="qwen2.5-coder:7b-instruct",  # Use qwen for JSON reliability
         description="Ollama fallback for Critic agent",
     )
 

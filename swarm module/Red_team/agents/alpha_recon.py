@@ -273,6 +273,7 @@ Decide which tools to run for these tasks. Respond in JSON."""
     # Step 2: Execute each tool call
     all_findings: list[dict[str, Any]] = []
     new_messages: list[A2AMessage] = []
+    skipped_blue_count = 0  # Initialize counter for blue_team findings skipped
 
     for tool_call in plan.get("tool_calls", []):
         tool_name = tool_call.get("tool", "nmap")
@@ -329,14 +330,37 @@ Decide which tools to run for these tasks. Respond in JSON."""
                 "recommended_action": "Manual review needed",
             }], "summary": f"{tool_name} completed with exit code {result.exit_code}"}
 
-        # Convert findings to A2A messages
-        for finding in analysis.get("findings", []):
+        # Convert findings to A2A messages - but filter out blue_team sourced findings
+        # to avoid flooding with 50+ duplicate reports already on the blackboard
+        findings_list = analysis.get("findings", [])
+        
+        # Filter: Skip findings that came from blue_team (already on blackboard)
+        new_findings = []
+        for finding in findings_list:
             # B17: Handle case where finding is a string instead of dict
             if isinstance(finding, str):
                 finding = {"finding": finding, "asset": state.get('target', 'http://localhost:3000')}
             elif not isinstance(finding, dict):
                 continue  # Skip invalid findings
             
+            # Skip if this finding came from blue_team (already on blackboard)
+            source = finding.get("source", "")
+            if source == "blue_team" or finding.get("finding", "").startswith("Blue Team:"):
+                skipped_blue_count += 1
+                continue
+            
+            new_findings.append(finding)
+        
+        # Limit to max 15 findings to prevent context window flooding
+        MAX_FINDINGS = 15
+        if len(new_findings) > MAX_FINDINGS:
+            logger.warning(f"Alpha: Limiting {len(new_findings)} findings to {MAX_FINDINGS} highest confidence")
+            # Sort by confidence and take top MAX_FINDINGS
+            new_findings.sort(key=lambda x: x.get("confidence", 0.5), reverse=True)
+            new_findings = new_findings[:MAX_FINDINGS]
+        
+        # Emit only new findings (not from blue_team)
+        for finding in new_findings:
             intel = IntelligenceReport(
                 asset=finding.get("asset", state.get('target', 'http://localhost:3000')),
                 finding=finding.get("finding", "Unknown"),
@@ -355,8 +379,26 @@ Decide which tools to run for these tasks. Respond in JSON."""
             )
             new_messages.append(msg)
             all_findings.append(intel.model_dump())
+        
+        # Emit single summary if we skipped blue_team findings
+        if skipped_blue_count > 0:
+            summary_msg = A2AMessage(
+                sender=AgentRole.ALPHA,
+                recipient=AgentRole.COMMANDER,
+                type=MessageType.INTELLIGENCE_REPORT,
+                priority=Priority.LOW,
+                payload={
+                    "asset": state.get('target', 'http://localhost:3000'),
+                    "finding": f"Blue Team analysis: {skipped_blue_count} findings available on blackboard",
+                    "confidence": 0.9,
+                    "evidence": "Static analysis results from Blue Team enrichment",
+                    "recommended_action": "Gamma should check blackboard for detailed vulnerability data",
+                },
+            )
+            new_messages.append(summary_msg)
 
-    logger.info("Alpha: %d findings from %d tool calls", len(all_findings), len(plan.get("tool_calls", [])))
+    logger.info("Alpha: %d new findings from %d tool calls (skipped %d blue_team findings)", 
+                len(all_findings), len(plan.get("tool_calls", [])), skipped_blue_count)
     
     # Update agent state to complete
     try:
