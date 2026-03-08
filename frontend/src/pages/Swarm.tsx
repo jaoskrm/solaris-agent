@@ -3,9 +3,11 @@ import * as THREE from 'three';
 import {
   triggerSwarmMission,
   getSwarmMission,
+  getSwarmMissions,
   getSwarmAgentStates,
   getSwarmEvents,
   getSwarmFindings,
+  getLatestSwarmMission,
   createSwarmWebSocket,
   type AgentStateResponse,
   type SwarmFindingResponse,
@@ -57,167 +59,62 @@ interface Finding {
 
 // Constants
 const NODES: NodeDef[] = [
-  { id: 'purple-cmd', lbl: 'PURPLE CMD', team: 'purple', x: 0, y: 2.4, z: 0, r: 0.26, desc: 'Purple Commander' },
-  { id: 'kg-agent', lbl: 'KNOWLEDGE GR.', team: 'blue', x: -3.9, y: 1.0, z: -0.7, r: 0.17, desc: 'Knowledge Graph' },
-  { id: 'sast-agent', lbl: 'SAST ENGINE', team: 'blue', x: -4.8, y: -0.2, z: 0.7, r: 0.17, desc: 'SAST Semgrep' },
-  { id: 'llm-verify', lbl: 'LLM VERIFIER', team: 'blue', x: -3.6, y: -1.4, z: -0.3, r: 0.15, desc: 'LLM Verifier' },
-  { id: 'traffic-mon', lbl: 'TRAFFIC MON', team: 'blue2', x: -2.0, y: 0.7, z: -2.9, r: 0.17, desc: 'Traffic Monitor' },
-  { id: 'sig-detect', lbl: 'SIG DETECTOR', team: 'blue2', x: -2.9, y: -0.3, z: -3.9, r: 0.15, desc: 'Signature Det.' },
-  { id: 'redis-pub', lbl: 'REDIS BRIDGE', team: 'blue2', x: -1.2, y: -1.1, z: -3.7, r: 0.14, desc: 'Redis IPC' },
-  { id: 'red-cmd', lbl: 'RED COMMANDER', team: 'red', x: 3.0, y: 1.0, z: -0.7, r: 0.22, desc: 'Red Commander' },
-  { id: 'alpha-recon', lbl: 'ALPHA RECON', team: 'red', x: 4.3, y: -0.1, z: 0.7, r: 0.17, desc: 'Alpha Recon' },
-  { id: 'gamma-exploit', lbl: 'GAMMA EXPLOIT', team: 'red', x: 3.9, y: -1.3, z: -0.7, r: 0.17, desc: 'Gamma Exploit' },
-  { id: 'critic', lbl: 'CRITIC AGENT', team: 'red', x: 2.2, y: -1.2, z: 0.7, r: 0.14, desc: 'Critic Agent' },
-  { id: 'sandbox', lbl: 'SANDBOX CTR', team: 'sand', x: 0, y: -2.7, z: 0, r: 0.24, desc: 'vibecheck-sandbox' },
+  // Red Team - Attackers
+  { id: 'red-cmd', lbl: 'COMMANDER', team: 'red', x: 0, y: 1.5, z: 0, r: 0.24, desc: 'Red Commander' },
+  { id: 'alpha-recon', lbl: 'ALPHA RECON', team: 'red', x: -2.0, y: 0.0, z: 1.5, r: 0.18, desc: 'Alpha Recon' },
+  { id: 'gamma-exploit', lbl: 'GAMMA EXPLOIT', team: 'red', x: 2.0, y: 0.0, z: 1.5, r: 0.18, desc: 'Gamma Exploit' },
+  { id: 'critic', lbl: 'CRITIC', team: 'red', x: 0, y: -1.0, z: 2.0, r: 0.15, desc: 'Critic Agent' },
+  // Sandbox - Testing Environment
+  { id: 'sandbox', lbl: 'SANDBOX', team: 'sand', x: 0, y: -2.5, z: 0, r: 0.22, desc: 'vibecheck-sandbox' },
+  // Supabase Bridge - Shows vuln data being pulled from DB
+  { id: 'redis-pub', lbl: 'SUPABASE BRIDGE', team: 'blue2', x: -3.5, y: 0.5, z: -1.5, r: 0.16, desc: 'Vuln Data from Supabase' },
 ];
 
 const EDGES: EdgeDef[] = [
-  { a: 'purple-cmd', b: 'kg-agent', p: true },
-  { a: 'purple-cmd', b: 'traffic-mon', p: false },
-  { a: 'purple-cmd', b: 'red-cmd', p: true },
-  { a: 'kg-agent', b: 'sast-agent', p: false },
-  { a: 'sast-agent', b: 'llm-verify', p: false },
-  { a: 'traffic-mon', b: 'sig-detect', p: false },
-  { a: 'sig-detect', b: 'redis-pub', p: false },
   { a: 'redis-pub', b: 'red-cmd', p: true },
   { a: 'red-cmd', b: 'alpha-recon', p: false },
   { a: 'red-cmd', b: 'gamma-exploit', p: false },
   { a: 'red-cmd', b: 'critic', p: false },
   { a: 'alpha-recon', b: 'sandbox', p: true },
   { a: 'gamma-exploit', b: 'sandbox', p: true },
-  { a: 'kg-agent', b: 'sandbox', p: false },
+  { a: 'critic', b: 'sandbox', p: false },
 ];
 
 const TC: Record<string, [number, number, number]> = {
-  purple: [0.68, 0.64, 0.92],
-  blue: [0.52, 0.74, 0.95],
-  blue2: [0.38, 0.56, 0.82],
   red: [0.92, 0.58, 0.58],
+  blue2: [0.38, 0.56, 0.82],
   sand: [0.80, 0.70, 0.46],
 };
 
 const TC_CSS: Record<string, string> = {
-  purple: 'rgba(174,164,235,0.75)',
-  blue: 'rgba(133,189,242,0.72)',
-  blue2: 'rgba(97,143,210,0.65)',
   red: 'rgba(235,148,148,0.75)',
+  blue2: 'rgba(97,143,210,0.65)',
   sand: 'rgba(200,175,118,0.80)',
 };
 
 const AGENT_DATA: Record<string, AgentData> = {
-  'purple-cmd': {
-    team: 'purple',
-    eyebrow: 'PURPLE TEAM',
-    name: 'Purple Commander',
-    status: 'ORCHESTRATING',
-    iter: 'ITERATION 2/3',
-    task: 'Coordinating Blue + Red team strategy. Consuming defense analytics. Adapting attack surface in real time.',
-    logs: [
-      { t: '16:19:01', k: 'info', m: 'Mission b6dda26e initialized — target localhost:3000' },
-      { t: '16:19:03', k: 'action', m: 'Dispatching Alpha Recon: nmap + service fingerprint' },
-      { t: '16:19:15', k: 'warn', m: 'Blue intel: HIGH severity /api/login (SQLi)' },
-      { t: '16:19:16', k: 'action', m: 'FORBIDDEN: /api/login — 5-iteration cooldown applied' },
-      { t: '16:19:20', k: 'info', m: 'Routing Gamma → CUPS :631 (CVE-2022-2587)' },
-      { t: '16:19:45', k: 'warn', m: 'CUPS exploit inconclusive — requesting Critic review' },
-      { t: '16:19:50', k: 'info', m: 'Critic: try /api/SecurityQuestion + SSRF via file upload' },
-    ],
-  },
-  'kg-agent': {
-    team: 'blue',
-    eyebrow: 'BLUE ANALYTIC',
-    name: 'Knowledge Graph',
-    status: 'COMPLETE',
-    iter: 'PHASE: COMPLETE',
-    task: 'Full AST parse with tree-sitter. Call graph and dependency map built and passed to SAST engine.',
-    logs: [
-      { t: '16:18:20', k: 'info', m: 'Initializing tree-sitter parser' },
-      { t: '16:18:31', k: 'cmd', m: 'tree-sitter parse src/**/*.js --output graph.json' },
-      { t: '16:18:44', k: 'success', m: '847 files — 21,403 AST nodes parsed' },
-      { t: '16:18:52', k: 'success', m: 'Graph complete: 1,204 nodes / 3,891 edges' },
-      { t: '16:18:53', k: 'info', m: 'Forwarding to SAST Semgrep Engine' },
-    ],
-  },
-  'sast-agent': {
-    team: 'blue',
-    eyebrow: 'BLUE ANALYTIC',
-    name: 'SAST Semgrep',
-    status: 'COMPLETE',
-    iter: 'PHASE: COMPLETE',
-    task: 'Full ruleset scan. Deduped 47 → 12 findings. All candidates forwarded for LLM verification.',
-    logs: [
-      { t: '16:18:54', k: 'cmd', m: 'semgrep --config=auto --json -o findings.json ./src' },
-      { t: '16:19:00', k: 'info', m: 'Scan complete. Raw: 47' },
-      { t: '16:19:01', k: 'info', m: 'Deduplication: 47 → 12 unique' },
-      { t: '16:19:02', k: 'warn', m: 'routes/user.js:142 — SQLi sink' },
-      { t: '16:19:03', k: 'warn', m: 'frontend/basket.js:89 — XSS innerHTML' },
-      { t: '16:19:05', k: 'info', m: '12 candidates → LLM Verifier' },
-    ],
-  },
-  'llm-verify': {
-    team: 'blue',
-    eyebrow: 'BLUE ANALYTIC',
-    name: 'LLM Verifier',
-    status: 'COMPLETE',
-    iter: 'PHASE: COMPLETE',
-    task: 'Verified SAST candidates via chain-of-thought reasoning. 8 false positives removed. 4 confirmed.',
-    logs: [
-      { t: '16:19:06', k: 'info', m: '12 candidates received' },
-      { t: '16:19:07', k: 'action', m: 'CONFIRMED: routes/user.js:142 — SQLi' },
-      { t: '16:19:09', k: 'action', m: 'CONFIRMED: basket.js:89 — Stored XSS' },
-      { t: '16:19:11', k: 'info', m: 'FALSE POS: models/order.js:201 — parameterized query' },
-      { t: '16:19:13', k: 'success', m: '4 confirmed / 8 false positive' },
-      { t: '16:19:14', k: 'info', m: 'Publishing to Purple Report' },
-    ],
-  },
-  'traffic-mon': {
-    team: 'blue2',
-    eyebrow: 'BLUE DEFENSIVE',
-    name: 'Traffic Monitor',
-    status: 'ACTIVE',
-    iter: 'LIVE',
-    task: 'Real-time request analysis on localhost:3000. Publishing severity-classified alerts to Redis stream.',
-    logs: [
-      { t: '16:19:10', k: 'warn', m: 'POST /api/login — SQLi pattern in body' },
-      { t: '16:19:15', k: 'error', m: 'ALERT: SQL_INJECTION /api/login — HIGH' },
-      { t: '16:19:16', k: 'action', m: 'Published to defense_analytics' },
-      { t: '16:19:22', k: 'warn', m: 'GET /rest/products/search — XSS in ?q=' },
-      { t: '16:19:38', k: 'warn', m: 'GET /api/users/1→2 — IDOR probe detected' },
-    ],
-  },
-  'sig-detect': {
-    team: 'blue2',
-    eyebrow: 'BLUE DEFENSIVE',
-    name: 'Signature Detector',
-    status: 'ACTIVE',
-    iter: 'LIVE',
-    task: 'Pattern matching: SQLi, XSS, IDOR, SSRF, path traversal. Severity classification engine.',
-    logs: [
-      { t: '16:19:10', k: 'warn', m: 'Match: UNION SELECT — SQLi' },
-      { t: '16:19:15', k: 'error', m: 'HIGH: SQLi on /api/login' },
-      { t: '16:19:22', k: 'warn', m: 'Match: <script>alert — XSS' },
-      { t: '16:19:38', k: 'warn', m: 'Match: sequential ID enum — IDOR' },
-    ],
-  },
+  // Supabase Bridge - Shows vuln data being pulled from DB
   'redis-pub': {
     team: 'blue2',
-    eyebrow: 'BLUE DEFENSIVE',
-    name: 'Redis IPC Bridge',
+    eyebrow: 'DATA SOURCE',
+    name: 'Supabase Bridge',
     status: 'ACTIVE',
-    iter: 'STREAM: defense_analytics',
-    task: 'Publishing defense_analytics stream on :6381. Red Commander consumes for real-time strategy adaptation.',
+    iter: 'STREAM: swarm_events',
+    task: 'Pulling vulnerability findings and agent events from Supabase database in real-time.',
     logs: [
-      { t: '16:19:15', k: 'action', m: 'XADD: {type:SQLi, sev:HIGH, ep:/api/login}' },
-      { t: '16:19:23', k: 'action', m: 'XADD: {type:XSS, sev:MEDIUM, ep:/rest/products/search}' },
-      { t: '16:19:40', k: 'success', m: 'Red Commander consumed. /api/login FORBIDDEN.' },
+      { t: '16:19:15', k: 'action', m: 'Query: swarm_agent_events — 74 events fetched' },
+      { t: '16:19:23', k: 'action', m: 'Query: swarm_findings — 12 findings loaded' },
+      { t: '16:19:40', k: 'success', m: 'Data streaming to Commander and Agent panels' },
     ],
   },
+  // Red Commander
   'red-cmd': {
     team: 'red',
     eyebrow: 'RED TEAM',
-    name: 'Red Commander',
+    name: 'Commander',
     status: 'ADAPTING',
     iter: 'ITERATION 2/3',
-    task: 'LangGraph orchestrator. OBSERVE → ACT loop. Consuming Blue intel. FORBIDDEN list active on 1 endpoint.',
+    task: 'LangGraph orchestrator. OBSERVE → ACT loop. Consuming Supabase intel. FORBIDDEN list active.',
     logs: [
       { t: '16:19:01', k: 'info', m: 'Commander online — LangGraph state machine init' },
       { t: '16:19:03', k: 'action', m: 'OBSERVE: dispatch Alpha Recon' },
@@ -226,6 +123,7 @@ const AGENT_DATA: Record<string, AgentData> = {
       { t: '16:19:50', k: 'info', m: 'Critic: try /api/SecurityQuestion + SSRF' },
     ],
   },
+  // Alpha Recon
   'alpha-recon': {
     team: 'red',
     eyebrow: 'RED TEAM',
@@ -241,6 +139,7 @@ const AGENT_DATA: Record<string, AgentData> = {
       { t: '16:19:11', k: 'info', m: 'Target map forwarded to Commander' },
     ],
   },
+  // Gamma Exploit
   'gamma-exploit': {
     team: 'red',
     eyebrow: 'RED TEAM',
@@ -257,6 +156,7 @@ const AGENT_DATA: Record<string, AgentData> = {
       { t: '16:19:25', k: 'info', m: 'Empty printer list — no path found' },
     ],
   },
+  // Critic
   'critic': {
     team: 'red',
     eyebrow: 'RED TEAM',
@@ -273,13 +173,14 @@ const AGENT_DATA: Record<string, AgentData> = {
       { t: '16:19:50', k: 'action', m: 'Pivot: SSRF via file upload' },
     ],
   },
+  // Sandbox
   'sandbox': {
     team: 'sand',
     eyebrow: 'SHARED INFRA',
-    name: 'vibecheck-sandbox',
+    name: 'Sandbox',
     status: 'RUNNING',
     iter: 'CONTAINER: ALIVE',
-    task: 'Shared Docker container. Privileged + host network. All team tooling executes here. Auto-restart on failure.',
+    task: 'Shared Docker container. Privileged + host network. All team tooling executes here.',
     logs: [
       { t: '16:19:03', k: 'info', m: 'Container init: privileged + network=host' },
       { t: '16:19:04', k: 'cmd', m: '[alpha] nmap -sV -p 1-65535 localhost' },
@@ -441,9 +342,20 @@ export function Swarm() {
   const containerRef = useRef<HTMLDivElement>(null);
   const labelsRef = useRef<HTMLDivElement>(null);
   const tickerRef = useRef<HTMLDivElement>(null);
+  const nodeMapRef = useRef<Record<string, {
+    m: THREE.Mesh;
+    wf: THREE.LineSegments;
+    ret: THREE.Mesh;
+    glow: THREE.Mesh;
+    uniforms: { uColor: { value: THREE.Color }; uTime: { value: number }; uSelected: { value: number }; uPhase: { value: number } };
+    wireUni: { uColor: { value: THREE.Color }; uTime: { value: number }; uSelected: { value: number }; uPhase: { value: number } };
+    retUni: { uColor: { value: THREE.Color }; uTime: { value: number }; uSelected: { value: number }; uPhase: { value: number } };
+    glowMat: THREE.MeshBasicMaterial;
+    def: NodeDef;
+  }>>({});
   const [selID, setSelID] = useState<string | null>('purple-cmd');
-  const [inspectorData, setInspectorData] = useState<AgentData | null>(AGENT_DATA['purple-cmd']);
-  const [inspectorId, setInspectorId] = useState<string>('purple-cmd');
+  const [inspectorData, setInspectorData] = useState<AgentData | null>(AGENT_DATA['red-cmd']);
+  const [inspectorId, setInspectorId] = useState<string>('red-cmd');
   const [logs, setLogs] = useState<AgentLog[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [terminalLines, setTerminalLines] = useState<{ t: string; s: string }[]>([]);
@@ -453,6 +365,98 @@ export function Swarm() {
   // Mission state
   const [missionId, setMissionId] = useState<string | null>(null);
   const [missionStatus, setMissionStatus] = useState<string>('idle');
+  
+  // Panel expand state
+  const [terminalExpanded, setTerminalExpanded] = useState(false);
+  const [findingsExpanded, setFindingsExpanded] = useState(false);
+  const [findingsFullscreen, setFindingsFullscreen] = useState(false);
+
+  // Get mission ID from URL query params if provided
+  const getMissionIdFromUrl = (): string | null => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('missionId');
+  };
+
+  // Fetch latest mission with findings on page load
+  useEffect(() => {
+    const fetchLatestMission = async () => {
+      try {
+        console.log('[Swarm] Fetching missions from Supabase...');
+        const missions = await getSwarmMissions(50, 0);
+        
+        // Check for mission ID in URL first
+        const urlMissionId = getMissionIdFromUrl();
+        if (urlMissionId) {
+          console.log('[Swarm] Looking for mission from URL:', urlMissionId);
+          const foundMission = missions.missions.find(m => m.id === urlMissionId);
+          if (foundMission) {
+            console.log('[Swarm] Found mission from URL:', foundMission.id, foundMission.status);
+            setMissionId(foundMission.id);
+            setMissionStatus(foundMission.status || 'running');
+            
+            try {
+              const mission = await getSwarmMission(foundMission.id);
+              setMissionStatus(mission.status || 'running');
+              setMissionProgress(mission.progress || 0);
+              console.log('[Swarm] Initial mission data:', mission.status, mission.progress);
+            } catch (e) {
+              console.error('[Swarm] Failed to fetch initial mission data:', e);
+            }
+            return;
+          } else {
+            console.log('[Swarm] Mission from URL not found in list, falling back to auto-select');
+          }
+        }
+        
+        // Try to find specific mission ID 5587f341-ed1c-40c0-91b6-cf8562e1ddc9
+        const targetMissionId = '5587f341-ed1c-40c0-91b6-cf8562e1ddc9';
+        const targetMission = missions.missions.find(m => m.id === targetMissionId);
+        if (targetMission) {
+          console.log('[Swarm] Found target mission:', targetMission.id, targetMission.status);
+          setMissionId(targetMission.id);
+          setMissionStatus(targetMission.status || 'running');
+          
+          try {
+            const mission = await getSwarmMission(targetMission.id);
+            setMissionStatus(mission.status || 'running');
+            setMissionProgress(mission.progress || 0);
+            console.log('[Swarm] Initial mission data:', mission.status, mission.progress);
+          } catch (e) {
+            console.error('[Swarm] Failed to fetch initial mission data:', e);
+          }
+          return;
+        }
+        
+        // Find the latest mission (newest by created_at)
+        let autoSelectedMission = null;
+        if (missions.missions.length > 0) {
+          // Sort by created_at descending to get the newest first
+          autoSelectedMission = missions.missions[0];
+        }
+        
+        if (autoSelectedMission) {
+          console.log('[Swarm] Selected latest mission:', autoSelectedMission.id, autoSelectedMission.status);
+          setMissionId(autoSelectedMission.id);
+          setMissionStatus(autoSelectedMission.status || 'running');
+          
+          // Fetch initial data immediately
+          try {
+            const mission = await getSwarmMission(autoSelectedMission.id);
+            setMissionStatus(mission.status || 'running');
+            setMissionProgress(mission.progress || 0);
+            console.log('[Swarm] Initial mission data:', mission.status, mission.progress);
+          } catch (e) {
+            console.error('[Swarm] Failed to fetch initial mission data:', e);
+          }
+        } else {
+          console.log('[Swarm] No missions found in database');
+        }
+      } catch (error) {
+        console.error('[Swarm] Failed to fetch latest mission:', error);
+      }
+    };
+    fetchLatestMission();
+  }, []);
   const [missionProgress, setMissionProgress] = useState(0);
   const [agentStates, setAgentStates] = useState<Record<string, AgentStateResponse>>({});
   const [wsConnected, setWsConnected] = useState(false);
@@ -605,6 +609,9 @@ export function Swarm() {
 
       nodeMap[def.id] = { m, wf, ret, glow, uniforms, wireUni, retUni, glowMat, def };
     });
+
+    // Store nodeMap in ref for external access
+    nodeMapRef.current = nodeMap;
 
     // Edges
     const edgeObjs: { mat: THREE.LineBasicMaterial; ba: number }[] = [];
@@ -792,8 +799,13 @@ export function Swarm() {
     };
   }, [selID]);
 
-  // Terminal animation
+  // Terminal animation - Only show when no mission is active
   useEffect(() => {
+    // Don't show mock data when there's an active mission
+    if (missionId) {
+      return;
+    }
+    
     const TERM_LINES = [
       { t: 'cmd', s: 'nmap -sV -p 1-65535 --open localhost' },
       { t: 'out', s: 'PORT     STATE  SERVICE  VERSION' },
@@ -830,18 +842,13 @@ export function Swarm() {
     });
 
     return () => timeouts.forEach(id => clearTimeout(id));
-  }, []);
+  }, [missionId]);
 
-  // Findings animation
+  // Findings animation - DISABLED - using real data from Supabase instead
   useEffect(() => {
-    const timeouts: number[] = [];
-    FINDINGS.forEach((f, i) => {
-      const id = window.setTimeout(() => {
-        setFindingsList(prev => [...prev, f]);
-      }, 1400 + i * 170);
-      timeouts.push(id);
-    });
-    return () => timeouts.forEach(id => clearTimeout(id));
+    // Mock findings disabled - real data comes from Supabase via fetchFindings
+    // The fetchFindings function now populates findingsList with real data
+    return () => {};
   }, []);
 
   const nodeByID: Record<string, NodeDef> = {};
@@ -863,11 +870,42 @@ export function Swarm() {
   const fetchAgentStates = useCallback(async () => {
     if (!missionId) return;
     try {
-      const states = await getSwarmAgentStates(missionId);
-      const statesMap: Record<string, AgentStateResponse> = {};
-      states.forEach(state => {
-        statesMap[state.agent_id] = state;
+      const states: any = await getSwarmAgentStates(missionId);
+      console.log('[Swarm] Agent states response:', states);
+      
+      // Handle both array response and object with agents property
+      const statesArray = Array.isArray(states) ? states : (states.agents || []);
+      
+      // Map agent names to node IDs
+      const agentNameToNodeId: Record<string, string> = {
+        'Purple Commander': 'purple-cmd',
+        'Alpha Recon': 'alpha-recon',
+        'Gamma Exploit': 'gamma-exploit',
+        'Red Commander': 'red-cmd',
+        'Critic Agent': 'critic',
+        'Knowledge Graph': 'kg-agent',
+        'SAST Semgrep': 'sast-agent',
+        'LLM Verifier': 'llm-verify',
+        'Traffic Monitor': 'traffic-mon',
+        'Signature Detector': 'sig-detect',
+        'Redis Bridge': 'redis-pub',
+        'Sandbox Container': 'sandbox',
+        // Also map short names
+        'commander': 'red-cmd',
+        'alpha': 'alpha-recon',
+        'gamma': 'gamma-exploit',
+        'critic': 'critic',
+        'purple-cmd': 'purple-cmd',
+        'red-cmd': 'red-cmd',
+      };
+      
+      const statesMap: Record<string, any> = {};
+      statesArray.forEach((state: any) => {
+        // Use agent_name to find the node ID
+        const nodeId = agentNameToNodeId[state.agent_name] || state.agent_name;
+        statesMap[nodeId] = state;
       });
+      console.log('[Swarm] Mapped agent states:', Object.keys(statesMap));
       setAgentStates(statesMap);
     } catch (error) {
       console.error('Failed to fetch agent states:', error);
@@ -878,31 +916,77 @@ export function Swarm() {
   const fetchMissionStatus = useCallback(async () => {
     if (!missionId) return;
     try {
-      const mission = await getSwarmMission(missionId);
-      setMissionStatus(mission.status);
-      setMissionProgress(mission.progress);
+      console.log('[Swarm] Fetching mission status for:', missionId);
+      const mission: any = await getSwarmMission(missionId);
+      console.log('[Swarm] Mission response:', mission);
+      
+      // Handle various response formats
+      const status = mission.status || mission.mission_status || 'unknown';
+      const progress = mission.progress || 0;
+      
+      console.log('[Swarm] Mission status:', { status, progress, target: mission.target });
+      setMissionStatus(status);
+      setMissionProgress(progress);
     } catch (error) {
-      console.error('Failed to fetch mission status:', error);
+      console.error('[Swarm] Failed to fetch mission status:', error);
     }
   }, [missionId]);
 
   // Fetch findings
   const fetchFindings = useCallback(async () => {
-    if (!missionId) return;
+    if (!missionId) {
+      console.log('[Swarm] No missionId - skipping fetchFindings');
+      return;
+    }
     try {
-      const findings = await getSwarmFindings(missionId);
-      const mappedFindings: Finding[] = findings.map(f => ({
-        sev: f.severity as 'critical' | 'high' | 'medium' | 'low',
-        title: f.title,
-        type: f.finding_type || 'Unknown',
+      console.log('[Swarm] Fetching findings for mission:', missionId);
+      const findings: any = await getSwarmFindings(missionId);
+      console.log('[Swarm] Findings response type:', typeof findings, Array.isArray(findings) ? 'array' : 'object');
+      console.log('[Swarm] Findings response:', findings);
+      
+      // Handle both array response and {findings: [...]} response
+      const findingsArray = Array.isArray(findings) ? findings : (findings?.findings || []);
+      console.log('[Swarm] Number of findings:', findingsArray.length);
+      
+      const mappedFindings: Finding[] = findingsArray.map((f: any) => ({
+        sev: (f.severity || 'medium') as 'critical' | 'high' | 'medium' | 'low',
+        title: f.title || 'Untitled Finding',
+        type: f.finding_type || f.type || 'Unknown',
         src: f.source || 'Unknown',
-        confirmed: f.confirmed,
-        agent: f.agent_name || 'Unknown',
-        cve: f.cve_id || '',
+        confirmed: f.confirmed || false,
+        agent: f.agent_name || f.agent || 'Unknown',
+        cve: f.cve_id || f.cve || '',
       }));
+      console.log('[Swarm] Mapped findings count:', mappedFindings.length);
       setFindingsList(mappedFindings);
     } catch (error) {
-      console.error('Failed to fetch findings:', error);
+      console.error('[Swarm] Failed to fetch findings:', error);
+    }
+  }, [missionId]);
+
+  // Fetch events for terminal
+  const fetchAllEvents = useCallback(async () => {
+    if (!missionId) return;
+    try {
+      // Fetch recent events for the mission to update terminal
+      console.log('[Swarm] Fetching events for mission:', missionId);
+      const events: any = await getSwarmEvents(missionId, 20);
+      const eventsArray = Array.isArray(events) ? events : (events?.events || []);
+      console.log('[Swarm] Events response:', eventsArray.length, 'events');
+      
+      if (eventsArray.length > 0) {
+        // Convert events to terminal format - newest first
+        const newLines = eventsArray.slice(0, 10).map((e: any) => ({
+          t: new Date(e.created_at).toLocaleTimeString(),
+          s: `[${e.agent_name || 'system'}] ${e.message || e.event_type || 'Event'}`
+        }));
+        
+        // Replace terminal with real events when mission is active
+        setTerminalLines(newLines);
+        console.log('[Swarm] Added', newLines.length, 'events to terminal');
+      }
+    } catch (error) {
+      console.error('[Swarm] Failed to fetch events:', error);
     }
   }, [missionId]);
 
@@ -911,25 +995,35 @@ export function Swarm() {
     if (!missionId) return;
     try {
       const agentName = AGENT_DATA[agentId]?.name || agentId;
-      const events = await getSwarmEvents(missionId, 50, agentName);
-      const mappedLogs: AgentLog[] = events.map(e => ({
+      console.log('[Swarm] Fetching events for agent:', agentName, 'mission:', missionId);
+      const events: any = await getSwarmEvents(missionId, 50, agentName);
+      // Handle both array response and {events: [...]} response
+      const eventsArray = Array.isArray(events) ? events : (events.events || []);
+      console.log('[Swarm] Events response count:', eventsArray.length);
+      const mappedLogs: AgentLog[] = eventsArray.map((e: any) => ({
         t: new Date(e.created_at).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        k: e.event_type,
-        m: e.message,
+        k: e.event_type || e.type || 'unknown',
+        m: e.message || e.title || '',
       }));
+      console.log('[Swarm] Mapped logs count:', mappedLogs.length);
       setLogs(mappedLogs.reverse());
     } catch (error) {
-      console.error('Failed to fetch agent events:', error);
+      console.error('[Swarm] Failed to fetch agent events:', error);
     }
   }, [missionId]);
 
   // Start a new mission
   const startMission = useCallback(async (target: string) => {
     try {
+      console.log('[Swarm] Starting new mission with target:', target);
       const response = await triggerSwarmMission({
         target,
         mode: 'live',
-        max_iterations: 3,
+      });
+      console.log('[Swarm] Mission started:', {
+        mission_id: response.mission_id,
+        status: response.status,
+        target: response.target
       });
       setMissionId(response.mission_id);
       setMissionStatus('pending');
@@ -941,66 +1035,33 @@ export function Swarm() {
         { t: new Date().toLocaleTimeString(), s: `Target: ${target}` },
       ]);
     } catch (error) {
-      console.error('Failed to start mission:', error);
+      console.error('[Swarm] Failed to start mission:', error);
       setTerminalLines(prev => [...prev,
         { t: new Date().toLocaleTimeString(), s: `Error: Failed to start mission` },
       ]);
     }
   }, []);
 
-  // WebSocket connection
+  // WebSocket connection - disabled for now (requires auth)
   useEffect(() => {
     if (!missionId) return;
 
-    const ws = createSwarmWebSocket(missionId);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setWsConnected(true);
-      console.log('WebSocket connected');
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log('WebSocket message:', data);
-      
-      switch (data.type) {
-        case 'mission_state':
-          setMissionStatus(data.data.status);
-          setMissionProgress(data.data.progress);
-          break;
-        case 'agent_state':
-          fetchAgentStates();
-          break;
-        case 'new_event':
-          if (inspectorId && data.data.agent_name === AGENT_DATA[inspectorId]?.name) {
-            fetchAgentEvents(inspectorId);
-          }
-          break;
-        case 'new_finding':
-          fetchFindings();
-          break;
-      }
-    };
-
-    ws.onclose = () => {
-      setWsConnected(false);
-      console.log('WebSocket disconnected');
-    };
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setWsConnected(false);
-    };
-
-    return () => {
-      ws.close();
-    };
-  }, [missionId, inspectorId, fetchAgentStates, fetchAgentEvents, fetchFindings]);
+    // WebSocket requires authentication - skip for now
+    // The REST API polling will still work
+    console.log('[Swarm] WebSocket disabled - using REST API polling only');
+    setWsConnected(false);
+    
+    return () => {};
+  }, [missionId]);
 
   // Poll for updates when mission is active
   useEffect(() => {
-    if (!missionId || missionStatus === 'completed' || missionStatus === 'failed' || missionStatus === 'cancelled') {
+    if (!missionId) {
+      return;
+    }
+    
+    // Still poll for completed missions to show final state
+    if (missionStatus === 'cancelled') {
       return;
     }
 
@@ -1008,10 +1069,11 @@ export function Swarm() {
       fetchMissionStatus();
       fetchAgentStates();
       fetchFindings();
+      fetchAllEvents();
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [missionId, missionStatus, fetchMissionStatus, fetchAgentStates, fetchFindings]);
+  }, [missionId, missionStatus, fetchMissionStatus, fetchAgentStates, fetchFindings, fetchAllEvents]);
 
   // Update inspector data when agent states change
   useEffect(() => {
@@ -1025,6 +1087,136 @@ export function Swarm() {
       } : null);
     }
   }, [agentStates, inspectorId]);
+
+  // Fetch real agent logs when inspector is opened
+  useEffect(() => {
+    if (!missionId || !inspectorId) return;
+    
+    // Fetch agent events from database
+    const fetchAgentLogs = async () => {
+      try {
+        // The database uses short agent names like 'alpha', 'gamma', 'critic'
+        // Map node IDs to short agent names
+        const nodeIdToShortName: Record<string, string> = {
+          'purple-cmd': 'commander',
+          'red-cmd': 'commander',
+          'alpha-recon': 'alpha',
+          'gamma-exploit': 'gamma',
+          'critic': 'critic',
+          'kg-agent': 'knowledge-graph',
+          'sast-agent': 'sast',
+          'llm-verify': 'llm-verifier',
+          'traffic-mon': 'traffic-monitor',
+          'sig-detect': 'signature-detector',
+          'redis-pub': 'redis-bridge',
+          'sandbox': 'sandbox',
+        };
+        
+        const shortAgentName = nodeIdToShortName[inspectorId] || inspectorId;
+        
+        console.log('[Swarm] Fetching logs for agent node:', inspectorId, '-> short name:', shortAgentName);
+        
+        // Try with short name first (like 'alpha', 'gamma')
+        let events: any = await getSwarmEvents(missionId, 50, shortAgentName);
+        let eventsArray = Array.isArray(events) ? events : (events.events || []);
+        
+        // If no results, try with node ID
+        if (eventsArray.length === 0) {
+          console.log('[Swarm] No events with short name, trying node ID:', inspectorId);
+          events = await getSwarmEvents(missionId, 50, inspectorId);
+          eventsArray = Array.isArray(events) ? events : (events.events || []);
+        }
+        
+        // If still no results, fetch ALL events for the mission
+        if (eventsArray.length === 0) {
+          console.log('[Swarm] No agent-specific events, fetching all mission events');
+          events = await getSwarmEvents(missionId, 50);
+          eventsArray = Array.isArray(events) ? events : (events.events || []);
+        }
+        
+        console.log('[Swarm] Agent logs response:', eventsArray.length, 'events');
+        
+        if (eventsArray.length > 0) {
+          const mappedLogs: AgentLog[] = eventsArray.map((e: any) => ({
+            t: new Date(e.created_at).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            k: e.event_type || 'info',
+            m: e.message || e.title || e.event_type || 'Event'
+          }));
+          setLogs(mappedLogs.reverse());
+          console.log('[Swarm] Set agent logs:', mappedLogs.length);
+        } else {
+          // Fall back to mock data if no events
+          console.log('[Swarm] No events found, using mock data');
+          const d = AGENT_DATA[inspectorId];
+          if (d) {
+            setLogs(d.logs);
+          }
+        }
+      } catch (error) {
+        console.error('[Swarm] Failed to fetch agent logs:', error);
+        // Fall back to mock data on error
+        const d = AGENT_DATA[inspectorId];
+        if (d) {
+          setLogs(d.logs);
+        }
+      }
+    };
+    
+    fetchAgentLogs();
+  }, [missionId, inspectorId]);
+
+  // Update 3D node colors based on agent states
+  useEffect(() => {
+    const nodeMap = nodeMapRef.current;
+    if (!nodeMap || Object.keys(nodeMap).length === 0) return;
+
+    // Define status colors
+    const statusColors: Record<string, [number, number, number]> = {
+      // Agent is running/active - bright green
+      'running': [0.4, 0.9, 0.4],
+      'active': [0.4, 0.9, 0.4],
+      'executing': [0.4, 0.9, 0.4],
+      // Agent completed - amber/gold
+      'completed': [0.9, 0.7, 0.3],
+      'done': [0.9, 0.7, 0.3],
+      'success': [0.9, 0.7, 0.3],
+      // Agent failed/error - red
+      'failed': [0.9, 0.3, 0.3],
+      'error': [0.9, 0.3, 0.3],
+      // Agent idle - use team color (will be handled below)
+      'idle': [0, 0, 0],
+      'pending': [0, 0, 0],
+    };
+
+    Object.entries(agentStates).forEach(([nodeId, state]) => {
+      const node = nodeMap[nodeId];
+      if (!node) return;
+
+      const stateAny = state as any;
+      const status = (stateAny.status || '').toLowerCase();
+      const teamColor = TC[node.def.team];
+
+      let color: [number, number, number];
+      if (statusColors[status] && statusColors[status][0] !== 0) {
+        color = statusColors[status];
+      } else {
+        // Use team color for idle/pending states
+        color = teamColor;
+      }
+
+      // Update node color uniforms
+      node.uniforms.uColor.value.setRGB(color[0], color[1], color[2]);
+      node.wireUni.uColor.value.setRGB(
+        Math.min(color[0] + 0.2, 1),
+        Math.min(color[1] + 0.2, 1),
+        Math.min(color[2] + 0.2, 1)
+      );
+      node.retUni.uColor.value.setRGB(color[0], color[1], color[2]);
+      node.glowMat.color.setRGB(color[0], color[1], color[2]);
+    });
+
+    console.log('[Swarm] Updated 3D node colors based on agent states');
+  }, [agentStates]);
 
   return (
     <div
@@ -1352,7 +1544,7 @@ export function Swarm() {
         </div>
 
         {/* Bottom */}
-        <div className="grid border-t border-[rgba(255,255,255,0.08)] relative" style={{ gridTemplateColumns: '1fr 1fr' }}>
+        <div className="grid border-t border-[rgba(255,255,255,0.08)] relative" style={{ gridTemplateColumns: terminalExpanded ? '1fr' : findingsExpanded ? '1fr' : '1fr 1fr' }}>
           <div
             className="absolute top-0 left-0 right-0 h-[1px]"
             style={{ background: 'linear-gradient(90deg, transparent, rgba(200,169,110,0.22) 30%, rgba(200,169,110,0.22) 70%, transparent)' }}
@@ -1360,7 +1552,7 @@ export function Swarm() {
 
           {/* Terminal */}
           <div
-            className="flex flex-col overflow-hidden relative border-r border-[rgba(255,255,255,0.08)]"
+            className={`flex flex-col overflow-hidden relative ${!terminalExpanded && !findingsExpanded ? 'border-r border-[rgba(255,255,255,0.08)]' : ''} ${terminalExpanded ? 'col-span-2' : ''}`}
             style={{
               background: 'linear-gradient(180deg, rgba(4,8,6,0.98) 0%, rgba(3,4,6,0.99) 100%)',
             }}
@@ -1380,9 +1572,16 @@ export function Swarm() {
               <div className="text-[7.5px] tracking-[0.16em] text-[rgba(255,255,255,0.28)] flex-1 text-center">
                 vibecheck-sandbox — privileged / host network
               </div>
+              <button
+                onClick={() => { setTerminalExpanded(!terminalExpanded); setFindingsExpanded(false); }}
+                className="text-[7.5px] px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-[rgba(255,255,255,0.4)] transition-colors"
+                title={terminalExpanded ? 'Collapse' : 'Expand'}
+              >
+                {terminalExpanded ? '◀' : '▶'}
+              </button>
               <div className="text-[7.5px] text-[rgba(255,255,255,0.14)]">{execCount} exec</div>
             </div>
-            <div className="trm-body flex-1 overflow-y-auto px-[14px] py-[10px] text-[8.5px] leading-[1.85] relative z-[3]">
+            <div className="trm-body flex-1 overflow-y-auto px-[14px] py-[10px] text-[8.5px] leading-[1.85] relative z-[3] min-h-0">
               {terminalLines.map((l, i) => (
                 <div key={i} className="flex gap-2">
                   {l.t === 'cmd' && (
@@ -1407,7 +1606,7 @@ export function Swarm() {
 
           {/* Findings Report */}
           <div
-            className="flex flex-col overflow-hidden"
+            className={`flex flex-col overflow-hidden ${findingsExpanded ? 'col-span-2' : ''}`}
             style={{
               background: 'linear-gradient(180deg, rgba(6,10,16,0.97) 0%, rgba(3,4,6,0.99) 100%)',
             }}
@@ -1425,16 +1624,16 @@ export function Swarm() {
                     className="text-lg font-light leading-[1.1]"
                     style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(230,170,110,0.85)' }}
                   >
-                    4
+                    {findingsList.filter(f => f.sev === 'high' || f.sev === 'critical').length}
                   </div>
-                  <div className="text-[7px] tracking-[0.15em] text-[rgba(255,255,255,0.28)]">SAST</div>
+                  <div className="text-[7px] tracking-[0.15em] text-[rgba(255,255,255,0.28)]">HIGH</div>
                 </div>
                 <div className="flex flex-col items-center gap-[1px] px-[14px] border-l border-[rgba(255,255,255,0.04)]">
                   <div
                     className="text-lg font-light leading-[1.1]"
                     style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(255,255,255,0.95)' }}
                   >
-                    7
+                    {findingsList.length}
                   </div>
                   <div className="text-[7px] tracking-[0.15em] text-[rgba(255,255,255,0.28)]">TOTAL</div>
                 </div>
@@ -1443,17 +1642,31 @@ export function Swarm() {
                     className="text-lg font-light leading-[1.1]"
                     style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(150,210,170,0.85)' }}
                   >
-                    2
+                    {findingsList.filter(f => f.confirmed).length}
                   </div>
                   <div className="text-[7px] tracking-[0.15em] text-[rgba(255,255,255,0.28)]">CONFIRMED</div>
                 </div>
+                <button
+                  onClick={() => { setFindingsExpanded(!findingsExpanded); setTerminalExpanded(false); }}
+                  className="text-[7.5px] px-2 py-1 ml-2 rounded hover:bg-[rgba(255,255,255,0.1)] text-[rgba(255,255,255,0.4)] transition-colors"
+                  title={findingsExpanded ? 'Collapse' : 'Expand'}
+                >
+                  {findingsExpanded ? '◀' : '▶'}
+                </button>
+                <button
+                  onClick={() => setFindingsFullscreen(true)}
+                  className="text-[7.5px] px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-[rgba(255,255,255,0.4)] transition-colors"
+                  title="Fullscreen"
+                >
+                  ⛶
+                </button>
               </div>
             </div>
-            <div className="rpt-body flex-1 overflow-y-auto px-2 py-[7px] flex flex-col gap-1">
+            <div className="rpt-body flex-1 overflow-y-auto px-2 py-[7px] flex flex-col gap-1 min-h-0" style={{ minHeight: '100px' }}>
               {findingsList.map((f, i) => (
                 <div
                   key={i}
-                  className={`p-[7px_10px] cursor-pointer relative overflow-hidden transition-all duration-200 hover:bg-[rgba(255,255,255,0.032)] hover:border-[rgba(255,255,255,0.08)] ${
+                  className={`p-[7px_10px] cursor-pointer relative overflow-hidden transition-all duration-200 hover:bg-[rgba(255,255,255,0.032)] hover:border-[rgba(255,255,255,0.08)] min-h-[50px] ${
                     f.confirmed ? 'bg-[rgba(150,210,170,0.028)] border-[rgba(150,210,170,0.12)]' : 'bg-[rgba(255,255,255,0.016)] border border-[rgba(255,255,255,0.04)]'
                   }`}
                   style={{ borderRadius: '1px' }}
@@ -1534,6 +1747,100 @@ export function Swarm() {
           </div>
         </div>
       </div>
+
+      {/* Fullscreen Findings Modal */}
+      {findingsFullscreen && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.92)' }}
+        >
+          <div className="w-[90vw] h-[90vh] flex flex-col" style={{ background: 'linear-gradient(180deg, rgba(6,10,16,0.98) 0%, rgba(3,4,6,0.99) 100%)', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.08)' }}>
+            {/* Modal Header */}
+            <div className="flex items-center gap-0 px-[20px] py-[12px] border-b border-[rgba(255,255,255,0.08)]">
+              <div className="text-[16px] italic font-light" style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(255,255,255,0.7)' }}>
+                Findings Report
+              </div>
+              <div className="ml-auto flex gap-4 text-[11px]">
+                <div className="flex flex-col items-center">
+                  <div className="text-lg font-light" style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(230,170,110,0.85)' }}>
+                    {findingsList.filter(f => f.sev === 'high' || f.sev === 'critical').length}
+                  </div>
+                  <div className="text-[9px] tracking-[0.15em] text-[rgba(255,255,255,0.35)]">HIGH</div>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="text-lg font-light" style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(255,255,255,0.95)' }}>
+                    {findingsList.length}
+                  </div>
+                  <div className="text-[9px] tracking-[0.15em] text-[rgba(255,255,255,0.35)]">TOTAL</div>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="text-lg font-light" style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(150,210,170,0.85)' }}>
+                    {findingsList.filter(f => f.confirmed).length}
+                  </div>
+                  <div className="text-[9px] tracking-[0.15em] text-[rgba(255,255,255,0.35)]">CONFIRMED</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setFindingsFullscreen(false)}
+                className="ml-6 text-[20px] px-3 py-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-[rgba(255,255,255,0.5)] transition-colors"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2" style={{ minHeight: '300px' }}>
+              {findingsList.length === 0 ? (
+                <div className="flex items-center justify-center h-full">
+                  <p className="text-[14px] italic" style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(255,255,255,0.3)' }}>
+                    No findings yet
+                  </p>
+                </div>
+              ) : (
+                findingsList.map((f, i) => (
+                  <div
+                    key={i}
+                    className={`p-3 cursor-pointer relative overflow-hidden transition-all duration-200 hover:bg-[rgba(255,255,255,0.032)] min-h-[70px] ${
+                      f.confirmed ? 'bg-[rgba(150,210,170,0.04)] border-[rgba(150,210,170,0.15)]' : 'bg-[rgba(255,255,255,0.025)] border-[rgba(255,255,255,0.06)]'
+                    }`}
+                    style={{ borderRadius: '3px', borderLeft: '3px solid' }}
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <span
+                        className="text-[9px] tracking-[0.14em] px-2 py-1 rounded"
+                        style={{
+                          color: f.sev === 'critical' ? 'rgba(240,140,140,0.9)' : f.sev === 'high' ? 'rgba(230,170,110,0.9)' : f.sev === 'medium' ? 'rgba(200,200,140,0.85)' : 'rgba(140,180,210,0.8)',
+                          borderColor: f.sev === 'critical' ? 'rgba(240,140,140,0.9)' : f.sev === 'high' ? 'rgba(230,170,110,0.9)' : f.sev === 'medium' ? 'rgba(200,200,140,0.85)' : 'rgba(140,180,210,0.8)',
+                          background: f.sev === 'critical' ? 'rgba(240,140,140,0.1)' : f.sev === 'high' ? 'rgba(230,170,110,0.1)' : f.sev === 'medium' ? 'rgba(200,200,140,0.08)' : 'rgba(140,180,210,0.08)',
+                          border: '1px solid',
+                        }}
+                      >
+                        {f.sev.toUpperCase()}
+                      </span>
+                      <span className="text-[13px] text-[rgba(255,255,255,0.6)] flex-1">{f.title}</span>
+                      {f.confirmed ? (
+                        <span className="text-[9px] tracking-[0.12em] px-2 py-1 rounded" style={{ background: 'rgba(150,210,170,0.1)', borderColor: 'rgba(150,210,170,0.3)', color: 'rgba(150,210,170,0.85)', border: '1px solid' }}>
+                          CONFIRMED
+                        </span>
+                      ) : (
+                        <span className="text-[9px] tracking-[0.12em] px-2 py-1 rounded" style={{ background: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.35)', border: '1px solid' }}>
+                          STATIC
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-[rgba(255,255,255,0.35)] flex gap-4">
+                      <span>{f.type}</span>
+                      <span>{f.src}</span>
+                      {f.cve && <span style={{ color: 'rgba(240,140,140,0.85)' }}>{f.cve}</span>}
+                      <span style={{ color: 'rgba(255,255,255,0.35)' }}>{f.agent}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

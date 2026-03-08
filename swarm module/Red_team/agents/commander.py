@@ -557,6 +557,17 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
                 iteration=iteration,
                 task="planning_complete",
             ))
+            # New timeline: log commander plan event
+            asyncio.create_task(supabase.log_swarm_event(
+                mission_id=mission_id,
+                event_type="task_assignment",
+                agent_name="commander",
+                title=f"Commander issued {len(tasks)} tasks",
+                stage="planning",
+                description=strategy[:500],
+                metadata={"task_count": len(tasks), "strategy": strategy[:200]},
+                iteration=iteration,
+            ))
     except Exception as e:
         logger.debug(f"Failed to update commander state: {e}")
 

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status as http_status
 from pydantic import BaseModel, Field, HttpUrl
 
 from core.redis_bus import get_redis_bus
@@ -55,6 +55,8 @@ class ScanStatusResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+    # Source of data: 'supabase' for real data, 'mock' for sample data
+    data_source: str = "supabase"
 
 
 class ScanListResponse(BaseModel):
@@ -70,7 +72,7 @@ class ScanListResponse(BaseModel):
 @router.post(
     "/trigger",
     response_model=ScanTriggerResponse,
-    status_code=status.HTTP_202_ACCEPTED,
+    status_code=http_status.HTTP_202_ACCEPTED,
     summary="Trigger a new scan",
     description="Submit a repository URL for security scanning. The scan runs asynchronously.",
 )
@@ -127,7 +129,7 @@ async def trigger_scan(request: ScanTriggerRequest) -> ScanTriggerResponse:
     except Exception as e:
         logger.error(f"Failed to queue scan job: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to queue scan job: {str(e)}",
         )
 
@@ -147,13 +149,19 @@ async def get_scan_status(scan_id: str) -> ScanStatusResponse:
     """
     try:
         supabase = get_supabase_client()
+        
+        logger.info(f"[SUPABASE] Fetching scan status for ID: {scan_id}")
         scan_data = await supabase.get_scan_status(scan_id)
         
         if not scan_data:
+            logger.warning(f"[SUPABASE] Scan not found: {scan_id}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=http_status.HTTP_404_NOT_FOUND,
                 detail=f"Scan not found: {scan_id}",
             )
+        
+        logger.info(f"[SUPABASE] Scan found - id={scan_data.get('id')}, status={scan_data.get('status')}, "
+                   f"progress={scan_data.get('progress')}%")
         
         return ScanStatusResponse(
             scan_id=str(scan_data.get("id", scan_id)),
@@ -165,6 +173,7 @@ async def get_scan_status(scan_id: str) -> ScanStatusResponse:
             started_at=scan_data.get("started_at"),
             completed_at=scan_data.get("completed_at"),
             created_at=scan_data.get("created_at", datetime.now(timezone.utc)),
+            data_source="supabase",
         )
         
     except HTTPException:
@@ -172,7 +181,7 @@ async def get_scan_status(scan_id: str) -> ScanStatusResponse:
     except Exception as e:
         logger.error(f"Failed to get scan status: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get scan status: {str(e)}",
         )
 
@@ -184,7 +193,7 @@ async def get_scan_status(scan_id: str) -> ScanStatusResponse:
     description="List all scans with optional filtering.",
 )
 async def list_scans(
-    status: str | None = None,
+    scan_status: str | None = None,
     limit: int = 10,
     offset: int = 0,
 ) -> ScanListResponse:
@@ -200,11 +209,25 @@ async def list_scans(
     """
     try:
         supabase = get_supabase_client()
+        
+        # Log the request
+        logger.info(f"[SUPABASE] Listing scans - status: {scan_status}, limit: {limit}, offset: {offset}")
+        
         scans_data = await supabase.list_scans(
-            status=status,
+            status=scan_status,
             limit=limit,
             offset=offset,
         )
+        
+        # Log the response
+        total_scans = scans_data.get("total", 0)
+        scans_list = scans_data.get("scans", [])
+        logger.info(f"[SUPABASE] Retrieved {len(scans_list)} scans out of {total_scans} total from Supabase")
+        
+        # Log each scan details
+        for i, scan in enumerate(scans_list):
+            logger.info(f"[SUPABASE] Scan {i+1}: id={scan.get('id', 'N/A')}, status={scan.get('status', 'N/A')}, "
+                       f"progress={scan.get('progress', 0)}%, created_at={scan.get('created_at', 'N/A')}")
         
         scans = [
             ScanStatusResponse(
@@ -217,19 +240,22 @@ async def list_scans(
                 started_at=scan.get("started_at"),
                 completed_at=scan.get("completed_at"),
                 created_at=scan.get("created_at", datetime.now(timezone.utc)),
+                data_source="supabase",
             )
-            for scan in scans_data.get("scans", [])
+            for scan in scans_list
         ]
+        
+        logger.info(f"[SUPABASE] Returning {len(scans)} scans to client")
         
         return ScanListResponse(
             scans=scans,
-            total=scans_data.get("total", 0),
+            total=total_scans,
         )
         
     except Exception as e:
         logger.error(f"Failed to list scans: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list scans: {str(e)}",
         )
 
@@ -253,7 +279,7 @@ async def cancel_scan(scan_id: str) -> dict[str, str]:
         
         if not scan_data:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=http_status.HTTP_404_NOT_FOUND,
                 detail=f"Scan not found: {scan_id}",
             )
         
@@ -262,7 +288,7 @@ async def cancel_scan(scan_id: str) -> dict[str, str]:
         # Check if scan can be cancelled
         if current_status not in ("pending", "running"):
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot cancel scan with status: {current_status}",
             )
         
@@ -275,7 +301,7 @@ async def cancel_scan(scan_id: str) -> dict[str, str]:
         
         if not success:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to cancel scan",
             )
         
@@ -299,7 +325,7 @@ async def cancel_scan(scan_id: str) -> dict[str, str]:
     except Exception as e:
         logger.error(f"Failed to cancel scan: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to cancel scan: {str(e)}",
         )
 
@@ -331,16 +357,24 @@ async def get_scan_results(scan_id: str) -> ScanReportResponse:
     """
     try:
         supabase = get_supabase_client()
+        
+        logger.info(f"[SUPABASE] Fetching scan results for ID: {scan_id}")
         report_data = await supabase.get_report(scan_id)
         
         if not report_data:
+            logger.warning(f"[SUPABASE] Scan report not found: {scan_id}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=http_status.HTTP_404_NOT_FOUND,
                 detail=f"Scan report not found: {scan_id}",
             )
         
         scan_data = report_data.get("scan", {})
         vulnerabilities = report_data.get("vulnerabilities", [])
+        
+        # Log vulnerability data
+        logger.info(f"[SUPABASE] Retrieved scan report - repo_url: {scan_data.get('repo_url', 'N/A')}, "
+                   f"status: {scan_data.get('status', 'N/A')}")
+        logger.info(f"[SUPABASE] Found {len(vulnerabilities)} total vulnerabilities")
         
         # Calculate summary statistics
         confirmed_vulns = [v for v in vulnerabilities if v.get("confirmed", False)]
@@ -348,6 +382,15 @@ async def get_scan_results(scan_id: str) -> ScanReportResponse:
         high_count = sum(1 for v in confirmed_vulns if v.get("severity") == "high")
         medium_count = sum(1 for v in confirmed_vulns if v.get("severity") == "medium")
         low_count = sum(1 for v in confirmed_vulns if v.get("severity") == "low")
+        
+        logger.info(f"[SUPABASE] Vulnerability summary - confirmed: {len(confirmed_vulns)}, "
+                   f"critical: {critical_count}, high: {high_count}, medium: {medium_count}, low: {low_count}")
+        
+        # Log first few vulnerabilities
+        for i, vuln in enumerate(vulnerabilities[:5]):
+            logger.info(f"[SUPABASE] Vuln {i+1}: {vuln.get('vuln_type', 'N/A')} - "
+                       f"severity: {vuln.get('severity', 'N/A')}, "
+                       f"confirmed: {vuln.get('confirmed', False)}")
         
         summary = {
             "total": len(vulnerabilities),
@@ -374,7 +417,7 @@ async def get_scan_results(scan_id: str) -> ScanReportResponse:
     except Exception as e:
         logger.error(f"Failed to get scan results: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get scan results: {str(e)}",
         )
 
@@ -393,7 +436,7 @@ class GitHubWebhookPayload(BaseModel):
 
 @router.post(
     "/webhook/github",
-    status_code=status.HTTP_202_ACCEPTED,
+    status_code=http_status.HTTP_202_ACCEPTED,
     summary="GitHub webhook",
     description="Handle GitHub push events to trigger automatic scans.",
 )
@@ -409,7 +452,7 @@ async def github_webhook(payload: GitHubWebhookPayload) -> dict[str, str]:
     repo_url = payload.repository.get("clone_url")
     if not repo_url:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=http_status.HTTP_400_BAD_REQUEST,
             detail="Repository URL not found in payload",
         )
     
@@ -433,6 +476,6 @@ async def github_webhook(payload: GitHubWebhookPayload) -> dict[str, str]:
     except Exception as e:
         logger.error(f"Failed to process GitHub webhook: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process webhook: {str(e)}",
         )

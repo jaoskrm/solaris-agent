@@ -73,6 +73,20 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Supabase client for frontend data
+try:
+    from supabase import create_client, Client
+    import os
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://nesjaodrrkefpmqdqtgv.supabase.co")
+    SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5lc2phb2RycmtlZnBtcWRxdGd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzExMTg0MjcsImV4cCI6MjA4NjY5NDQyN30.zbEAwOcZ7Tn-LVfGC8KdQeh3D3xEyzghZ-Mfg0VgnfE")
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    SUPABASE_AVAILABLE = True
+    logger.info("Supabase client initialized for API")
+except Exception as e:
+    supabase = None
+    SUPABASE_AVAILABLE = False
+    logger.warning(f"Could not initialize Supabase client: {e}")
+
 # Configure logging BEFORE imports that might fail
 logging.basicConfig(
     level=logging.INFO,
@@ -465,7 +479,7 @@ async def mission_websocket(websocket: WebSocket, mission_id: str):
     Events streamed:
     - exploit_result: When Gamma agent completes an exploit
     - intelligence_report: When Alpha agent discovers information
-    - critic_analysis: When Critic agent grades an exploit
+    - action: When Critic agent grades an exploit (with critic in message)
     - tool_execution: When a tool is executed
     - phase_transition: When mission phase changes
     
@@ -619,6 +633,145 @@ async def list_missions():
             for m in missions.values()
         ]
     }
+
+
+# ============================================================
+# SWARM FRONTEND API - Connect to Supabase
+# ============================================================
+
+@app.get("/api/swarm/missions")
+async def list_swarm_missions(limit: int = 20, offset: int = 0):
+    """List all swarm missions from Supabase."""
+    if not SUPABASE_AVAILABLE or not supabase:
+        # Fallback to in-memory missions
+        return {
+            "missions": [
+                {
+                    "id": m["mission_id"],
+                    "target": m["target"],
+                    "status": m["status"],
+                    "phase": m.get("phase"),
+                    "progress": m.get("progress", 0),
+                    "iteration": m.get("iteration", 0),
+                    "created_at": m["created_at"],
+                }
+                for m in list(missions.values())[:limit]
+            ],
+            "total": len(missions),
+        }
+    
+    try:
+        response = supabase.table("swarm_missions").select(
+            "id, target, status, progress, current_phase, iteration, created_at, started_at, completed_at"
+        ).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+        
+        return {
+            "missions": response.data,
+            "total": len(response.data),
+        }
+    except Exception as e:
+        logger.error(f"Error fetching swarm missions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/swarm/mission/{mission_id}")
+async def get_swarm_mission(mission_id: str):
+    """Get a specific swarm mission by ID."""
+    if not SUPABASE_AVAILABLE or not supabase:
+        # Fallback
+        if mission_id in missions:
+            m = missions[mission_id]
+            return {
+                "id": m["mission_id"],
+                "target": m["target"],
+                "status": m["status"],
+                "progress": m.get("progress", 0),
+                "iteration": m.get("iteration", 0),
+                "phase": m.get("phase"),
+                "created_at": m["created_at"],
+            }
+        raise HTTPException(status_code=404, detail="Mission not found")
+    
+    try:
+        response = supabase.table("swarm_missions").select("*").eq("id", mission_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Mission not found")
+        
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching mission {mission_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/swarm/mission/{mission_id}/agents")
+async def get_swarm_agent_states(mission_id: str):
+    """Get all agent states for a mission."""
+    if not SUPABASE_AVAILABLE or not supabase:
+        return {"agents": []}
+    
+    try:
+        response = supabase.table("swarm_agent_states").select(
+            "id, agent_id, agent_name, agent_team, status, iter, task, last_updated, created_at"
+        ).eq("mission_id", mission_id).execute()
+        
+        return {"agents": response.data}
+    except Exception as e:
+        logger.error(f"Error fetching agent states: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/swarm/mission/{mission_id}/events")
+async def get_swarm_events(mission_id: str, limit: int = 100):
+    """Get all events for a mission."""
+    if not SUPABASE_AVAILABLE or not supabase:
+        return {"events": []}
+    
+    try:
+        response = supabase.table("swarm_events").select(
+            "id, event_type, agent_name, stage, title, description, success, error_type, created_at, iteration"
+        ).eq("mission_id", mission_id).order("created_at", desc=True).limit(limit).execute()
+        
+        return {"events": response.data}
+    except Exception as e:
+        logger.error(f"Error fetching events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/swarm/mission/{mission_id}/findings")
+async def get_swarm_findings(mission_id: str):
+    """Get all findings for a mission."""
+    if not SUPABASE_AVAILABLE or not supabase:
+        return {"findings": []}
+    
+    try:
+        response = supabase.table("swarm_findings").select(
+            "id, title, severity, finding_type, confirmed, agent_name, target, endpoint, created_at"
+        ).eq("mission_id", mission_id).execute()
+        
+        return {"findings": response.data}
+    except Exception as e:
+        logger.error(f"Error fetching findings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/swarm/mission/{mission_id}/exploits")
+async def get_swarm_exploit_attempts(mission_id: str, limit: int = 50):
+    """Get exploit attempts for a mission."""
+    if not SUPABASE_AVAILABLE or not supabase:
+        return {"exploits": []}
+    
+    try:
+        response = supabase.table("swarm_exploit_attempts").select(
+            "id, exploit_type, target_url, success, response_code, error_type, created_at"
+        ).eq("mission_id", mission_id).order("created_at", desc=True).limit(limit).execute()
+        
+        return {"exploits": response.data}
+    except Exception as e:
+        logger.error(f"Error fetching exploits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

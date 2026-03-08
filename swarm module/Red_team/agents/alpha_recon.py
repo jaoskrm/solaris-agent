@@ -416,7 +416,7 @@ Decide which tools to run for these tasks. Respond in JSON."""
     except Exception as e:
         logger.debug(f"Failed to update alpha state: {e}")
     
-    # Log kill chain events to Supabase
+    # Log kill chain events to Supabase (legacy + new timeline)
     for finding in all_findings:
         await supabase.log_kill_chain_event(
             mission_id=state.get("mission_id", "unknown"),
@@ -432,6 +432,20 @@ Decide which tools to run for these tasks. Respond in JSON."""
             success=True,
             human_intervention=False,
         )
+        # New timeline: log to swarm_events
+        import asyncio
+        asyncio.create_task(supabase.log_swarm_event(
+            mission_id=state.get("mission_id", "unknown"),
+            event_type="recon_finding",
+            agent_name="alpha",
+            title=f"Recon: {finding.get('finding', 'Unknown')[:80]}",
+            stage="reconnaissance",
+            description=finding.get("finding", ""),
+            target=finding.get("asset", state.get("target")),
+            success=True,
+            evidence={"confidence": finding.get("confidence", 0), "asset": finding.get("asset", "")},
+            iteration=iteration,
+        ))
 
     return {
         "recon_results": all_findings,

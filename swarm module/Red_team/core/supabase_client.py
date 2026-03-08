@@ -7,10 +7,14 @@ import asyncio
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Thread pool for synchronous Supabase operations
+_executor = ThreadPoolExecutor(max_workers=4)
 
 # UUID validation regex pattern
 UUID_PATTERN = re.compile(
@@ -117,11 +121,16 @@ class RedTeamSupabaseClient:
         }
         
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
-                None,
+                _executor,
                 lambda: self._client.table("swarm_agent_events").insert(event_data).execute()
             )
+            logger.debug(f"Logged kill chain event: {stage}/{event_type}")
+            return True
+        except RuntimeError:
+            # No running event loop - run synchronously
+            result = self._client.table("swarm_agent_events").insert(event_data).execute()
             logger.debug(f"Logged kill chain event: {stage}/{event_type}")
             return True
         except Exception as e:
@@ -153,14 +162,18 @@ class RedTeamSupabaseClient:
         }
         
         try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self._client.table("swarm_missions")
-                .update(update_data)
-                .eq("id", mission_id)
-                .execute()
-            )
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_missions")
+                    .update(update_data)
+                    .eq("id", mission_id)
+                    .execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                self._client.table("swarm_missions").update(update_data).eq("id", mission_id).execute()
             return True
         except Exception as e:
             logger.error(f"Failed to update mission status: {e}")
@@ -206,14 +219,18 @@ class RedTeamSupabaseClient:
             state_data["recent_logs"] = recent_logs
         
         try:
-            loop = asyncio.get_event_loop()
-            # Use upsert to handle both insert and update
-            await loop.run_in_executor(
-                None,
-                lambda: self._client.table("swarm_agent_states")
-                .upsert(state_data, on_conflict="mission_id,agent_id")
-                .execute()
-            )
+            try:
+                loop = asyncio.get_running_loop()
+                # Use upsert to handle both insert and update
+                await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_agent_states")
+                    .upsert(state_data, on_conflict="mission_id,agent_id")
+                    .execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                self._client.table("swarm_agent_states").upsert(state_data, on_conflict="mission_id,agent_id").execute()
             logger.debug(f"Updated agent state: {agent_name} ({agent_id}) = {status}")
             return True
         except Exception as e:
@@ -239,13 +256,15 @@ class RedTeamSupabaseClient:
 
         Returns the created mission data or None if failed.
         """
+        logger.info(f"[DEBUG] create_mission called: mission_id={mission_id}, target={target}")
+
         # Auto-detect mode if not provided
         if mode is None:
             from agents.state import detect_target_type
             mode = detect_target_type(target)
 
         if not self._enabled:
-            logger.debug(f"Supabase not enabled - mission {mission_id} would be created")
+            logger.warning(f"[DEBUG] Supabase not enabled - mission {mission_id} would be created but not persisted")
             return None
 
         mission_data = {
@@ -256,15 +275,19 @@ class RedTeamSupabaseClient:
         }
         
         try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._client.table("swarm_missions").insert(mission_data).execute()
-            )
-            logger.info(f"Created mission record: {mission_id}")
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_missions").insert(mission_data).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = self._client.table("swarm_missions").insert(mission_data).execute()
+            logger.info(f"[DEBUG] Created mission record: {mission_id}")
             return result.data[0] if result.data else None
         except Exception as e:
-            logger.error(f"Failed to create mission: {e}")
+            logger.error(f"[DEBUG] Failed to create mission: {e}")
             return None
     
     async def complete_mission(
@@ -282,14 +305,18 @@ class RedTeamSupabaseClient:
         }
         
         try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self._client.table("swarm_missions")
-                .update(update_data)
-                .eq("id", mission_id)
-                .execute()
-            )
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_missions")
+                    .update(update_data)
+                    .eq("id", mission_id)
+                    .execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                self._client.table("swarm_missions").update(update_data).eq("id", mission_id).execute()
             logger.info(f"Mission {mission_id} marked as {status}")
             return True
         except Exception as e:
@@ -326,11 +353,15 @@ class RedTeamSupabaseClient:
         }
         
         try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self._client.table("swarm_agent_events").insert(event_data).execute()
-            )
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_agent_events").insert(event_data).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                self._client.table("swarm_agent_events").insert(event_data).execute()
             logger.debug(f"Logged mission event: {event_type} for {mission_id}")
             return True
         except Exception as e:
@@ -354,16 +385,20 @@ class RedTeamSupabaseClient:
             return []
         
         try:
-            loop = asyncio.get_event_loop()
             query = self._client.table("swarm_agent_events").select("*").eq("mission_id", mission_id)
             
             if event_type:
                 query = query.eq("event_type", event_type)
             
-            result = await loop.run_in_executor(
-                None,
-                lambda: query.order("timestamp", desc=False).execute()
-            )
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: query.order("timestamp", desc=False).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = query.order("timestamp", desc=False).execute()
             return result.data if result.data else []
         except Exception as e:
             logger.error(f"Failed to get mission events: {e}")
@@ -384,30 +419,411 @@ class RedTeamSupabaseClient:
             return None
         
         try:
-            loop = asyncio.get_event_loop()
-            
             # Upload to vibecheck_reports bucket
             file_path = f"{mission_id}/{file_name}"
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._client.storage
-                .from_("vibecheck_reports")
-                .upload(file_path, file_content, {"content-type": content_type})
-            )
             
-            # Get public URL
-            public_url = await loop.run_in_executor(
-                None,
-                lambda: self._client.storage
-                .from_("vibecheck_reports")
-                .get_public_url(file_path)
-            )
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.storage
+                    .from_("vibecheck_reports")
+                    .upload(file_path, file_content, {"content-type": content_type})
+                )
+                
+                # Get public URL
+                public_url = await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.storage
+                    .from_("vibecheck_reports")
+                    .get_public_url(file_path)
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = self._client.storage.from_("vibecheck_reports").upload(file_path, file_content, {"content-type": content_type})
+                public_url = self._client.storage.from_("vibecheck_reports").get_public_url(file_path)
             
             logger.info(f"Uploaded report: {file_name} for mission {mission_id}")
             return public_url
         except Exception as e:
             logger.error(f"Failed to upload report: {e}")
             return None
+
+    # ==================== SWARM EVENTS (New Timeline Schema) ====================
+
+    async def log_swarm_event(
+        self,
+        mission_id: str,
+        event_type: str,
+        agent_name: str,
+        title: str,
+        stage: str | None = None,
+        description: str | None = None,
+        payload: str | None = None,
+        target: str | None = None,
+        success: bool | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        execution_time_ms: int | None = None,
+        iteration: int | None = None,
+        reflection_count: int | None = None,
+        parent_event_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Log an event to the swarm_events timeline table.
+        
+        Returns the inserted row (with 'id') or None if failed.
+        """
+        if not self._enabled:
+            logger.warning(f"[DEBUG] Supabase not enabled - skipping swarm event: {event_type}/{title}")
+            return None
+
+        if not is_valid_uuid(mission_id):
+            logger.warning(f"[DEBUG] Skipping swarm event - invalid mission_id: {mission_id}")
+            return None
+
+        logger.info(f"[DEBUG] Logging swarm event: mission_id={mission_id}, event_type={event_type}, agent={agent_name}, title={title[:50]}")
+
+        event_data: dict[str, Any] = {
+            "mission_id": mission_id,
+            "event_type": event_type,
+            "agent_name": agent_name,
+            "title": title,
+        }
+
+        # Optional fields
+        if stage is not None:
+            event_data["stage"] = stage
+        if description is not None:
+            event_data["description"] = description
+        if payload is not None:
+            event_data["payload"] = payload
+        if target is not None:
+            event_data["target"] = target
+        if success is not None:
+            event_data["success"] = success
+        if error_type is not None:
+            event_data["error_type"] = error_type
+        if error_message is not None:
+            event_data["error_message"] = error_message
+        if evidence is not None:
+            event_data["evidence"] = evidence
+        if metadata is not None:
+            event_data["metadata"] = metadata
+        if execution_time_ms is not None:
+            event_data["execution_time_ms"] = execution_time_ms
+        if iteration is not None:
+            event_data["iteration"] = iteration
+        if reflection_count is not None:
+            event_data["reflection_count"] = reflection_count
+        if parent_event_id is not None and is_valid_uuid(parent_event_id):
+            event_data["parent_event_id"] = parent_event_id
+
+        try:
+            # DEBUG: Check if mission exists first
+            mission_check = self._client.table("swarm_missions").select("id").eq("id", mission_id).execute()
+            if not mission_check.data:
+                logger.warning(f"[DEBUG] Mission {mission_id} NOT FOUND in swarm_missions table! Events will be orphaned.")
+            else:
+                logger.info(f"[DEBUG] Mission {mission_id} exists in swarm_missions - OK")
+            
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_events").insert(event_data).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = self._client.table("swarm_events").insert(event_data).execute()
+            if result and result.data:
+                logger.debug(f"Logged swarm event: {event_type}/{title}")
+                return result.data[0]
+            return None
+        except Exception as e:
+            error_str = str(e).lower()
+            if "404" in error_str or "not found" in error_str:
+                logger.debug("swarm_events table not found (404) - skipping")
+            elif "winerror 10035" in error_str:
+                logger.debug("Windows socket error on swarm_events write - skipping")
+            else:
+                logger.error(f"Failed to log swarm event: {e}")
+            return None
+
+    async def log_exploit_attempt(
+        self,
+        mission_id: str,
+        exploit_type: str,
+        target_url: str,
+        method: str = "GET",
+        event_id: str | None = None,
+        payload: str | None = None,
+        payload_hash: str | None = None,
+        tool_used: str | None = None,
+        command_executed: str | None = None,
+        success: bool | None = False,
+        response_code: int | None = None,
+        exit_code: int | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        stdout: str | None = None,
+        stderr: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        execution_time_ms: int | None = None,
+        was_deduplicated: bool = False,
+        deduplication_key: str | None = None,
+        attempt_number: int = 1,
+    ) -> dict[str, Any] | None:
+        """Log an exploit attempt to the swarm_exploit_attempts table.
+        
+        Returns the inserted row (with 'id') or None if failed.
+        """
+        if not self._enabled:
+            logger.warning(f"[DEBUG] Supabase not enabled - skipping exploit attempt: {exploit_type} on {target_url}")
+            return None
+
+        if not is_valid_uuid(mission_id):
+            logger.warning(f"[DEBUG] Skipping exploit attempt - invalid mission_id: {mission_id}")
+            return None
+
+        logger.info(f"[DEBUG] Logging exploit attempt: mission_id={mission_id}, exploit_type={exploit_type}, target={target_url[:50]}, event_id={event_id}")
+
+        attempt_data: dict[str, Any] = {
+            "mission_id": mission_id,
+            "exploit_type": exploit_type,
+            "target_url": target_url,
+            "method": method,
+            "success": success,
+            "was_deduplicated": was_deduplicated,
+            "attempt_number": attempt_number,
+        }
+
+        if event_id and is_valid_uuid(event_id):
+            attempt_data["event_id"] = event_id
+        if payload is not None:
+            attempt_data["payload"] = payload[:5000] if len(payload) > 5000 else payload
+        if payload_hash is not None:
+            attempt_data["payload_hash"] = payload_hash
+        if tool_used is not None:
+            attempt_data["tool_used"] = tool_used
+        if command_executed is not None:
+            attempt_data["command_executed"] = command_executed[:2000] if len(command_executed) > 2000 else command_executed
+        if response_code is not None:
+            attempt_data["response_code"] = response_code
+        if exit_code is not None:
+            attempt_data["exit_code"] = exit_code
+        if error_type is not None:
+            attempt_data["error_type"] = error_type
+        if error_message is not None:
+            attempt_data["error_message"] = error_message[:2000] if len(error_message) > 2000 else error_message
+        if stdout is not None:
+            attempt_data["stdout"] = stdout[:10000] if len(stdout) > 10000 else stdout
+        if stderr is not None:
+            attempt_data["stderr"] = stderr[:10000] if len(stderr) > 10000 else stderr
+        if evidence is not None:
+            attempt_data["evidence"] = evidence
+        if execution_time_ms is not None:
+            attempt_data["execution_time_ms"] = execution_time_ms
+        if deduplication_key is not None:
+            attempt_data["deduplication_key"] = deduplication_key
+
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_exploit_attempts").insert(attempt_data).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = self._client.table("swarm_exploit_attempts").insert(attempt_data).execute()
+            if result and result.data:
+                logger.debug(f"Logged exploit attempt: {exploit_type} on {target_url}")
+                return result.data[0]
+            return None
+        except Exception as e:
+            error_str = str(e).lower()
+            if "404" in error_str or "not found" in error_str:
+                logger.debug("swarm_exploit_attempts table not found - skipping")
+            else:
+                logger.error(f"Failed to log exploit attempt: {e}")
+            return None
+
+    async def log_swarm_finding(
+        self,
+        mission_id: str,
+        title: str,
+        severity: str = "medium",
+        description: str | None = None,
+        finding_type: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        endpoint: str | None = None,
+        file_path: str | None = None,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        confirmed: bool = False,
+        agent_name: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        cve_id: str | None = None,
+        exploit_attempt_id: str | None = None,
+        agent_iteration: int = 0,
+        confidence_score: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Log a finding to the swarm_findings table (with new columns).
+        
+        Returns the inserted row (with 'id') or None if failed.
+        """
+        if not self._enabled:
+            return None
+
+        if not is_valid_uuid(mission_id):
+            logger.debug(f"Skipping swarm finding - invalid mission_id: {mission_id}")
+            return None
+
+        finding_data: dict[str, Any] = {
+            "mission_id": mission_id,
+            "title": title,
+            "severity": severity,
+            "confirmed": confirmed,
+            "agent_iteration": agent_iteration,
+            "evidence": evidence or {},
+        }
+
+        if description is not None:
+            finding_data["description"] = description
+        if finding_type is not None:
+            finding_data["finding_type"] = finding_type
+        if source is not None:
+            finding_data["source"] = source
+        if target is not None:
+            finding_data["target"] = target
+        if endpoint is not None:
+            finding_data["endpoint"] = endpoint
+        if file_path is not None:
+            finding_data["file_path"] = file_path
+        if line_start is not None:
+            finding_data["line_start"] = line_start
+        if line_end is not None:
+            finding_data["line_end"] = line_end
+        if agent_name is not None:
+            finding_data["agent_name"] = agent_name
+        if cve_id is not None:
+            finding_data["cve_id"] = cve_id
+        if exploit_attempt_id and is_valid_uuid(exploit_attempt_id):
+            finding_data["exploit_attempt_id"] = exploit_attempt_id
+        if confidence_score is not None:
+            finding_data["confidence_score"] = confidence_score
+
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_findings").insert(finding_data).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = self._client.table("swarm_findings").insert(finding_data).execute()
+            if result and result.data:
+                logger.debug(f"Logged swarm finding: {title} ({severity})")
+                return result.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Failed to log swarm finding: {e}")
+            return None
+
+    async def get_swarm_events(
+        self,
+        mission_id: str,
+        event_type: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Query swarm_events for a mission (for report generation)."""
+        if not self._enabled:
+            return []
+
+        try:
+            query = self._client.table("swarm_events").select("*").eq("mission_id", mission_id)
+            if event_type:
+                query = query.eq("event_type", event_type)
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: query.order("created_at", desc=False).limit(limit).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = query.order("created_at", desc=False).limit(limit).execute()
+            return result.data if result and result.data else []
+        except Exception as e:
+            logger.error(f"Failed to get swarm events: {e}")
+            return []
+
+    async def get_exploit_attempts(
+        self,
+        mission_id: str,
+        success_only: bool = False,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Query swarm_exploit_attempts for a mission."""
+        if not self._enabled:
+            return []
+
+        try:
+            query = self._client.table("swarm_exploit_attempts").select("*").eq("mission_id", mission_id)
+            if success_only:
+                query = query.eq("success", True)
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    _executor,
+                    lambda: query.order("created_at", desc=False).limit(limit).execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                result = query.order("created_at", desc=False).limit(limit).execute()
+            return result.data if result and result.data else []
+        except Exception as e:
+            logger.error(f"Failed to get exploit attempts: {e}")
+            return []
+
+    async def update_exploit_attempt(
+        self,
+        attempt_id: str,
+        critic_evaluated: bool = True,
+        critic_success: bool | None = None,
+        critic_feedback: str | None = None,
+    ) -> bool:
+        """Update critic evaluation fields on an exploit attempt."""
+        if not self._enabled or not is_valid_uuid(attempt_id):
+            return False
+
+        update_data: dict[str, Any] = {"critic_evaluated": critic_evaluated}
+        if critic_success is not None:
+            update_data["critic_success"] = critic_success
+        if critic_feedback is not None:
+            update_data["critic_feedback"] = critic_feedback[:2000] if len(critic_feedback) > 2000 else critic_feedback
+
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    _executor,
+                    lambda: self._client.table("swarm_exploit_attempts")
+                    .update(update_data)
+                    .eq("id", attempt_id)
+                    .execute()
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                self._client.table("swarm_exploit_attempts").update(update_data).eq("id", attempt_id).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update exploit attempt: {e}")
+            return False
 
 
 # Singleton instance
@@ -440,7 +856,10 @@ def fire_and_forget_log_event(
 ) -> None:
     """Fire-and-forget event logging that won't block the main loop.
     
+    Writes to both swarm_events (new timeline) and swarm_agent_events (legacy).
     Usage: fire_and_forget_log_event(mission_id, "exploit_result", {...})
+    
+    This function handles both async and sync contexts gracefully.
     """
     # Validate mission_id early to prevent unnecessary task creation
     if not is_valid_uuid(mission_id):
@@ -450,9 +869,46 @@ def fire_and_forget_log_event(
     try:
         client = get_supabase_client()
         if client._enabled:
-            # Create task without awaiting - it runs in background
-            asyncio.create_task(
-                client.log_mission_event(mission_id, event_type, payload_json)
-            )
+            # Try to get running loop for async logging
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an async context - use create_task
+                asyncio.create_task(
+                    client.log_mission_event(mission_id, event_type, payload_json)
+                )
+                asyncio.create_task(
+                    client.log_swarm_event(
+                        mission_id=mission_id,
+                        event_type=event_type,
+                        agent_name=payload_json.get("agent_name", "system"),
+                        title=f"Event: {event_type}",
+                        description=str(payload_json.get("message", ""))[:500],
+                        metadata=payload_json,
+                    )
+                )
+            except RuntimeError:
+                # No running event loop - run synchronously
+                # Log to swarm_agent_events
+                event_data = {
+                    "mission_id": mission_id,
+                    "agent_name": payload_json.get("agent_name", "system"),
+                    "agent_team": "red",
+                    "event_type": event_type,
+                    "message": f"Mission event: {event_type}",
+                    "payload": payload_json,
+                }
+                client._client.table("swarm_agent_events").insert(event_data).execute()
+                
+                # Log to swarm_events
+                event_data_timeline = {
+                    "mission_id": mission_id,
+                    "event_type": event_type,
+                    "agent_name": payload_json.get("agent_name", "system"),
+                    "title": f"Event: {event_type}",
+                    "description": str(payload_json.get("message", ""))[:500],
+                    "metadata": payload_json,
+                }
+                client._client.table("swarm_events").insert(event_data_timeline).execute()
+                logger.debug(f"Fire-and-forget logged sync: {event_type} for {mission_id}")
     except Exception as e:
         logger.debug(f"Failed to queue event log: {e}")

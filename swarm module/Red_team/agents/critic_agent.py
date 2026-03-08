@@ -753,10 +753,23 @@ async def _log_critic_event_async(mission_id: str, payload: dict):
         from core.supabase_client import get_supabase_client
         supabase = get_supabase_client()
         if supabase._enabled:
+            # Legacy: swarm_agent_events
             await supabase.log_mission_event(
                 mission_id=mission_id,
-                event_type="critic_analysis",
+                event_type="action",
                 payload_json=payload
+            )
+            # New timeline: swarm_events
+            await supabase.log_swarm_event(
+                mission_id=mission_id,
+                event_type="critic_analysis",
+                agent_name="critic",
+                title=f"Critic: {payload.get('exploit_type', 'unknown')} - {'✓' if payload.get('success') else '✗'}",
+                stage="exploitation",
+                description=payload.get("feedback", "")[:500],
+                success=payload.get("success", False),
+                error_type=payload.get("error_type"),
+                evidence={"severity": payload.get("severity", ""), "recommendation": payload.get("recommendation", "")},
             )
             logger.debug(f"Logged critic event to Supabase for mission {mission_id}")
     except Exception as e:

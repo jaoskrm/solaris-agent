@@ -26,6 +26,8 @@ interface DashboardStats {
     vulnerabilityTypes: { type: string; count: number; severity: string }[];
     recentScans: ScanStatusResponse[];
     topFindings: VulnerabilityFinding[];
+    /** Data source indicator: 'supabase' for real data, 'mock' for sample data */
+    dataSource?: 'supabase' | 'mock';
 }
 
 // Helper function to extract vulnerability type from finding
@@ -98,6 +100,19 @@ export function Dashboard() {
                 // Fetch scans from API
                 const scansResponse = await listScans(20, 0);
                 const scans = scansResponse.scans || [];
+                
+                // Log the data source and count
+                console.log('[Dashboard] Data Source:', scans[0]?.dataSource || 'unknown');
+                console.log('[Dashboard] Total scans from API:', scansResponse.total);
+                console.log('[Dashboard] Scans received:', scans.length);
+                scans.forEach((scan, i) => {
+                    console.log(`[Dashboard] Scan ${i+1}:`, {
+                        id: scan.scan_id,
+                        status: scan.status,
+                        createdAt: scan.created_at,
+                        dataSource: scan.dataSource
+                    });
+                });
 
                 // Calculate basic stats
                 const completedScans = scans.filter(s => s.status === 'completed');
@@ -108,6 +123,15 @@ export function Dashboard() {
                 for (const scan of completedScans.slice(0, 5)) {
                     try {
                         const result = await getScanResults(scan.scan_id);
+                        console.log('[Dashboard] Scan results for', scan.scan_id, ':', {
+                            total: result.summary?.total || 0,
+                            confirmed: result.summary?.confirmed || 0,
+                            critical: result.summary?.critical || 0,
+                            high: result.summary?.high || 0,
+                            medium: result.summary?.medium || 0,
+                            low: result.summary?.low || 0,
+                            findingsCount: result.findings?.length || 0
+                        });
                         scanResults.push(result);
                     } catch (err) {
                         console.error(`Failed to fetch results for scan ${scan.scan_id}:`, err);
@@ -173,7 +197,9 @@ export function Dashboard() {
                     lowCount,
                     vulnerabilityTypes,
                     recentScans: scans.slice(0, 4),
-                    topFindings
+                    topFindings,
+                    // Use the dataSource from the first scan, or default to supabase
+                    dataSource: scans[0]?.dataSource || 'supabase'
                 });
             } catch (err) {
                 console.error('Failed to fetch dashboard data:', err);
@@ -241,9 +267,21 @@ export function Dashboard() {
     return (
         <div className="w-full relative z-10 px-6 py-8 flex flex-col gap-6 max-w-[1400px] mx-auto min-h-screen">
             {/* Header */}
-            <div>
-                <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Dashboard</h1>
-                <p className="text-sm text-gray-400">Security & code quality overview</p>
+            <div className="flex items-center justify-between">
+                <div>
+                    <h1 className="text-3xl font-bold tracking-tight text-white mb-1">Dashboard</h1>
+                    <p className="text-sm text-gray-400">Security & code quality overview</p>
+                </div>
+                {/* Data Source Indicator */}
+                {stats?.dataSource && (
+                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+                        stats.dataSource === 'supabase' 
+                            ? 'bg-green-900/30 text-green-400 border border-green-800' 
+                            : 'bg-yellow-900/30 text-yellow-400 border border-yellow-800'
+                    }`}>
+                        {stats.dataSource === 'supabase' ? '● Live Data' : '◉ Sample Data'}
+                    </div>
+                )}
             </div>
 
             <motion.div

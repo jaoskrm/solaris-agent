@@ -175,3 +175,33 @@ Claims pending missions and acknowledges them. Use this when missions are stuck 
 .\scripts\health_check.ps1
 .\scripts\check_missions.ps1
 .\scripts\run_mission.ps1 -Objective "Scan for SQLi" -Target "http://localhost:8080"
+
+cd "swarm module\Red_team"
+python -c "
+import redis
+import json
+r = redis.Redis(host='localhost', port=6380, decode_responses=True)
+mission = {
+    'action': 'start',
+    'target': 'http://localhost:8080',
+    'objective': 'Scan Juice Shop for vulnerabilities',
+    'mode': 'live'
+}
+r.xadd('swarm_missions', {'data': json.dumps(mission)})
+print('Mission submitted!')
+"
+
+
+# Run all tests
+pytest tests/test_swarm_pipeline.py -v
+
+# Run specific categories
+pytest tests/test_swarm_pipeline.py -m critical -v
+pytest tests/test_swarm_pipeline.py -m regression -v
+pytest tests/test_swarm_pipeline.py -m unit -v
+
+# Run specific test
+pytest tests/test_swarm_pipeline.py::TestCriticalBugs::TestRedisStream::test_xack_on_completion -v
+
+# With coverage
+pytest tests/test_swarm_pipeline.py --cov=agents --cov=core --cov-report=html

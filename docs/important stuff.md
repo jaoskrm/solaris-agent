@@ -273,3 +273,139 @@ allcandidates.extend(codeql_results + snyk_results)
 ```
 
 CodeQL + Semgrep covers 95% of cases better than any single tool. [appsecsanta](https://appsecsanta.com/sast-tools)
+
+
+
+06:35:46 [agents.gamma_exploit] INFO    Critic [21]: Analyzing client_side_bypass...
+06:35:46 [agents.critic_agent ] INFO    Critic: Analyzing client_side_bypass exploit result (exit code: 0)
+06:35:46 [agents.critic_agent ] INFO    Critic: Detected hints: {'success_indicators': ['200 OK']}
+06:35:46 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+
+[TOOL OUTPUT] curl -s -i -X POST --max-time 30 -H 'Content-Type: applicati...
+  1: HTTP/1.1 200 OK
+  2: Access-Control-Allow-Origin: *
+  3: X-Content-Type-Options: nosniff
+  4: X-Frame-Options: SAMEORIGIN
+  5: Feature-Policy: payment 'self'
+  6: X-Recruiting: /#/jobs
+  7: Content-Type: application/json; charset=utf-8
+  8: Content-Length: 799
+  9: ETag: W/"31f-vGq0cSzVVhNOplq3B70Tvw272w0"
+  10: Vary: Accept-Encoding
+  ... (5 more lines)
+
+
+🔴 GAMMA [23]: curl (authentication)
+  1: HTTP/1.1 200 OK
+  2: Access-Control-Allow-Origin: *
+  3: X-Content-Type-Options: nosniff
+  4: X-Frame-Options: SAMEORIGIN
+  5: Feature-Policy: payment 'self'
+  6: X-Recruiting: /#/jobs
+  7: Content-Type: application/json; charset=utf-8
+  8: Content-Length: 799
+  9: ETag: W/"31f-vGq0cSzVVhNOplq3B70Tvw272w0"
+  10: Vary: Accept-Encoding
+  ... (5 more lines)
+  Exit code: 0
+
+06:35:46 [agents.gamma_exploit] INFO    Critic [23]: Analyzing authentication...
+06:35:46 [agents.critic_agent ] INFO    Critic: Analyzing authentication exploit result (exit code: 0)
+06:35:46 [agents.critic_agent ] INFO    Critic: Detected hints: {'success_indicators': ['"token":', 'authentication', 'admin', '200 OK']}
+06:35:46 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:50 [sandbox.sandbox_manager] WARNING Sandbox result: [FAIL (exit=28)] curl -s -i -X GET --max-time 30 'http://host.docker.internal:8080/rest/user/security-question?email=admin@juice-sh.op'
+
+06:35:50 [agents.gamma_exploit] INFO    Critic [5]: Analyzing idor...
+06:35:50 [agents.critic_agent ] INFO    Critic: Analyzing idor exploit result (exit code: 28)
+06:35:50 [agents.critic_agent ] INFO    Critic: Detected hints: {'success_indicators': ['admin']}
+06:35:50 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:50 [sandbox.sandbox_manager] WARNING Sandbox result: [FAIL (exit=28)] curl -s -i -X GET --max-time 30 http://host.docker.internal:8080/api/Feedbacks
+
+06:35:50 [agents.gamma_exploit] INFO    Critic [6]: Analyzing info_disclosure...
+06:35:50 [agents.critic_agent ] INFO    Critic: Analyzing info_disclosure exploit result (exit code: 28)
+06:35:50 [agents.critic_agent ] INFO    Critic: Detected hints: {}
+06:35:50 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:50 [sandbox.sandbox_manager] WARNING Sandbox result: [FAIL (exit=28)] curl -s -i -X GET --max-time 30 http://host.docker.internal:8080/api/Challenges
+
+06:35:50 [agents.gamma_exploit] INFO    Critic [8]: Analyzing info_disclosure...
+06:35:50 [agents.critic_agent ] INFO    Critic: Analyzing info_disclosure exploit result (exit code: 28)
+06:35:50 [agents.critic_agent ] INFO    Critic: Detected hints: {}
+06:35:50 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:50 [sandbox.sandbox_manager] WARNING Sandbox result: [FAIL (exit=28)] curl -s -i -X GET --max-time 30 http://host.docker.internal:8080/api/Products
+
+06:35:50 [agents.gamma_exploit] INFO    Critic [7]: Analyzing info_disclosure...
+06:35:50 [agents.critic_agent ] INFO    Critic: Analyzing info_disclosure exploit result (exit code: 28)
+06:35:50 [agents.critic_agent ] INFO    Critic: Detected hints: {}
+06:35:50 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:50 [sandbox.sandbox_manager] WARNING Sandbox result: [FAIL (exit=28)] curl -s -i -X POST --max-time 30 -H 'Content-Type: application/json' -d '{"email":"'"'"' OR 1=1--","password":"x"}' http://host.docke
+06:35:50 [agents.gamma_exploit] INFO    Critic [1]: Analyzing sqli...
+06:35:50 [agents.critic_agent ] INFO    Critic: Analyzing sqli exploit result (exit code: 28)
+06:35:50 [agents.critic_agent ] INFO    Critic: Detected hints: {}
+06:35:50 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:50 [sandbox.sandbox_manager] WARNING Sandbox result: [FAIL (exit=28)] curl -s -i -X GET --max-time 30 'http://host.docker.internal:8080/api/Challenges/?name=Score%20Board'
+
+06:35:50 [agents.gamma_exploit] INFO    Critic [20]: Analyzing client_side_bypass...
+06:35:50 [agents.critic_agent ] INFO    Critic: Analyzing client_side_bypass exploit result (exit code: 28)
+06:35:50 [agents.critic_agent ] INFO    Critic: Detected hints: {}
+06:35:50 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:53 [httpx               ] INFO    HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+06:35:53 [core.llm_client     ] INFO    ✅ LLM [Ollama/llama3:latest] responded
+06:35:53 [agents.critic_agent ] INFO    Critic: Evaluation complete - success=True, error_type=none, recommendation=stealthier
+06:35:53 [core.supabase_client] WARNING Skipping mission event log - invalid mission_id: unknown
+06:35:53 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/tokens.Authorization 
+06:35:53 [agents.gamma_exploit] INFO    🔗 Token chaining: Stored 'Authorization' in Redis for other exploits        
+06:35:53 [agents.gamma_exploit] INFO    🔗 Token chaining: SQLi/Auth token → stored for Auth Bypass + IDOR exploits  
+06:35:53 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/tokens.Authorization 
+06:35:53 [agents.gamma_exploit] INFO    🔗 Token chaining: Stored 'Authorization' in Redis for other exploits        
+06:35:53 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/tokens.Authorization 
+06:35:53 [agents.gamma_exploit] INFO    🔗 Token chaining: Stored 'Authorization' in Redis for other exploits        
+06:35:53 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/owasp_successes.sqli 
+06:35:54 [httpx               ] INFO    HTTP Request: POST https://nesjaodrrkefpmqdqtgv.supabase.co/rest/v1/swarm_agent_events "HTTP/2 201 Created"
+
+[TOOL OUTPUT] nuclei -u http://host.docker.internal:8080 -severity critica...
+  1: [WRN] The concurrency value is higher than max-host-error
+
+06:35:54 [sandbox.sandbox_manager] INFO    Sandbox exec: python3 -c 'import base64; f=open("/tmp/nuclei-results.json","rb"); print(base64
+
+[TOOL OUTPUT] python3 -c 'import base64; f=open("/tmp/nuclei-results.json"...
+  1: W10=
+
+
+🔴 GAMMA [0]: nuclei (auto)
+  1: [WRN] The concurrency value is higher than max-host-error
+  Exit code: 0
+
+06:35:54 [agents.gamma_exploit] INFO    Critic [0]: Analyzing auto...
+06:35:54 [agents.critic_agent ] INFO    Critic: Analyzing auto exploit result (exit code: 0)
+06:35:54 [agents.critic_agent ] INFO    Critic: Detected hints: {}
+06:35:54 [core.llm_client     ] INFO    🦙 Using Ollama model directly: llama3:latest
+06:35:55 [httpx               ] INFO    HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+06:35:55 [core.llm_client     ] INFO    ✅ LLM [Ollama/llama3:latest] responded
+06:35:55 [agents.critic_agent ] INFO    Critic: Evaluation complete - success=True, error_type=none, recommendation=stealthier
+06:35:55 [core.supabase_client] WARNING Skipping mission event log - invalid mission_id: unknown
+06:35:55 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/owasp_successes.client_side_bypass
+06:35:55 [httpx               ] INFO    HTTP Request: POST https://nesjaodrrkefpmqdqtgv.supabase.co/rest/v1/swarm_agent_events "HTTP/2 201 Created"
+06:36:01 [httpx               ] INFO    HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+06:36:01 [core.llm_client     ] INFO    ✅ LLM [Ollama/llama3:latest] responded
+06:36:01 [agents.critic_agent ] INFO    Critic: Evaluation complete - success=True, error_type=none, recommendation=stealthier
+06:36:01 [core.supabase_client] WARNING Skipping mission event log - invalid mission_id: unknown
+06:36:01 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/tokens.Authorization 
+06:36:01 [agents.gamma_exploit] INFO    🔗 Token chaining: Stored 'Authorization' in Redis for other exploits        
+06:36:01 [agents.gamma_exploit] INFO    🔗 Token chaining: SQLi/Auth token → stored for Auth Bypass + IDOR exploits  
+06:36:01 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/tokens.Authorization 
+06:36:01 [agents.gamma_exploit] INFO    🔗 Token chaining: Stored 'Authorization' in Redis for other exploits        
+06:36:01 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/tokens.Authorization 
+06:36:01 [agents.gamma_exploit] INFO    🔗 Token chaining: Stored 'Authorization' in Redis for other exploits        
+06:36:01 [core.redis_bus      ] INFO    📦 Findings store: 9ab93cdd-e8f6-4da6-92d1-f692f69a35e4/owasp_successes.authentication
+06:36:02 [httpx               ] INFO    HTTP Request: POST https://nesjaodrrkefpmqdqtgv.supabase.co/rest/v1/swarm_agent_events "HTTP/2 201 Created"
+06:36:03 [httpx               ] INFO    HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+06:36:03 [core.llm_client     ] INFO    ✅ LLM [Ollama/llama3:latest] responded
+06:36:03 [agents.critic_agent ] INFO    Critic: Evaluation complete - success=False, error_type=timeout, recommendation=retry
+06:36:03 [core.supabase_client] WARNING Skipping mission event log - invalid mission_id: unknown
+06:36:03 [httpx               ] INFO    HTTP Request: POST https://nesjaodrrkefpmqdqtgv.supabase.co/rest/v1/swarm_agent_events "HTTP/2 201 Created"
+06:36:04 [httpx               ] INFO    HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+06:36:04 [core.llm_client     ] INFO    ✅ LLM [Ollama/llama3:latest] responded
+06:36:04 [agents.critic_agent ] INFO    Critic: Evaluation complete - success=False, error_type=timeout, recommendation=retry
+06:36:04 [core.supabase_client] WARNING Skipping mission event log - invalid mission_id: unknown
+06:36:04 [httpx               ] INFO    HTTP Request: POST https://nesjaodrrkefpmqdqtgv.supabase.co/rest/v1/swarm_agent_events "HTTP/2 201 Created"
+06:36:06 [httpx               ] INFO    HTTP Request: POST http://localhost:11434/api/chat "HTTP/1

@@ -678,7 +678,7 @@ async def generate_supabase_report(
         kill_chain_narrative = _build_kill_chain_from_events(events)
         
         # Step 4.3: Extract findings from events
-        exploit_events = [e for e in events if e.get("event_type") == "critic_analysis"]
+        exploit_events = [e for e in events if e.get("event_type") == "action" and "critic" in e.get("message", "")]
         successful_exploits = [e for e in exploit_events 
                                if e.get("payload_json", {}).get("success", False)]
         
@@ -805,7 +805,7 @@ def _build_kill_chain_from_events(events: list[dict]) -> list[dict]:
         event_type = event.get("event_type", "")
         payload = event.get("payload_json", {})
         
-        if event_type == "critic_analysis" and payload.get("success"):
+        if event_type == "action" and "critic" in event.get("message", "") and payload.get("success"):
             narrative.append({
                 "step": step,
                 "phase": "exploitation",
@@ -825,8 +825,9 @@ def _generate_recommendations_from_events(events: list[dict]) -> list[str]:
     recommendations = []
     
     # Check for successful exploits
-    successful = [e for e in events 
-                  if e.get("event_type") == "critic_analysis" 
+    successful = [e for e in events
+                  if e.get("event_type") == "action"
+                  and "critic" in e.get("message", "")
                   and e.get("payload_json", {}).get("success", False)]
     
     if successful:

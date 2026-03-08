@@ -631,6 +631,41 @@ class SupabaseClient:
             lambda: self._get_swarm_mission_sync(mission_id)
         )
 
+    def _list_swarm_missions_sync(self, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        """
+        Sync method to list all swarm missions.
+
+        Args:
+            limit: Maximum number of missions to return
+            offset: Number of missions to skip
+
+        Returns:
+            List of mission records
+        """
+        def _fetch():
+            client = self._get_client()
+            result = (
+                client.table("swarm_missions")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .offset(offset)
+                .execute()
+            )
+            return result.data if result else []
+        
+        return self._with_retry(_fetch)
+
+    async def list_swarm_missions(self, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        """
+        Async wrapper to list swarm missions.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._list_swarm_missions_sync(limit, offset)
+        )
+
     def _update_swarm_mission_sync(
         self,
         mission_id: str,
@@ -907,28 +942,40 @@ class SupabaseClient:
         agent_name: str | None = None,
         cve_id: str | None = None,
         evidence: dict[str, Any] | None = None,
+        exploit_attempt_id: str | None = None,
+        agent_iteration: int | None = None,
+        confidence_score: float | None = None,
     ) -> dict[str, Any]:
         """
         Sync method to create a swarm finding.
         """
         def _insert():
             client = self._get_client()
+            data = {
+                "mission_id": mission_id,
+                "title": title,
+                "description": description,
+                "severity": severity,
+                "finding_type": finding_type,
+                "source": source,
+                "target": target,
+                "endpoint": endpoint,
+                "confirmed": confirmed,
+                "agent_name": agent_name,
+                "cve_id": cve_id,
+                "evidence": evidence or {},
+            }
+            # Add new columns from migration schema
+            if exploit_attempt_id is not None:
+                data["exploit_attempt_id"] = exploit_attempt_id
+            if agent_iteration is not None:
+                data["agent_iteration"] = agent_iteration
+            if confidence_score is not None:
+                data["confidence_score"] = confidence_score
+            
             result = (
                 client.table("swarm_findings")
-                .insert({
-                    "mission_id": mission_id,
-                    "title": title,
-                    "description": description,
-                    "severity": severity,
-                    "finding_type": finding_type,
-                    "source": source,
-                    "target": target,
-                    "endpoint": endpoint,
-                    "confirmed": confirmed,
-                    "agent_name": agent_name,
-                    "cve_id": cve_id,
-                    "evidence": evidence or {},
-                })
+                .insert(data)
                 .execute()
             )
             return result.data[0] if result and result.data else None
@@ -949,6 +996,9 @@ class SupabaseClient:
         agent_name: str | None = None,
         cve_id: str | None = None,
         evidence: dict[str, Any] | None = None,
+        exploit_attempt_id: str | None = None,
+        agent_iteration: int | None = None,
+        confidence_score: float | None = None,
     ) -> dict[str, Any]:
         """
         Async wrapper to create a swarm finding.
@@ -958,8 +1008,346 @@ class SupabaseClient:
             None,
             lambda: self._create_swarm_finding_sync(
                 mission_id, title, severity, description, finding_type, source,
-                target, endpoint, confirmed, agent_name, cve_id, evidence
+                target, endpoint, confirmed, agent_name, cve_id, evidence,
+                exploit_attempt_id, agent_iteration, confidence_score
             )
+        )
+
+    # ==================== SWARM EVENTS (NEW TIMELINE) ====================
+
+    def _create_swarm_event_sync(
+        self,
+        mission_id: str,
+        event_type: str,
+        agent_name: str,
+        title: str,
+        description: str | None = None,
+        stage: str | None = None,
+        payload: str | None = None,
+        target: str | None = None,
+        success: bool | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        execution_time_ms: int | None = None,
+        iteration: int | None = None,
+        parent_event_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync method to create a swarm event (complete timeline).
+        
+        New schema from swarm-timeline-migration-simple.sql
+        """
+        def _insert():
+            client = self._get_client()
+            data = {
+                "mission_id": mission_id,
+                "event_type": event_type,
+                "agent_name": agent_name,
+                "title": title,
+                "description": description,
+                "stage": stage,
+                "payload": payload,
+                "target": target,
+                "success": success,
+                "error_type": error_type,
+                "error_message": error_message,
+                "evidence": evidence or {},
+                "metadata": metadata or {},
+                "execution_time_ms": execution_time_ms,
+                "iteration": iteration if iteration is not None else 0,
+                "parent_event_id": parent_event_id,
+            }
+            result = (
+                client.table("swarm_events")
+                .insert(data)
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_insert)
+
+    async def create_swarm_event(
+        self,
+        mission_id: str,
+        event_type: str,
+        agent_name: str,
+        title: str,
+        description: str | None = None,
+        stage: str | None = None,
+        payload: str | None = None,
+        target: str | None = None,
+        success: bool | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        execution_time_ms: int | None = None,
+        iteration: int | None = None,
+        parent_event_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to create a swarm event.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._create_swarm_event_sync(
+                mission_id, event_type, agent_name, title, description, stage,
+                payload, target, success, error_type, error_message, evidence,
+                metadata, execution_time_ms, iteration, parent_event_id
+            )
+        )
+
+    def _get_swarm_events_sync(
+        self,
+        mission_id: str,
+        limit: int = 100,
+        event_type: str | None = None,
+        agent_name: str | None = None,
+        iteration: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Sync method to get swarm events for a mission.
+        """
+        def _fetch():
+            client = self._get_client()
+            query = (
+                client.table("swarm_events")
+                .select("*")
+                .eq("mission_id", mission_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            
+            if event_type:
+                query = query.eq("event_type", event_type)
+            if agent_name:
+                query = query.eq("agent_name", agent_name)
+            if iteration is not None:
+                query = query.eq("iteration", iteration)
+            
+            result = query.execute()
+            return result.data if result else []
+        
+        return self._with_retry(_fetch)
+
+    async def get_swarm_events(
+        self,
+        mission_id: str,
+        limit: int = 100,
+        event_type: str | None = None,
+        agent_name: str | None = None,
+        iteration: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Async wrapper to get swarm events.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_swarm_events_sync(mission_id, limit, event_type, agent_name, iteration)
+        )
+
+    # ==================== SWARM EXPLOIT ATTEMPTS ====================
+
+    def _create_swarm_exploit_attempt_sync(
+        self,
+        mission_id: str,
+        exploit_type: str,
+        target_url: str,
+        method: str = "GET",
+        payload: str | None = None,
+        payload_hash: str | None = None,
+        tool_used: str | None = None,
+        command_executed: str | None = None,
+        success: bool = False,
+        response_code: int | None = None,
+        exit_code: int | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        stdout: str | None = None,
+        stderr: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        execution_time_ms: int | None = None,
+        event_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync method to create an exploit attempt record.
+        
+        New table from swarm-timeline-migration-simple.sql
+        """
+        def _insert():
+            client = self._get_client()
+            data = {
+                "mission_id": mission_id,
+                "event_id": event_id,
+                "exploit_type": exploit_type,
+                "target_url": target_url,
+                "method": method,
+                "payload": payload,
+                "payload_hash": payload_hash,
+                "tool_used": tool_used,
+                "command_executed": command_executed,
+                "success": success,
+                "response_code": response_code,
+                "exit_code": exit_code,
+                "error_type": error_type,
+                "error_message": error_message,
+                "stdout": stdout,
+                "stderr": stderr,
+                "evidence": evidence or {},
+                "execution_time_ms": execution_time_ms,
+            }
+            result = (
+                client.table("swarm_exploit_attempts")
+                .insert(data)
+                .execute()
+            )
+            return result.data[0] if result and result.data else None
+        
+        return self._with_retry(_insert)
+
+    async def create_swarm_exploit_attempt(
+        self,
+        mission_id: str,
+        exploit_type: str,
+        target_url: str,
+        method: str = "GET",
+        payload: str | None = None,
+        payload_hash: str | None = None,
+        tool_used: str | None = None,
+        command_executed: str | None = None,
+        success: bool = False,
+        response_code: int | None = None,
+        exit_code: int | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        stdout: str | None = None,
+        stderr: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        execution_time_ms: int | None = None,
+        event_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Async wrapper to create an exploit attempt.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._create_swarm_exploit_attempt_sync(
+                mission_id, exploit_type, target_url, method, payload, payload_hash,
+                tool_used, command_executed, success, response_code, exit_code,
+                error_type, error_message, stdout, stderr, evidence, execution_time_ms,
+                event_id
+            )
+        )
+
+    def _get_swarm_exploit_attempts_sync(
+        self,
+        mission_id: str,
+        limit: int = 100,
+        exploit_type: str | None = None,
+        success: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Sync method to get exploit attempts for a mission.
+        """
+        def _fetch():
+            client = self._get_client()
+            query = (
+                client.table("swarm_exploit_attempts")
+                .select("*")
+                .eq("mission_id", mission_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            
+            if exploit_type:
+                query = query.eq("exploit_type", exploit_type)
+            if success is not None:
+                query = query.eq("success", success)
+            
+            result = query.execute()
+            return result.data if result else []
+        
+        return self._with_retry(_fetch)
+
+    async def get_swarm_exploit_attempts(
+        self,
+        mission_id: str,
+        limit: int = 100,
+        exploit_type: str | None = None,
+        success: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Async wrapper to get exploit attempts.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_swarm_exploit_attempts_sync(mission_id, limit, exploit_type, success)
+        )
+
+    # ==================== VIEWS ====================
+
+    def _get_mission_timeline_sync(self, mission_id: str) -> list[dict[str, Any]]:
+        """
+        Sync method to get mission timeline from view.
+        
+        Uses mission_timeline_view from migration
+        """
+        def _fetch():
+            client = self._get_client()
+            result = (
+                client.table("mission_timeline_view")
+                .select("*")
+                .eq("mission_id", mission_id)
+                .order("created_at", asc=True)
+                .execute()
+            )
+            return result.data if result else []
+        
+        return self._with_retry(_fetch)
+
+    async def get_mission_timeline(self, mission_id: str) -> list[dict[str, Any]]:
+        """
+        Async wrapper to get mission timeline from view.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_mission_timeline_sync(mission_id)
+        )
+
+    def _get_mission_statistics_sync(self, mission_id: str) -> dict[str, Any] | None:
+        """
+        Sync method to get mission statistics from view.
+        
+        Uses mission_statistics_view from migration
+        """
+        def _fetch():
+            client = self._get_client()
+            result = (
+                client.table("mission_statistics_view")
+                .select("*")
+                .eq("mission_id", mission_id)
+                .single()
+                .execute()
+            )
+            return result.data if result else None
+        
+        return self._with_retry(_fetch)
+
+    async def get_mission_statistics(self, mission_id: str) -> dict[str, Any] | None:
+        """
+        Async wrapper to get mission statistics from view.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_mission_statistics_sync(mission_id)
         )
 
     def _get_swarm_findings_sync(self, mission_id: str) -> list[dict[str, Any]]:

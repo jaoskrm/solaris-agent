@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from typing import Any
 
 from langgraph.graph import END, StateGraph
@@ -66,6 +67,15 @@ async def blue_team_enrichment_node(state: RedTeamState) -> dict[str, Any]:
                 agent_name="commander",
                 status="running",
                 task="blue_team_enrichment",
+            ))
+            # New timeline: log mission start event
+            asyncio.create_task(supabase.log_swarm_event(
+                mission_id=mission_id,
+                event_type="agent_start",
+                agent_name="commander",
+                title="Mission started — Blue Team enrichment",
+                stage="planning",
+                target=target,
             ))
         
         # Enrich state with Blue Team findings
@@ -157,6 +167,15 @@ async def generate_report_node(state: RedTeamState) -> dict[str, Any]:
                     iteration=iteration,
                     task="mission_complete",
                 ))
+            # New timeline: log mission complete event
+            asyncio.create_task(supabase.log_swarm_event(
+                mission_id=mission_id,
+                event_type="agent_complete",
+                agent_name="commander",
+                title="Mission completed — report generated",
+                stage="reporting",
+                iteration=iteration,
+            ))
     except Exception as e:
         logger.debug(f"Failed to update final mission status: {e}")
     
@@ -313,21 +332,32 @@ def create_initial_state(
     state["mode"] = detected_mode
     state["fast_mode"] = fast_mode
     
-    # Create mission record in Supabase (fire-and-forget)
+    # Create mission record in Supabase synchronously to ensure it's created before events
+    # Use synchronous insert to avoid event loop issues
     try:
         import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
         supabase = get_supabase_client()
         if supabase._enabled:
-            asyncio.create_task(
-                supabase.create_mission(
-                    mission_id=state["mission_id"],
-                    target=target,
-                    objective=objective,
-                    mode=detected_mode,
-                )
-            )
-            logger.info(f"Mission {state['mission_id']} creation queued in Supabase")
+            try:
+                # Run mission creation synchronously to avoid event loop issues
+                mission_data = {
+                    "id": state["mission_id"],
+                    "target": target,
+                    "status": "running",
+                    "created_at": datetime.utcnow().isoformat(),
+                }
+                result = supabase._client.table("swarm_missions").insert(mission_data).execute()
+                if result.data:
+                    logger.info(f"Mission {state['mission_id']} created in Supabase")
+                else:
+                    logger.warning(f"Failed to create mission {state['mission_id']} in Supabase - events may be orphaned")
+            except Exception as e:
+                logger.warning(f"Failed to create mission in Supabase: {e} - events may be orphaned")
+        else:
+            logger.info(f"Supabase not enabled - mission {state['mission_id']} will not be persisted")
     except Exception as e:
-        logger.debug(f"Failed to queue mission creation in Supabase: {e}")
+        logger.warning(f"Error in Supabase mission creation: {e} - continuing without Supabase")
     
     return state
