@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+build/
+dist/
+coverage/
+
+# Environment files
+.env*
+!.env.example
+
+# Logs
+*.log
+
+# System files
+.DS_Store
+
+# Large source videos (not used in production)
+src/background_globe.mp4
+src/background.jpeg
+
+# Public videos (use CSS gradient fallback)
+public/background-original.mp4
