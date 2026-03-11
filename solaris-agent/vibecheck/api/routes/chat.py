@@ -23,6 +23,117 @@ settings = get_settings()
 
 
 # -------------------------------------------
+# Supabase Context Fetching
+# -------------------------------------------
+
+import asyncio
+from supabase import create_client, Client
+from core.config import get_settings
+
+
+def _get_raw_supabase_client() -> Client:
+    """Get a raw synchronous Supabase client."""
+    settings = get_settings()
+    return create_client(settings.supabase_url, settings.supabase_anon_key)
+
+
+def get_chat_context_from_supabase(team: str = "red") -> dict[str, Any]:
+    """Fetch relevant context from Supabase for the chat."""
+    try:
+        client = _get_raw_supabase_client()
+        context: dict[str, Any] = {"vulnerabilities": [], "scans": [], "missions": []}
+        
+        # Fetch recent vulnerabilities
+        try:
+            vuln_response = client.table("vulnerabilities").select(
+                "id, type, severity, file_path, line_start, title, description, confirmed"
+            ).order("created_at", ascending=False).limit(20).execute()
+            
+            if vuln_response.data:
+                context["vulnerabilities"] = [
+                    {
+                        "type": v.get("type", "unknown"),
+                        "severity": v.get("severity", "unknown"),
+                        "file_path": v.get("file_path", ""),
+                        "line": v.get("line_start"),
+                        "title": v.get("title", ""),
+                        "confirmed": v.get("confirmed", False)
+                    }
+                    for v in vuln_response.data
+                ]
+        except Exception as e:
+            logger.warning(f"Could not fetch vulnerabilities: {e}")
+        
+        # Fetch recent scans
+        try:
+            scan_response = client.table("scan_queue").select(
+                "id, repo_url, status, progress, error_message, created_at"
+            ).order("created_at", ascending=False).limit(10).execute()
+            
+            if scan_response.data:
+                context["scans"] = scan_response.data
+        except Exception as e:
+            logger.warning(f"Could not fetch scans: {e}")
+        
+        # Fetch recent missions
+        try:
+            mission_response = client.table("swarm_missions").select(
+                "id, target, objective, mode, status, progress, findings, created_at"
+            ).order("created_at", ascending=False).limit(5).execute()
+            
+            if mission_response.data:
+                context["missions"] = [
+                    {
+                        "id": m.get("id", "")[:8],
+                        "target": m.get("target", ""),
+                        "objective": m.get("objective", "")[:100],
+                        "mode": m.get("mode", ""),
+                        "status": m.get("status", ""),
+                        "findings_count": len(m.get("findings", [])) if m.get("findings") else 0
+                    }
+                    for m in mission_response.data
+                ]
+        except Exception as e:
+            logger.warning(f"Could not fetch missions: {e}")
+        
+        return context
+    except Exception as e:
+        logger.error(f"Error fetching chat context: {e}")
+        return {"vulnerabilities": [], "scans": [], "missions": []}
+
+
+def build_supabase_context_message(team: str) -> str:
+    """Build context message from Supabase data."""
+    context = get_chat_context_from_supabase(team)
+    
+    parts = ["\n## Security Context from Database"]
+    
+    # Add vulnerabilities
+    if context.get("vulnerabilities"):
+        parts.append("\n### Recent Vulnerabilities Found:")
+        for v in context["vulnerabilities"][:10]:
+            confirmed = "✓" if v.get("confirmed") else "?"
+            parts.append(f"- [{confirmed}] **{v['severity'].upper()}** {v.get('type', 'unknown'):30} in `{v.get('file_path', '')[:50]}` (line {v.get('line')})")
+    
+    # Add scans
+    if context.get("scans"):
+        parts.append("\n### Recent Security Scans:")
+        for s in context["scans"][:5]:
+            parts.append(f"- **{s.get('status', 'unknown').upper()}**: {s.get('repo_url', '')[:60]} (progress: {s.get('progress', 0)}%)")
+    
+    # Add missions
+    if context.get("missions"):
+        parts.append("\n### Recent Swarm Missions:")
+        for m in context["missions"]:
+            parts.append(f"- **{m.get('mode', '').upper()}** mission on {m.get('target', '')} - {m.get('status', '').upper()} ({m.get('findings_count', 0)} findings)")
+    
+    if len(parts) == 1:
+        return ""
+    
+    return "\n".join(parts)
+
+
+# -------------------------------------------
 # Request/Response Models
 # -------------------------------------------
 
@@ -160,6 +271,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
         # Build messages for Ollama
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         
+        # Add Supabase context (missions, vulnerabilities, scans from database)
+        supabase_context = build_supabase_context_message("red")  # Could be made dynamic based on request
+        if supabase_context:
+            messages.append({"role": "system", "content": supabase_context})
+        
         # Add context if available
         if request.context:
             context_message = build_context_message(request.context)
@@ -169,19 +285,24 @@ async def chat(request: ChatRequest) -> ChatResponse:
         # Add conversation history
         for msg in request.messages:
             messages.append({"role": msg.role, "content": msg.content})
-        
-        # Get response from Ollama
         response = await ollama.chat_async(
             messages=messages,
             model=settings.ollama_coder_model,
         )
         
-        assistant_message = response.get("message", {})
+        # Handle different response formats
+        if isinstance(response, dict):
+            assistant_message = response.get("message", {})
+            content = assistant_message.get("content", "I apologize, I couldn't process your request.") if isinstance(assistant_message, dict) else str(assistant_message)
+        elif isinstance(response, str):
+            content = response
+        else:
+            content = str(response)
         
         return ChatResponse(
             message=ChatMessage(
                 role="assistant",
-                content=assistant_message.get("content", "I apologize, I couldn't process your request."),
+                content=content,
             ),
             conversation_id=str(uuid4()),
         )

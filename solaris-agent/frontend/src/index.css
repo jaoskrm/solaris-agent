@@ -6,6 +6,17 @@
   --font-serif: "Playfair Display", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --color-primary: #ffffff;
+
+  --color-chat-bg: #080B12;
+  --color-chat-card: #0D1117;
+  --color-chat-border: rgba(255, 255, 255, 0.06);
+  --color-chat-thinking: #0A0F1A;
+
+  --color-agent-commander: #A855F7;
+  --color-agent-alpha: #F97316;
+  --color-agent-beta: #EF4444;
+  --color-agent-gamma: #DC2626;
+  --color-agent-blue: #06B6D4;
 }
 
 :root {
@@ -13,6 +24,18 @@
   --foreground: #ffffff;
   --primary: #ffffff;
   --muted: #18181b;
+
+  --chat-bg: #080B12;
+  --chat-card: #0D1117;
+  --chat-border: rgba(255, 255, 255, 0.06);
+  --chat-thinking: #0A0F1A;
+
+  --agent-commander: #A855F7;
+  --agent-alpha: #F97316;
+  --agent-beta: #EF4444;
+  --agent-gamma: #DC2626;
+  --agent-blue: #06B6D4;
+
   color-scheme: dark;
 }
 
@@ -106,6 +129,16 @@ body {
   }
 }
 
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 @layer utilities {
   .animate-glow-pulse {
     animation: glow-pulse 2.5s ease-in-out infinite;
@@ -117,6 +150,10 @@ body {
 
   .animate-pulse-glow {
     animation: pulse-glow 2.5s ease-in-out infinite;
+  }
+
+  .animate-shimmer {
+    animation: shimmer 3s infinite linear;
   }
 }
 

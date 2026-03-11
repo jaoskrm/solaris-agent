@@ -1,0 +1,86 @@
+[      17ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:3001/team-chat/red:0
+[     153ms] Error: Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `bg-background` class does not exist. If `bg-background` is a custom class, make sure it is defined within a `@layer` directive.
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities;
+
+    at getCssError (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/parseCss.js:24:16)
+    at getModuleBuildError (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/webpackModuleError.js:116:43)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/index.js:29:49)
+    at async (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/index.js:27:21)
+[     147ms] [ERROR] ./src/app/globals.css:3:1
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `bg-background` class does not exist. If `bg-background` is a custom class, make sure it is defined within a `@layer` directive.
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities; @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/internal/helpers/hydration-error-info.js:62
+[     148ms] [ERROR] ./src/app/globals.css
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive. (3:1)
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities;
+-- inner error --
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive. (3:1)
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities;
+Generated code for /home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[12].use[2]!/home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[14].oneOf[12].use[3]!/home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/internal/helpers/hydration-error-info.js:62
+[   17500ms] [WARNING] [Fast Refresh] performing full reload
+
+Fast Refresh will perform a full reload when you edit a file that's imported by modules outside of the React rendering tree.
+You might have a file which exports a React component but also exports a value that is imported by a non-React component file.
+Consider migrating the non-React component export to a separate file and importing it into both files.
+
+It is also possible the parent component of the component you edited is a class component, which disables Fast Refresh.
+Fast Refresh requires at least one parent function component in your React tree. @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/pages/hot-reloader-client.js:347
+[   18082ms] [ERROR] Warning: %s: `ref` is not a prop. Trying to access it will result in `undefined` being returned. If you need to access the same value within the child component, you should pass it as a different prop. (https://reactjs.org/link/special-props)%s [object Object] 
+    at PopChild (webpack-internal:///(app-pages-browser)/./node_modules/framer-motion/dist/es/components/AnimatePresence/PopChild.mjs:45:11)
+    at PresenceChild (webpack-internal:///(app-pages-browser)/./node_modules/framer-motion/dist/es/components/AnimatePresence/PresenceChild.mjs:18:11)
+    at AnimatePresence (webpack-internal:///(app-pages-browser)/./node_modules/framer-motion/dist/es/components/AnimatePresence/index.mjs:55:11)
+    at BlurFade (webpack-internal:///(app-pages-browser)/./src/components/ui/blur-fade.tsx:17:11)
+    at div
+    at TeamChatLayout (webpack-internal:///(app-pages-browser)/./src/app/team-chat/layout.tsx:20:11)
+    at InnerLayoutRouter (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/layout-router.js:243:11)
+    at RedirectErrorBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/redirect-boundary.js:74:9)
+    at RedirectBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/redirect-boundary.js:82:11)
+    at NotFoundErrorBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/not-found-boundary.js:76:9)
+    at NotFoundBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/not-found-boundary.js:84:11)
+    at LoadingBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/layout-router.js:349:11)
+    at ErrorBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/error-boundary.js:160:11)
+    at InnerScrollAndFocusHandler (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/layout-router.js:153:9)
+    at ScrollAndFocusHandler (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/layout-router.js:228:11)
+    at RenderFromTemplateContext (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/render-from-template-context.js:16:44)
+    at OuterLayoutRouter (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/layout-router.js:370:11)
+    at div
+    at body
+    at html
+    at RootLayout (Server)
+    at RedirectErrorBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/redirect-boundary.js:74:9)
+    at RedirectBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/redirect-boundary.js:82:11)
+    at NotFoundErrorBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/not-found-boundary.js:76:9)
+    at NotFoundBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/not-found-boundary.js:84:11)
+    at DevRootNotFoundBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/dev-root-not-found-boundary.js:33:11)
+    at ReactDevOverlay (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/ReactDevOverlay.js:87:9)
+    at HotReload (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/react-dev-overlay/app/hot-reloader-client.js:321:11)
+    at Router (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/app-router.js:207:11)
+    at ErrorBoundaryHandler (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/error-boundary.js:113:9)
+    at ErrorBoundary (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/error-boundary.js:160:11)
+    at AppRouter (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/components/app-router.js:585:13)
+    at ServerRoot (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/app-index.js:112:27)
+    at Root (webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/app-index.js:117:11) @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/app-index.js:32

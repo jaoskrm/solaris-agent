@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Shield, Github, MessageSquare, GitBranch, Network, LayoutDashboard, Info } from 'lucide-react';
+import { cn } from './lib/utils';
 import { NavBar } from './components/ui/tubelight-navbar';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { MagneticButton } from './components/ui/magnetic-button';
@@ -110,41 +111,54 @@ export default function App() {
         </div>
       )}
 
-      {/* Navigation — glassmorphism overlay */}
-      <nav className="relative z-10 flex items-center justify-between px-10 py-4 w-full backdrop-blur-md bg-black/10 border-b border-white/[0.04]" role="navigation" aria-label="Main navigation">
-        {/* Left: VibeCheck Logo */}
-        <motion.button
-          onClick={() => navigate('/')}
-          whileHover={{ scale: 1.04 }}
-          whileTap={{ scale: 0.97 }}
-          className="flex items-center gap-2 text-xl font-bold tracking-tighter"
-          aria-label="VibeCheck — Go to home page"
-        >
-          <motion.div whileHover={{ rotate: 15 }} transition={{ type: 'spring', stiffness: 300 }}>
-            <Shield className="w-6 h-6 text-white" />
-          </motion.div>
-          <span className="hidden sm:inline-block">VibeCheck</span>
-        </motion.button>
+      {/* Navigation — Claude-style dark theme */}
+      <nav className={cn(
+        "relative z-10 flex items-center w-full px-6 h-16",
+        location.pathname.includes('/chat')
+          ? "bg-[#0d0d12] border-b border-white/[0.06]"
+          : "bg-[rgba(12,12,14,0.85)] backdrop-blur-xl border-b border-white/[0.06]"
+      )} role="navigation" aria-label="Main navigation">
+        {/* Left: VibeCheck Logo - anchored absolutely */}
+        <div className="absolute left-6">
+          <motion.button
+            onClick={() => navigate('/')}
+            whileHover={{ scale: 1.04 }}
+            whileTap={{ scale: 0.97 }}
+            className="flex items-center gap-2 text-xl font-bold tracking-tighter"
+            aria-label="VibeCheck — Go to home page"
+          >
+            <motion.div whileHover={{ rotate: 15 }} transition={{ type: 'spring', stiffness: 300 }}>
+              <Shield className="w-6 h-6 text-white" />
+            </motion.div>
+            <span className="hidden sm:inline-block text-[#e8e8f0]">VibeCheck</span>
+          </motion.button>
+        </div>
 
-        {/* Center: Tubelight Nav Items */}
-        <NavBar
-          items={navItems}
-          activeTab={activeTab}
-          onTabChange={handleTabChange}
-        />
+        {/* Center: Tubelight Nav Items - absolutely centered */}
+        <div className="absolute left-1/2 -translate-x-1/2">
+          <NavBar
+            items={navItems}
+            activeTab={activeTab}
+            onTabChange={handleTabChange}
+          />
+        </div>
 
         {/* Right: GitHub + Start Scanning */}
         <div className="flex items-center gap-6 text-sm font-medium">
-          <a href="#" className="hidden md:flex items-center gap-2 text-gray-300 hover:text-white transition-colors" aria-label="View on GitHub">
-            <Github className="w-4 h-4" aria-hidden="true" />
-            GitHub
-          </a>
-          <MagneticButton
-            onClick={() => navigate('/pipeline')}
-            aria-label="Start a security scan"
-          >
-            Start Scanning
-          </MagneticButton>
+          {location.pathname === '/' && (
+            <>
+              <a href="#" className="hidden md:flex items-center gap-2 text-gray-300 hover:text-white transition-colors" aria-label="View on GitHub">
+                <Github className="w-4 h-4" aria-hidden="true" />
+                GitHub
+              </a>
+              <MagneticButton
+                onClick={() => navigate('/pipeline')}
+                aria-label="Start a security scan"
+              >
+                Start Scanning
+              </MagneticButton>
+            </>
+          )}
         </div>
       </nav>
 

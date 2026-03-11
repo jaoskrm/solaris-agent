@@ -1,0 +1,74 @@
+[    3854ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:3001/team-chat/red:0
+[    4063ms] Error: `next/font` error:
+Unknown font `Geist`
+    at getNextFontError (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/parseNextFontError.js:23:20)
+    at getModuleBuildError (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/webpackModuleError.js:128:63)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/index.js:29:49)
+    at async (file:///home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/plugins/wellknown-errors-plugin/index.js:27:21)
+[    4063ms] [ERROR] src/app/layout.tsx
+`next/font` error:
+Unknown font `Geist` @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/internal/helpers/hydration-error-info.js:62
+[    4066ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3001/favicon.ico:0
+[   29500ms] [ERROR] ./src/app/globals.css:3:1
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive.
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities; @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/internal/helpers/hydration-error-info.js:62
+[   29500ms] [ERROR] ./src/app/globals.css
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive. (3:1)
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities;
+-- inner error --
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive. (3:1)
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities;
+Generated code for /home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[12].use[2]!/home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[14].oneOf[12].use[3]!/home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css
+
+Import trace for requested module:
+./src/app/globals.css @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/internal/helpers/hydration-error-info.js:62
+[   29801ms] [ERROR] ./src/app/globals.css:3:1
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive.
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities; @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/internal/helpers/hydration-error-info.js:62
+[   29801ms] [ERROR] ./src/app/globals.css
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive. (3:1)
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities;
+-- inner error --
+Syntax error: /home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css The `border-border` class does not exist. If `border-border` is a custom class, make sure it is defined within a `@layer` directive. (3:1)
+
+  1 | @import "tw-animate-css";
+  2 | @import "shadcn/tailwind.css";
+> 3 | @tailwind base;
+    | ^
+  4 | @tailwind components;
+  5 | @tailwind utilities;
+Generated code for /home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[12].use[2]!/home/gman/Angel-Engine/vibecheck/Red_team/frontend/node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[14].oneOf[12].use[3]!/home/gman/Angel-Engine/vibecheck/Red_team/frontend/src/app/globals.css
+
+Import trace for requested module:
+./src/app/globals.css @ webpack-internal:///./node_modules/next/dist/client/components/react-dev-overlay/internal/helpers/hydration-error-info.js:62

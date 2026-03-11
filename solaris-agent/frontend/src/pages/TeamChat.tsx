@@ -1,97 +1,138 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { motion } from 'motion/react';
-import { Shield, Code2, Send, Bot, Clock, AlertCircle } from 'lucide-react';
-import { Card } from '../components/ui/Card';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { AlertCircle, ArrowUp, Shield, Code2, ChevronDown, ChevronUp, Check, MessageSquare, Plus, Settings, Loader2, MoreVertical, Trash2, Edit3 } from 'lucide-react';
 import { sendChatMessage } from '../lib/api';
+import { supabase, ChatMessageFromDB, Conversation } from '../lib/supabase';
+import { cn } from '../lib/utils';
+import { PulsatingButton } from '../components/ui/pulsating-button';
+import { TeamChatMessage, Message } from '../components/ui/TeamChatMessage';
 
-interface Message {
-    id: string;
-    team: 'red' | 'blue';
-    agent: string;
-    content: string;
-    timestamp: Date;
-    isUser?: boolean;
+// API URL from environment
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+// Red team agents
+const RED_TEAM_AGENTS = ['RECON', 'EXPLOIT', 'SOCIAL', 'COMMANDER'];
+// Blue team agents
+const BLUE_TEAM_AGENTS = ['LINTER', 'DEPCHECK', 'COMPLEXITY'];
+
+// Helper to determine if agent is red team
+function isRedTeamAgent(agentName: string): boolean {
+    const upperAgent = agentName.toUpperCase();
+    return RED_TEAM_AGENTS.some(a => upperAgent.includes(a));
 }
 
-// Initial mock messages for demonstration
-const mockRedTeamMessages: Message[] = [
-    {
-        id: '1',
-        team: 'red',
-        agent: 'Recon',
-        content: "I've mapped the full attack surface for `acme/api-server`:\n\n- 34 HTTP endpoints discovered across 12 route files\n- 3 unprotected POST endpoints missing auth middleware\n- 2 file upload endpoints without size/type validation\n- 1 WebSocket endpoint with no origin checking\n\nThe most promising targets are the unprotected endpoints. I've forwarded them to the Exploit agent.",
-        timestamp: new Date(Date.now() - 1000 * 60 * 5),
-    },
-    {
-        id: '2',
-        team: 'red',
-        agent: 'Exploit',
-        content: "Running SQLi probe on `/api/users?search=` now...",
-        timestamp: new Date(Date.now() - 1000 * 60 * 3),
-    },
-];
+// Helper to determine if agent is blue team
+function isBlueTeamAgent(agentName: string): boolean {
+    const upperAgent = agentName.toUpperCase();
+    return BLUE_TEAM_AGENTS.some(a => upperAgent.includes(a));
+}
 
-const mockBlueTeamMessages: Message[] = [
-    {
-        id: '1',
-        team: 'blue',
-        agent: 'Linter',
-        content: "Semgrep scan complete. Here's the summary:\n\n| Category | Count |\n|---|---|\n| Anti-patterns | 8 |\n| Dead code | 5 |\n| Console.log in production | 6 |\n| Missing error handling | 4 |\n\nMost issues are in `/src/controllers/` and `/src/utils/`. I'll pass the details to the Complexity Analyzer.",
-        timestamp: new Date(Date.now() - 1000 * 60 * 6),
-    },
-    {
-        id: '2',
-        team: 'blue',
-        agent: 'DepCheck',
-        content: "Dependency audit results:\n\n- express 4.17.1 → CVE-2022-24999 (HIGH)\n- lodash 4.17.15 → CVE-2020-8203 (MEDIUM)\n- jsonwebtoken 8.5.1 → CVE-2022-23529 (CRITICAL)\n\nRecommend immediate upgrade for jwt library.",
-        timestamp: new Date(Date.now() - 1000 * 60 * 4),
-    },
-];
+// Convert DB message to UI message
+function dbToMessage(dbMsg: ChatMessageFromDB): Message {
+    return {
+        id: dbMsg.id,
+        team: dbMsg.team,
+        agent: dbMsg.agent_name,
+        content: dbMsg.content,
+        timestamp: new Date(dbMsg.created_at),
+        isUser: dbMsg.agent_name.toLowerCase() === 'user',
+    };
+}
 
-function formatTime(date: Date): string {
-    return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+// Loading skeleton component
+function MessageSkeleton({ isRed }: { isRed: boolean }) {
+    return (
+        <div className="flex flex-col">
+            <div className="flex items-baseline mb-1">
+                <div className="h-3 w-20 bg-white/10 rounded animate-pulse" />
+                <div className="h-2 w-16 bg-white/5 rounded animate-pulse ml-3" />
+            </div>
+            <div className={cn("border border-white/[0.07] rounded-xl p-4 mb-3 bg-white/[0.04] backdrop-blur-[16px]", "border-l-2 border-l-white/10")}>
+                <div className="flex gap-1 py-1.5">
+                    <motion.div animate={{ y: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 0.8, ease: "easeInOut", delay: 0 }} className="w-1.5 h-1.5 rounded-full bg-white/40" />
+                    <motion.div animate={{ y: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 0.8, ease: "easeInOut", delay: 0.15 }} className="w-1.5 h-1.5 rounded-full bg-white/40" />
+                    <motion.div animate={{ y: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 0.8, ease: "easeInOut", delay: 0.3 }} className="w-1.5 h-1.5 rounded-full bg-white/40" />
+                </div>
+            </div>
+        </div>
+    );
 }
 
 function ChatPanel({
     team,
-    title,
-    icon: Icon,
-    color,
     messages,
     onSendMessage,
     inputValue,
     setInputValue,
     isLoading,
-    error
+    error,
+    activeTeam,
+    setActiveTeam,
+    isDropdownOpen,
+    setIsDropdownOpen,
+    isLoadingHistory
 }: {
     team: 'red' | 'blue';
-    title: string;
-    icon: React.ElementType;
-    color: string;
     messages: Message[];
     onSendMessage: (team: 'red' | 'blue', message: string) => void;
     inputValue: string;
     setInputValue: (value: string) => void;
     isLoading: boolean;
     error: string | null;
+    activeTeam: 'red' | 'blue';
+    setActiveTeam: (team: 'red' | 'blue') => void;
+    isDropdownOpen: boolean;
+    setIsDropdownOpen: (open: boolean) => void;
+    isLoadingHistory: boolean;
 }) {
+    const isRed = team === 'red';
     const scrollRef = useRef<HTMLDivElement>(null);
-    const placeholder = team === 'red' ? 'Ask the Red Team...' : 'Ask the Blue Team...';
+    const dropdownRef = useRef<HTMLDivElement>(null);
+
+    // Close dropdown on click outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setIsDropdownOpen(false);
+            }
+        };
+        if (isDropdownOpen) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, [isDropdownOpen]);
+
+    // Close dropdown on escape key
+    useEffect(() => {
+        const handleEscape = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setIsDropdownOpen(false);
+            }
+        };
+        if (isDropdownOpen) {
+            document.addEventListener('keydown', handleEscape);
+        }
+        return () => {
+            document.removeEventListener('keydown', handleEscape);
+        };
+    }, [isDropdownOpen]);
 
     useEffect(() => {
         if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-    }, [messages]);
+    }, [messages, isLoading, isLoadingHistory]);
 
     const handleSend = () => {
-        if (inputValue.trim()) {
+        if (inputValue.trim() && !isLoading) {
             onSendMessage(team, inputValue.trim());
             setInputValue('');
         }
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent) => {
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSend();
@@ -99,207 +140,708 @@ function ChatPanel({
     };
 
     return (
-        <Card className={`flex flex-col h-full`}>
-            {/* Header */}
-            <div className={`flex items-center justify-between p-4 border-b border-white/[0.06]`}>
-                <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg bg-${color}-500/10`}>
-                        <Icon className={`w-5 h-5 text-${color}-500`} />
-                    </div>
-                    <div>
-                        <h3 className={`font-semibold text-${color}-400`}>{title}</h3>
-                        <p className="text-xs text-gray-500">{messages.length} messages</p>
-                    </div>
+        <div className={cn("flex flex-col h-full relative pb-[56px] md:pb-0 transition-colors duration-700 bg-[#0a0a0f]")}>
+
+            {/* Chat Header */}
+            <div className={cn("h-[60px] bg-[#0d0d12] border-b border-white/[0.04] px-6 flex items-center justify-between shrink-0 transition-colors duration-700")}>
+                <div className="flex items-center">
+                    <div className="w-[5px] h-[5px] rounded-full animate-pulse mr-3 bg-white/50" />
+                    <h1 className="font-['Syne'] font-[600] text-[1rem] text-[#6b6b7a]">
+                        {isRed ? "Red Team" : "Blue Team"}
+                    </h1>
+                </div>
+                <div className="flex items-center">
+                    <span className="font-['Inter'] font-[400] text-[0.6875rem] uppercase text-white/40">
+                        ACTIVE
+                    </span>
+                    <div className="w-[5px] h-[5px] rounded-full animate-pulse ml-2 bg-white/40" />
                 </div>
             </div>
 
             {/* Error Message */}
             {error && (
-                <div className="px-4 py-2 bg-red-950/30 border-b border-red-900/30">
-                    <div className="flex items-center gap-2 text-red-400 text-xs">
-                        <AlertCircle className="w-3 h-3" />
+                <div className="px-5 py-3 border-b shrink-0 bg-white/5 border-white/10">
+                    <div className="flex items-center gap-2 text-xs font-mono text-white/60">
+                        <AlertCircle className="w-3.5 h-3.5" />
                         {error}
                     </div>
                 </div>
             )}
 
-            {/* Messages */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-[400px] max-h-[500px] scrollbar-thin">
-                {messages.map((msg) => (
-                    <motion.div
-                        key={msg.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className={`flex flex-col ${msg.isUser ? 'items-end' : 'items-start'}`}
-                    >
-                        <div className={`max-w-[90%] ${msg.isUser ? 'bg-white/[0.05] border border-white/[0.06] rounded-lg' : `border-l-2 bg-transparent ${color === 'red' ? 'border-[#ff3b3b]' : 'border-[#2dffb3]'}`} p-3 backdrop-blur-md`}>
-                            {!msg.isUser && (
-                                <div className={`flex items-center gap-2 mb-2 text-${color}-400`}>
-                                    <Bot className="w-3.5 h-3.5" />
-                                    <span className="text-xs font-medium">{msg.agent}</span>
-                                </div>
-                            )}
-                            <div className={`text-sm ${msg.isUser ? 'text-gray-200' : 'text-gray-300'} whitespace-pre-wrap font-mono leading-relaxed`}>
-                                {msg.content}
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-1 mt-1 text-gray-600 text-[10px]">
-                            <Clock className="w-3 h-3" />
-                            {formatTime(msg.timestamp)}
-                        </div>
-                    </motion.div>
-                ))}
-                {isLoading && (
-                    <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="flex items-center gap-2 text-gray-500 text-sm"
-                    >
-                        <div className="flex gap-1">
-                            <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </div>
-                        <span className="text-xs">AI is thinking...</span>
-                    </motion.div>
-                )}
-            </div>
+            {/* Message Feed */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-6">
 
-            {/* Input */}
-            <div className="p-4 border-t border-white/[0.06]">
-                <div className="flex gap-2">
-                    <input
-                        type="text"
-                        value={inputValue}
-                        onChange={(e) => setInputValue(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder={placeholder}
-                        disabled={isLoading}
-                        className="flex-1 bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-white/[0.12] transition-colors"
-                    />
-                    <button
-                        onClick={handleSend}
-                        disabled={!inputValue.trim() || isLoading}
-                        className={`p-3 bg-${color}-600/80 hover:bg-${color}-500/80 disabled:bg-white/[0.04] disabled:text-gray-500 rounded-lg transition-colors backdrop-blur-sm border border-white/[0.06]`}
-                    >
-                        <Send className="w-4 h-4 text-white" />
-                    </button>
+                <div className="relative z-10 flex flex-col gap-6" ref={scrollRef}>
+                    {isLoadingHistory && messages.length === 0 ? (
+                        // Show skeleton while loading history
+                        <>
+                            <MessageSkeleton isRed={isRed} />
+                            <MessageSkeleton isRed={isRed} />
+                            <MessageSkeleton isRed={isRed} />
+                        </>
+                    ) : (
+                        messages.map((msg, index) => (
+                            <TeamChatMessage key={msg.id} message={msg} index={index} />
+                        ))
+                    )}
+
+                    {isLoading && !isLoadingHistory && (
+                        <MessageSkeleton isRed={isRed} />
+                    )}
                 </div>
             </div>
-        </Card>
+
+            {/* Input Bar */}
+            <div className={cn("h-[72px] bg-[#0d0d12] border-t border-white/[0.04] px-5 py-3 flex gap-3 items-center shrink-0 z-20 relative transition-colors duration-700")}>
+                {/* Agent Selector - Left of input */}
+                <div className="relative flex-shrink-0" ref={dropdownRef}>
+                    <button
+                        onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                        className="px-3 py-1.5 bg-white/[0.04] border border-white/[0.08] rounded-lg flex items-center gap-2 cursor-pointer flex-shrink-0 transition-all duration-150 hover:bg-white/[0.07] hover:border-white/[0.12]"
+                    >
+                        <div className={cn("w-[6px] h-[6px] rounded-full", activeTeam === 'red' ? "bg-red-500" : "bg-blue-400")} />
+                        <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/70">
+                            {activeTeam === 'red' ? 'Red Team' : 'Blue Team'}
+                        </span>
+                        <ChevronUp className="w-[12px] h-[12px] text-white/30" />
+                    </button>
+
+                    {/* Upward Dropdown Menu */}
+                    <AnimatePresence>
+                        {isDropdownOpen && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                                transition={{ duration: 0.15, ease: "easeOut" }}
+                                className="absolute bottom-[calc(100%+8px)] left-0 min-w-[200px] z-50 bg-black/85 backdrop-blur-[24px] border border-white/[0.1] rounded-xl overflow-hidden p-1"
+                            >
+                                <div className="px-3 py-2 text-center border-b border-white/[0.06] mb-1">
+                                    <span className="font-['Inter'] font-[500] text-[0.625rem] text-white/25 tracking-[0.1em] uppercase">SWITCH AGENT</span>
+                                </div>
+                                <button
+                                    onClick={() => { setActiveTeam('red'); setIsDropdownOpen(false); }}
+                                    className="w-full px-3 py-2.5 rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150 hover:bg-white/5"
+                                >
+                                    <div className="w-[6px] h-[6px] rounded-full bg-red-500" />
+                                    <div className="flex flex-col items-start">
+                                        <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/80">Red Team</span>
+                                        <span className="font-['JetBrains_Mono'] font-[400] text-[0.625rem] text-white/30">Commander</span>
+                                    </div>
+                                    {activeTeam === 'red' && <Check className="w-[13px] h-[13px] text-white/60 ml-auto" />}
+                                </button>
+                                <button
+                                    onClick={() => { setActiveTeam('blue'); setIsDropdownOpen(false); }}
+                                    className="w-full px-3 py-2.5 rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150 hover:bg-white/5"
+                                >
+                                    <div className="w-[6px] h-[6px] rounded-full bg-blue-400" />
+                                    <div className="flex flex-col items-start">
+                                        <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/80">Blue Team</span>
+                                        <span className="font-['JetBrains_Mono'] font-[400] text-[0.625rem] text-white/30">Analysis</span>
+                                    </div>
+                                    {activeTeam === 'blue' && <Check className="w-[13px] h-[13px] text-white/60 ml-auto" />}
+                                </button>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+
+                <input
+                    type="text"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={activeTeam === 'red' ? 'Ask the Red Team...' : 'Ask the Blue Team...'}
+                    disabled={isLoading || isLoadingHistory}
+                    className="flex-1 min-w-0 bg-black/50 border border-white/10 focus:border-white/20 focus:ring-white/10 rounded-xl h-[44px] px-5 font-['Inter'] text-[0.875rem] text-white/90 placeholder:font-['Inter'] placeholder:text-[#44444f] focus:ring-[2px] outline-none transition-all shadow-inner"
+                />
+                <PulsatingButton
+                    pulseColor={"rgba(255,255,255,0.1)"}
+                    className="w-[40px] h-[40px] border rounded-xl flex items-center justify-center p-0 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 group shrink-0 bg-white/5 border-white/10 hover:bg-white/10 hover:shadow-[0_0_14px_rgba(255,255,255,0.1)]"
+                    disabled={!inputValue.trim() || isLoading || isLoadingHistory}
+                    onClick={handleSend}
+                >
+                    <ArrowUp className="w-5 h-5 text-white/60 group-hover:text-white" />
+                </PulsatingButton>
+            </div>
+        </div>
     );
 }
 
 export function TeamChat() {
-    const [redTeamMessages, setRedTeamMessages] = useState<Message[]>(mockRedTeamMessages);
-    const [blueTeamMessages, setBlueTeamMessages] = useState<Message[]>(mockBlueTeamMessages);
-    const [redInput, setRedInput] = useState('');
-    const [blueInput, setBlueInput] = useState('');
-    const [redLoading, setRedLoading] = useState(false);
-    const [blueLoading, setBlueLoading] = useState(false);
-    const [redError, setRedError] = useState<string | null>(null);
-    const [blueError, setBlueError] = useState<string | null>(null);
+    // State for messages
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [inputValue, setInputValue] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [activeTeam, setActiveTeam] = useState<'red' | 'blue'>('red');
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
+    const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
+    // State for Supabase integration
+    const [currentSessionId, setCurrentSessionId] = useState<string>('default-session');
+    const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+    const [conversations, setConversations] = useState<Conversation[]>([]);
+
+    // Ref for realtime subscription
+    const subscriptionRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+    // Fetch conversations from Supabase
+    const fetchConversations = useCallback(async () => {
+        try {
+            const { data, error: err } = await supabase
+                .from('conversations')
+                .select('*')
+                .order('updated_at', { ascending: false })
+                .limit(20);
+
+            if (err) throw err;
+
+            if (data && data.length > 0) {
+                setConversations(data);
+            } else {
+                // Create a default conversation if none exist
+                const { data: newConv, error: createErr } = await supabase
+                    .from('conversations')
+                    .insert({
+                        title: 'New Chat',
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    })
+                    .select()
+                    .single();
+
+                if (createErr) {
+                    console.error('Error creating default conversation:', createErr);
+                    // Use local default
+                    setConversations([{
+                        id: 'default-session',
+                        title: 'New Chat',
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    }]);
+                } else if (newConv) {
+                    setConversations([newConv]);
+                    setCurrentSessionId(newConv.id);
+                }
+            }
+        } catch (err) {
+            console.error('Error fetching conversations:', err);
+            // Fallback to default conversation
+            setConversations([{
+                id: 'default-session',
+                title: 'New Chat',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }]);
+        }
+    }, []);
+
+    // Fetch chat history from Supabase
+    const fetchChatHistory = useCallback(async (sessionId: string, team: 'red' | 'blue', retryCount = 0) => {
+        // Clear messages when switching teams or sessions
+        setMessages([]);
+        setIsLoadingHistory(true);
+        setError(null);
+
+        try {
+            const { data, error: err } = await supabase
+                .from('chat_messages')
+                .select('*')
+                .eq('session_id', sessionId)
+                .eq('team', team)
+                .order('created_at', { ascending: true });
+
+            if (err) {
+                // If first attempt fails, retry after 2 seconds
+                if (retryCount < 1) {
+                    setTimeout(() => {
+                        fetchChatHistory(sessionId, team, retryCount + 1);
+                    }, 2000);
+                    return;
+                }
+                throw err;
+            }
+
+            if (data) {
+                setMessages(data.map(dbToMessage));
+            }
+        } catch (err) {
+            console.error('Error fetching chat history:', err);
+            setError('Connection error — retrying...');
+            // Clear messages on error so old team messages don't show
+            setMessages([]);
+            // Auto retry after 2 seconds
+            if (retryCount < 1) {
+                setTimeout(() => {
+                    fetchChatHistory(sessionId, team, retryCount + 1);
+                }, 2000);
+            }
+        } finally {
+            setIsLoadingHistory(false);
+        }
+    }, []);
+
+    // Close menu when clicking outside
+    useEffect(() => {
+        const handleClickOutside = () => setOpenMenuId(null);
+        if (openMenuId) {
+            document.addEventListener('click', handleClickOutside);
+        }
+        return () => document.removeEventListener('click', handleClickOutside);
+    }, [openMenuId]);
+
+    // Setup realtime subscription
+    const setupSubscription = useCallback((sessionId: string, team: 'red' | 'blue') => {
+        // Clean up existing subscription
+        if (subscriptionRef.current) {
+            subscriptionRef.current.unsubscribe();
+            subscriptionRef.current = null;
+        }
+
+        // Create new subscription
+        const channel = supabase
+            .channel('chat_messages')
+            .on(
+                'postgres_changes',
+                {
+                    event: 'INSERT',
+                    schema: 'public',
+                    table: 'chat_messages',
+                    filter: `session_id=eq.${sessionId}`
+                },
+                (payload) => {
+                    const newMsg = payload.new as ChatMessageFromDB;
+                    // Only add message if it matches current team
+                    // Use content hash + timestamp window for better deduplication
+                    if (newMsg.team === team) {
+                        const msgTimestamp = new Date(newMsg.created_at).getTime();
+                        setMessages(prev => {
+                            // Check for exact ID match or content+time proximity
+                            const exists = prev.some(m => {
+                                // Same ID (from re-fetch)
+                                if (m.id === newMsg.id) return true;
+                                // Same content within 5 second window
+                                if (m.content === newMsg.content) {
+                                    const existingTime = new Date(m.timestamp).getTime();
+                                    if (Math.abs(existingTime - msgTimestamp) < 5000) return true;
+                                }
+                                return false;
+                            });
+                            if (exists) {
+                                console.log('[Supabase] Skipping duplicate message:', newMsg.id, newMsg.content?.substring(0, 30));
+                                return prev;
+                            }
+                            console.log('[Supabase] Adding new message:', newMsg.id, newMsg.agent_name, newMsg.content?.substring(0, 30));
+                            return [...prev, dbToMessage(newMsg)];
+                        });
+                    }
+                }
+            )
+            .subscribe();
+
+        subscriptionRef.current = channel;
+    }, []);
+
+    // Initial load - fetch conversations and chat history
+    useEffect(() => {
+        fetchConversations();
+    }, [fetchConversations]);
+
+    // Fetch chat history when session or team changes
+    useEffect(() => {
+        fetchChatHistory(currentSessionId, activeTeam);
+    }, [currentSessionId, activeTeam, fetchChatHistory]);
+
+    // Setup subscription when session or team changes
+    useEffect(() => {
+        setupSubscription(currentSessionId, activeTeam);
+
+        // Cleanup on unmount
+        return () => {
+            if (subscriptionRef.current) {
+                subscriptionRef.current.unsubscribe();
+                subscriptionRef.current = null;
+            }
+        };
+    }, [currentSessionId, activeTeam, setupSubscription]);
+
+    // Handle sending a message - three step process
     const handleSendMessage = async (team: 'red' | 'blue', content: string) => {
-        const newMessage: Message = {
-            id: Date.now().toString(),
+        // Step 1: Optimistically append user message to local state
+        const optimisticMessage: Message = {
+            id: `temp-${Date.now()}`,
             team,
-            agent: 'User',
+            agent: 'user',
             content,
             timestamp: new Date(),
             isUser: true,
         };
 
-        // Add user message immediately
-        if (team === 'red') {
-            setRedTeamMessages(prev => [...prev, newMessage]);
-            setRedLoading(true);
-            setRedError(null);
-        } else {
-            setBlueTeamMessages(prev => [...prev, newMessage]);
-            setBlueLoading(true);
-            setBlueError(null);
-        }
+        setMessages(prev => [...prev, optimisticMessage]);
+        setIsLoading(true);
+        setError(null);
 
         try {
-            // Call the chat API with the user's message
-            const response = await sendChatMessage(content, team === 'red' ? 'Commander' : 'Analyst');
+            // Step 2: Send POST request to FastAPI backend
+            const response = await fetch(`${API_URL}/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [{ role: 'user', content }]
+                })
+            });
 
-            // Add AI response
+            if (!response.ok) {
+                throw new Error('Failed to send message to backend');
+            }
+
+            // Step 3: Persist user message to Supabase
+            const { error: insertErr } = await supabase
+                .from('chat_messages')
+                .insert({
+                    session_id: currentSessionId,
+                    team,
+                    agent_name: 'user',
+                    content,
+                    created_at: new Date().toISOString()
+                });
+
+            if (insertErr) {
+                console.error('Error inserting message to Supabase:', insertErr);
+            }
+
+            // Process the response from the backend and add to messages
+            const data = await response.json();
             const aiMessage: Message = {
-                id: (Date.now() + 1).toString(),
+                id: `agent-${Date.now()}`,
                 team,
-                agent: response.agent || (team === 'red' ? 'Commander' : 'Analyst'),
-                content: response.response,
+                agent: data.message?.role === 'assistant' ? 'VibeCheck' : 'Assistant',
+                content: data.message?.content || 'I apologize, I couldn\'t process your request.',
                 timestamp: new Date(),
                 isUser: false,
             };
 
-            if (team === 'red') {
-                setRedTeamMessages(prev => [...prev, aiMessage]);
-            } else {
-                setBlueTeamMessages(prev => [...prev, aiMessage]);
-            }
+            setMessages(prev => [...prev, aiMessage]);
+
+            // Also persist agent response to Supabase
+            await supabase
+                .from('chat_messages')
+                .insert({
+                    session_id: currentSessionId,
+                    team,
+                    agent_name: aiMessage.agent,
+                    content: aiMessage.content,
+                    created_at: new Date().toISOString()
+                });
+
+            // IMPORTANT: Clear the temp message ID to prevent duplicates from realtime
+            // The message is now in Supabase with a real UUID
         } catch (err) {
-            const errorMsg = err instanceof Error ? err.message : 'Failed to get response';
-            if (team === 'red') {
-                setRedError(errorMsg);
-            } else {
-                setBlueError(errorMsg);
-            }
+            console.error('Error sending message:', err);
+            const errorMsg = err instanceof Error ? err.message : 'Failed to send message';
+            setError('Connection error — retrying...');
+
+            // Remove the optimistic message on error
+            setMessages(prev => prev.filter(m => m.id !== optimisticMessage.id));
+
+            // Retry after 2 seconds
+            setTimeout(() => {
+                handleSendMessage(team, content);
+            }, 2000);
         } finally {
-            if (team === 'red') {
-                setRedLoading(false);
-            } else {
-                setBlueLoading(false);
-            }
+            setIsLoading(false);
         }
     };
 
-    return (
-        <div className="w-full relative z-10 px-6 py-8 max-w-[1400px] mx-auto min-h-screen">
-            {/* Header */}
-            <motion.div
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="mb-8"
-            >
-                <h1 className="text-[2rem] font-[800] tracking-[-0.03em] text-white mb-1">Team Chat</h1>
-                <p className="font-mono text-[0.7rem] text-[rgba(232,234,240,0.4)]">Communicate with Red Team and Blue Team agents</p>
-            </motion.div>
+    // Handle team switching
+    const handleTeamSwitch = (newTeam: 'red' | 'blue') => {
+        if (newTeam === activeTeam) return;
 
-            {/* Chat Panels */}
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-                className="grid grid-cols-1 lg:grid-cols-2 gap-6"
-            >
-                <ChatPanel
-                    team="red"
-                    title="Red Team"
-                    icon={Shield}
-                    color="red"
-                    messages={redTeamMessages}
-                    onSendMessage={handleSendMessage}
-                    inputValue={redInput}
-                    setInputValue={setRedInput}
-                    isLoading={redLoading}
-                    error={redError}
-                />
-                <ChatPanel
-                    team="blue"
-                    title="Blue Team"
-                    icon={Code2}
-                    color="blue"
-                    messages={blueTeamMessages}
-                    onSendMessage={handleSendMessage}
-                    inputValue={blueInput}
-                    setInputValue={setBlueInput}
-                    isLoading={blueLoading}
-                    error={blueError}
-                />
-            </motion.div>
+        // Cancel existing subscription
+        if (subscriptionRef.current) {
+            subscriptionRef.current.unsubscribe();
+            subscriptionRef.current = null;
+        }
+
+        // Update team and fetch new history will happen via useEffect
+        setActiveTeam(newTeam);
+        setInputValue('');
+        setError(null);
+    };
+
+    // Handle conversation/session switching
+    const handleSessionSwitch = (conversationId: string) => {
+        if (conversationId === currentSessionId) return;
+
+        // Cancel existing subscription
+        if (subscriptionRef.current) {
+            subscriptionRef.current.unsubscribe();
+            subscriptionRef.current = null;
+        }
+
+        // Update session and fetch new history will happen via useEffect
+        setCurrentSessionId(conversationId);
+        setInputValue('');
+        setError(null);
+    };
+
+    // Handle creating new conversation
+    const handleNewChat = async () => {
+        try {
+            // First, refresh the conversations list
+            await fetchConversations();
+
+            const { data, error: err } = await supabase
+                .from('conversations')
+                .insert({
+                    title: 'New Chat',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                })
+                .select()
+                .single();
+
+            if (err) throw err;
+
+            if (data) {
+                // Add to conversations list
+                setConversations(prev => {
+                    const exists = prev.some(c => c.id === data.id);
+                    if (exists) return prev;
+                    return [data, ...prev];
+                });
+                // Switch to new conversation
+                handleSessionSwitch(data.id);
+            }
+        } catch (err) {
+            console.error('Error creating new chat:', err);
+            // Fallback: create a local session ID
+            const localId = `local-${Date.now()}`;
+            setConversations(prev => [{
+                id: localId,
+                title: 'New Chat',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }, ...prev]);
+            handleSessionSwitch(localId);
+        }
+    };
+
+    // Handle renaming a conversation
+    const handleRenameConversation = async (conversationId: string, newTitle: string) => {
+        if (!newTitle.trim()) {
+            setEditingConversationId(null);
+            return;
+        }
+
+        try {
+            await supabase
+                .from('conversations')
+                .update({ title: newTitle.trim(), updated_at: new Date().toISOString() })
+                .eq('id', conversationId);
+
+            // Update local state
+            setConversations(prev => prev.map(c =>
+                c.id === conversationId ? { ...c, title: newTitle.trim() } : c
+            ));
+        } catch (err) {
+            console.error('Error renaming conversation:', err);
+        }
+        setEditingConversationId(null);
+    };
+
+    // Handle deleting a conversation
+    const handleDeleteConversation = async (conversationId: string) => {
+        try {
+            // Delete from Supabase
+            await supabase
+                .from('chat_messages')
+                .delete()
+                .eq('session_id', conversationId);
+
+            await supabase
+                .from('conversations')
+                .delete()
+                .eq('id', conversationId);
+
+            // Update local state
+            setConversations(prev => prev.filter(c => c.id !== conversationId));
+
+            // If deleted current session, switch to first available or create new
+            if (conversationId === currentSessionId) {
+                const remaining = conversations.filter(c => c.id !== conversationId);
+                if (remaining.length > 0) {
+                    handleSessionSwitch(remaining[0].id);
+                } else {
+                    handleNewChat();
+                }
+            }
+        } catch (err) {
+            console.error('Error deleting conversation:', err);
+        }
+        setOpenMenuId(null);
+    };
+
+    return (
+        <div className="w-full h-[calc(100vh-80px)] flex flex-col font-sans overflow-hidden relative bg-[#0c0c0e] isolation-isolate">
+            {/* Block video background */}
+            <div className="fixed inset-0 bg-[#0c0c0e] -z-[1]" />
+            <div className={cn("flex h-full w-full flex-col md:flex-row overflow-hidden")}>
+                {/* Desktop Sidebar */}
+                <div className={cn("hidden md:flex w-[260px] flex-col h-full bg-[#111116] border-r border-white/[0.06] relative shrink-0 z-10 transition-colors duration-700")}>
+                    {/* Top Brand Area */}
+                    <div className="px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">
+                        <div className="font-['Syne'] font-[700] text-[0.9375rem] text-[#e8e8f0]">VibeCheck</div>
+                        <div className="font-['Syne'] font-[600] text-[1.125rem] text-white mt-[2px]">Team Chat</div>
+                    </div>
+
+                    {/* Conversations History */}
+                    <div className="flex-1 overflow-y-auto px-3 py-3">
+                        <div className="font-['Inter'] font-[500] text-[0.625rem] text-[#44444f] tracking-[0.12em] px-1 mb-2 uppercase">CONVERSATIONS</div>
+
+                        <button
+                            onClick={handleNewChat}
+                            className="w-full px-3 py-2 mb-3 bg-white/[0.04] border border-white/[0.08] backdrop-blur-[16px] rounded-xl flex items-center gap-2 hover:bg-white/[0.07] hover:border-white/[0.14] transition-spring-stiffness-300-damping-25 group"
+                        >
+                            <Plus className="w-[13px] h-[13px] text-[#6b6b7a] group-hover:text-[#e8e8f0] transition-colors" />
+                            <span className="font-['Inter'] font-[400] text-[0.8125rem] text-[#9090a0] group-hover:text-[#e8e8f0] transition-colors">New Chat</span>
+                        </button>
+
+                        {conversations.length > 0 ? (
+                            conversations.map((conv) => (
+                                <div key={conv.id} className="relative">
+                                    {editingConversationId === conv.id ? (
+                                        <input
+                                            type="text"
+                                            defaultValue={conv.title}
+                                            autoFocus
+                                            onBlur={(e) => handleRenameConversation(conv.id, e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') handleRenameConversation(conv.id, e.currentTarget.value);
+                                                if (e.key === 'Escape') setEditingConversationId(null);
+                                            }}
+                                            className="w-full px-2 py-1 bg-black/50 border border-white/20 rounded text-[0.8125rem] text-white font-['Inter'] outline-none"
+                                        />
+                                    ) : (
+                                        <button
+                                            onClick={() => handleSessionSwitch(conv.id)}
+                                            className={cn(
+                                                "w-full px-3 py-2 rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150 hover:bg-white/[0.05]",
+                                                conv.id === currentSessionId
+                                                    ? "bg-white/[0.08] text-[#e8e8f0] my-0.5"
+                                                    : "text-[#6b6b7a] hover:text-[#e8e8f0]"
+                                            )}
+                                        >
+                                            <MessageSquare className="w-[13px] h-[13px] text-[#44444f] shrink-0" />
+                                            <span className="font-['Inter'] font-[400] text-[0.8125rem] text-[#9090a0] truncate flex-1 text-left">{conv.title}</span>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setOpenMenuId(openMenuId === conv.id ? null : conv.id);
+                                                }}
+                                                className="p-1 hover:bg-white/10 rounded"
+                                            >
+                                                <MoreVertical className="w-[12px] h-[12px] text-white/40" />
+                                            </button>
+                                        </button>
+                                    )}
+
+                                    {/* Dropdown Menu */}
+                                    {openMenuId === conv.id && (
+                                        <div className="absolute right-2 top-8 z-50 bg-black/90 backdrop-blur border border-white/10 rounded-lg py-1 min-w-[120px]">
+                                            <button
+                                                onClick={() => {
+                                                    setEditingConversationId(conv.id);
+                                                    setOpenMenuId(null);
+                                                }}
+                                                className="w-full px-3 py-2 text-left text-[0.75rem] text-white/70 hover:bg-white/10 flex items-center gap-2"
+                                            >
+                                                <Edit3 className="w-[12px] h-[12px]" />
+                                                Rename
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteConversation(conv.id)}
+                                                className="w-full px-3 py-2 text-left text-[0.75rem] text-red-400 hover:bg-red-500/10 flex items-center gap-2"
+                                            >
+                                                <Trash2 className="w-[12px] h-[12px]" />
+                                                Delete
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            ))
+                        ) : (
+                            <>
+                                <button className="w-full px-3 py-2 rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150 bg-white/[0.08] text-[#e8e8f0] my-0.5">
+                                    <MessageSquare className="w-[13px] h-[13px] text-[#44444f] shrink-0" />
+                                    <span className="font-['Inter'] font-[400] text-[0.8125rem] text-white truncate">Security scan #4</span>
+                                </button>
+                                <button className="w-full px-3 py-2 rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150 hover:bg-white/[0.05] text-[#6b6b7a] hover:text-[#e8e8f0]">
+                                    <MessageSquare className="w-[13px] h-[13px] text-[#44444f] shrink-0" />
+                                    <span className="font-['Inter'] font-[400] text-[0.8125rem] text-[#9090a0] truncate">API recon session</span>
+                                </button>
+                            </>
+                        )}
+                    </div>
+
+                    {/* Sidebar Footer */}
+                    <div className="mt-auto px-4 py-3 border-t border-white/[0.06] shrink-0 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <div className={cn("w-1.5 h-1.5 rounded-full bg-[#2dffb3] animate-ping")} />
+                            <span className="font-['Inter'] font-[400] text-[0.6875rem] text-[#44444f]">
+                                {isLoading ? 'Processing...' : 'Ready'}
+                            </span>
+                        </div>
+                        <button className="flex items-center justify-center text-[#44444f] hover:text-[#6b6b7a] transition-colors">
+                            <Settings className="w-[14px] h-[14px]" />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Main Content Area */}
+                <main className="flex-1 w-full h-full relative overflow-hidden flex flex-col min-h-[60vh] md:min-h-0 min-w-0">
+                    <ChatPanel
+                        team={activeTeam}
+                        messages={messages}
+                        onSendMessage={handleSendMessage}
+                        inputValue={inputValue}
+                        setInputValue={setInputValue}
+                        isLoading={isLoading}
+                        error={error}
+                        activeTeam={activeTeam}
+                        setActiveTeam={handleTeamSwitch}
+                        isDropdownOpen={isDropdownOpen}
+                        setIsDropdownOpen={setIsDropdownOpen}
+                        isLoadingHistory={isLoadingHistory}
+                    />
+                </main>
+
+                {/* Mobile Bottom Tab Bar */}
+                <div className="md:hidden fixed bottom-0 inset-x-0 h-[56px] bg-white/[0.05] backdrop-blur-[20px] border-t border-white/[0.08] z-50 flex items-center justify-around px-4">
+                    <button
+                        onClick={() => handleTeamSwitch('red')}
+                        className={cn(
+                            "flex flex-col items-center justify-center py-1 px-4 gap-1 rounded-lg transition-colors flex-1 max-w-[120px]",
+                            activeTeam === "red" ? "text-white" : "text-white/50"
+                        )}
+                    >
+                        <Shield className="w-5 h-5" />
+                        <span className="font-['Syne'] font-medium text-[0.65rem]">Red</span>
+                    </button>
+                    <button
+                        onClick={() => handleTeamSwitch('blue')}
+                        className={cn(
+                            "flex flex-col items-center justify-center py-1 px-4 gap-1 rounded-lg transition-colors flex-1 max-w-[120px]",
+                            activeTeam === "blue" ? "text-white" : "text-white/50"
+                        )}
+                    >
+                        <Code2 className="w-5 h-5" />
+                        <span className="font-['Syne'] font-medium text-[0.65rem]">Blue</span>
+                    </button>
+                </div>
+            </div>
         </div>
     );
 }
