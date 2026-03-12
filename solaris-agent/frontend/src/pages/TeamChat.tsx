@@ -1,12 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertCircle, ArrowUp, Shield, Code2, ChevronDown, ChevronUp, Check, MessageSquare, Plus, Settings, Loader2, MoreVertical, Trash2, Edit3 } from 'lucide-react';
+import { AlertCircle, ArrowUp, Shield, Code2, ChevronDown, ChevronUp, Check, MessageSquare, Plus, Settings, Loader2, MoreVertical, Trash2, Edit3, Square, ArrowDown } from 'lucide-react';
 import { sendChatMessage } from '../lib/api';
 import { supabase, ChatMessageFromDB, Conversation } from '../lib/supabase';
 import { cn } from '../lib/utils';
 import { PulsatingButton } from '../components/ui/pulsating-button';
-import { TeamChatMessage, Message } from '../components/ui/TeamChatMessage';
-
+import { TeamChatMessage, Message } from '../components/TeamChatMessage';
 // API URL from environment
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -39,6 +38,7 @@ function dbToMessage(dbMsg: ChatMessageFromDB): Message {
     };
 }
 
+
 // Loading skeleton component
 function MessageSkeleton({ isRed }: { isRed: boolean }) {
     return (
@@ -70,7 +70,14 @@ function ChatPanel({
     setActiveTeam,
     isDropdownOpen,
     setIsDropdownOpen,
-    isLoadingHistory
+    isLoadingHistory,
+    isStreaming,
+    streamingThinking,
+    streamingResponse,
+    isThinkingOpen,
+    onToggleThinking,
+    onStop,
+    isStopped
 }: {
     team: 'red' | 'blue';
     messages: Message[];
@@ -84,10 +91,19 @@ function ChatPanel({
     isDropdownOpen: boolean;
     setIsDropdownOpen: (open: boolean) => void;
     isLoadingHistory: boolean;
+    isStreaming?: boolean;
+    streamingThinking?: string;
+    streamingResponse?: string;
+    isThinkingOpen?: boolean;
+    onToggleThinking?: () => void;
+    onStop?: () => void;
+    isStopped?: boolean;
 }) {
     const isRed = team === 'red';
     const scrollRef = useRef<HTMLDivElement>(null);
     const dropdownRef = useRef<HTMLDivElement>(null);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
 
     // Close dropdown on click outside
     useEffect(() => {
@@ -120,13 +136,45 @@ function ChatPanel({
     }, [isDropdownOpen]);
 
     useEffect(() => {
+        // Auto-scroll only when new messages arrive, and only if user hasn't scrolled up
+        if (!isUserScrolledUp) {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [messages]);
+
+    // Handle scroll to detect if user scrolled up
+    // Uses 100px threshold - immediately stops auto-scroll when user scrolls up more than 100px from bottom
+    const handleScroll = () => {
+        if (scrollRef.current) {
+            const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+            // Calculate distance from bottom
+            const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+            // If more than 100px from bottom, user has manually scrolled up
+            const isNearBottom = distanceFromBottom <= 100;
+
+            // Only update state if there's a change - this prevents fighting
+            if (isNearBottom && isUserScrolledUp) {
+                // User returned to bottom - can re-enable auto-scroll
+                setIsUserScrolledUp(false);
+            } else if (!isNearBottom && !isUserScrolledUp) {
+                // User scrolled away from bottom - disable auto-scroll
+                setIsUserScrolledUp(true);
+            }
+        }
+    };
+
+    // Scroll to bottom function - called by down arrow button
+    const scrollToBottom = () => {
         if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-    }, [messages, isLoading, isLoadingHistory]);
+        setIsUserScrolledUp(false);
+    };
 
     const handleSend = () => {
         if (inputValue.trim() && !isLoading) {
+            // Reset scroll state so auto-scroll can happen when message arrives
+            setIsUserScrolledUp(false);
             onSendMessage(team, inputValue.trim());
             setInputValue('');
         }
@@ -169,27 +217,60 @@ function ChatPanel({
             )}
 
             {/* Message Feed */}
-            <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-6">
-
-                <div className="relative z-10 flex flex-col gap-6" ref={scrollRef}>
-                    {isLoadingHistory && messages.length === 0 ? (
-                        // Show skeleton while loading history
-                        <>
-                            <MessageSkeleton isRed={isRed} />
-                            <MessageSkeleton isRed={isRed} />
-                            <MessageSkeleton isRed={isRed} />
-                        </>
-                    ) : (
-                        messages.map((msg, index) => (
-                            <TeamChatMessage key={msg.id} message={msg} index={index} />
-                        ))
-                    )}
-
-                    {isLoading && !isLoadingHistory && (
+            <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-6" onScroll={handleScroll} ref={scrollRef}>
+                {isLoadingHistory && messages.length === 0 ? (
+                    // Show skeleton while loading history
+                    <>
                         <MessageSkeleton isRed={isRed} />
-                    )}
-                </div>
+                        <MessageSkeleton isRed={isRed} />
+                        <MessageSkeleton isRed={isRed} />
+                    </>
+                ) : (
+                    <>
+                        {messages.map((msg) => (
+                            <TeamChatMessage key={msg.id} msg={msg} />
+                        ))}
+                        {isStreaming && (
+                            <TeamChatMessage
+                                msg={{
+                                    id: 'streaming-msg',
+                                    team: activeTeam,
+                                    agent: activeTeam === 'red' ? 'RED TEAM' : 'BLUE TEAM',
+                                    content: '',
+                                    timestamp: new Date(),
+                                    isUser: false
+                                }}
+                                streamingMode={true}
+                                streamingThinking={streamingThinking}
+                                streamingResponse={streamingResponse}
+                                isThinkingOpen={isThinkingOpen}
+                                onToggleThinking={onToggleThinking}
+                            />
+                        )}
+                    </>
+                )}
+
+                {isLoading && !isLoadingHistory && (
+                    <MessageSkeleton isRed={isRed} />
+                )}
+
+                {/* Invisible element for auto-scrolling */}
+                <div ref={messagesEndRef} />
             </div>
+
+            {/* Down Arrow Button - shows when user scrolled up (like Claude.ai) */}
+            {isUserScrolledUp && messages.length > 0 && (
+                <motion.button
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    onClick={scrollToBottom}
+                    className="absolute bottom-0 left-1/2 transform -translate-x-1/2 mb-3 z-25 w-10 h-10 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center hover:bg-black/80 transition-colors shadow-lg cursor-pointer"
+                    title="Scroll to bottom"
+                >
+                    <ChevronDown className="w-5 h-5 text-white/80" />
+                </motion.button>
+            )}
 
             {/* Input Bar */}
             <div className={cn("h-[72px] bg-[#0d0d12] border-t border-white/[0.04] px-5 py-3 flex gap-3 items-center shrink-0 z-20 relative transition-colors duration-700")}>
@@ -255,14 +336,29 @@ function ChatPanel({
                     disabled={isLoading || isLoadingHistory}
                     className="flex-1 min-w-0 bg-black/50 border border-white/10 focus:border-white/20 focus:ring-white/10 rounded-xl h-[44px] px-5 font-['Inter'] text-[0.875rem] text-white/90 placeholder:font-['Inter'] placeholder:text-[#44444f] focus:ring-[2px] outline-none transition-all shadow-inner"
                 />
-                <PulsatingButton
-                    pulseColor={"rgba(255,255,255,0.1)"}
-                    className="w-[40px] h-[40px] border rounded-xl flex items-center justify-center p-0 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 group shrink-0 bg-white/5 border-white/10 hover:bg-white/10 hover:shadow-[0_0_14px_rgba(255,255,255,0.1)]"
-                    disabled={!inputValue.trim() || isLoading || isLoadingHistory}
-                    onClick={handleSend}
-                >
-                    <ArrowUp className="w-5 h-5 text-white/60 group-hover:text-white" />
-                </PulsatingButton>
+                {isStreaming ? (
+                    <button
+                        onClick={onStop}
+                        className="w-[40px] h-[40px] border rounded-xl flex items-center justify-center p-0 transition-all duration-150 group shrink-0 bg-red-500/20 border-red-500/40 hover:bg-red-500/30 hover:border-red-500/60"
+                        title="Stop generating"
+                    >
+                        <motion.div
+                            animate={{ scale: [1, 1.1, 1] }}
+                            transition={{ repeat: Infinity, duration: 1, ease: "easeInOut" }}
+                        >
+                            <Square className="w-4 h-4 text-red-400 group-hover:text-red-300" />
+                        </motion.div>
+                    </button>
+                ) : (
+                    <PulsatingButton
+                        pulseColor={"rgba(255,255,255,0.1)"}
+                        className="w-[40px] h-[40px] border rounded-xl flex items-center justify-center p-0 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 group shrink-0 bg-white/5 border-white/10 hover:bg-white/10 hover:shadow-[0_0_14px_rgba(255,255,255,0.1)]"
+                        disabled={!inputValue.trim() || isLoading || isLoadingHistory}
+                        onClick={handleSend}
+                    >
+                        <ArrowUp className="w-5 h-5 text-white/60 group-hover:text-white" />
+                    </PulsatingButton>
+                )}
             </div>
         </div>
     );
@@ -278,6 +374,16 @@ export function TeamChat() {
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+    // Streaming state
+    const [streamingThinking, setStreamingThinking] = useState("");
+    const [streamingResponse, setStreamingResponse] = useState("");
+    const [isThinkingOpen, setIsThinkingOpen] = useState(true);
+    const [isStreaming, setIsStreaming] = useState(false);
+    const [isStopped, setIsStopped] = useState(false);
+
+    // Ref for aborting streaming requests
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     // State for Supabase integration
     const [currentSessionId, setCurrentSessionId] = useState<string>('default-session');
@@ -482,15 +588,25 @@ export function TeamChat() {
         setMessages(prev => [...prev, optimisticMessage]);
         setIsLoading(true);
         setError(null);
+        setIsStopped(false);
 
+        // Create abort controller for this request
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        abortControllerRef.current = new AbortController();
+
+        // Update to point to the correct endpoint
         try {
             // Step 2: Send POST request to FastAPI backend
-            const response = await fetch(`${API_URL}/chat`, {
+            const response = await fetch(`${API_URL}/chat/stream`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    messages: [{ role: 'user', content }]
-                })
+                    messages: [{ role: 'user', content }],
+                    team: team
+                }),
+                signal: abortControllerRef.current.signal
             });
 
             if (!response.ok) {
@@ -512,13 +628,168 @@ export function TeamChat() {
                 console.error('Error inserting message to Supabase:', insertErr);
             }
 
-            // Process the response from the backend and add to messages
-            const data = await response.json();
+            // Prepare for streaming
+            setIsStreaming(true);
+            setStreamingThinking("");
+            setStreamingResponse("");
+            setIsThinkingOpen(true);
+
+            console.log("Starting stream...", response.status);
+
+            const reader = response.body?.getReader();
+            if (!reader) {
+                console.error("No reader available");
+                throw new Error('Stream not available');
+            }
+
+            const decoder = new TextDecoder('utf-8');
+            let fullContent = "";
+            let currentSection: "thinking" | "response" | "none" = "none";
+            let buffer = ""; // Buffer to handle partial tags across chunks
+            let lastThinkingLen = 0;
+            let lastResponseLen = 0;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("Stream done");
+                    break;
+                }
+
+                const chunk = decoder.decode(value, { stream: true });
+                console.log("Received chunk:", chunk.slice(0, 100));
+                buffer += chunk;
+                fullContent += chunk;
+
+                // Check section state - support both XML and markdown formats (case-insensitive)
+                // XML: <thinking>...</thinking><response>...</response>
+                // Markdown: ### Thinking... ### Response...
+                const lowerBuffer = buffer.toLowerCase();
+                const hasXmlThinkingOpen = lowerBuffer.includes("<thinking>");
+                const hasXmlThinkingClose = lowerBuffer.includes("</thinking>");
+                const hasXmlResponseOpen = lowerBuffer.includes("<response>");
+                const hasXmlResponseClose = lowerBuffer.includes("</response>");
+                const hasMdThinking = lowerBuffer.includes("### thinking") || lowerBuffer.includes("### response");
+
+                // Debug: log what we detect
+                if (chunk.includes("<thinking>") || chunk.includes("</thinking>")) {
+                    console.log("Detected thinking tags in chunk:", chunk.slice(0, 50));
+                }
+
+                // Determine current section - prioritize XML format
+                if (hasXmlThinkingOpen && !hasXmlThinkingClose) {
+                    currentSection = "thinking";
+                } else if (hasXmlThinkingClose) {
+                    currentSection = "response";
+                } else if (hasMdThinking) {
+                    // Markdown format detection
+                    const thinkingMatch = buffer.match(/### Thinking\n([\s\S]*?)(?=### Response|$)/i);
+                    const responseMatch = buffer.match(/### Response\n([\s\S]*)/i);
+                    if (thinkingMatch && !responseMatch) {
+                        currentSection = "thinking";
+                    } else if (responseMatch) {
+                        currentSection = "response";
+                    }
+                } else if (!hasXmlThinkingOpen && !hasXmlThinkingClose && !hasMdThinking && !currentSection) {
+                    // No tags detected yet - wait for tags or treat as response
+                    currentSection = "response";
+                }
+
+                // Auto-collapse thinking when we see </thinking> or ### Response
+                if (chunk.includes("</thinking>") || chunk.includes("### Response")) {
+                    setIsThinkingOpen(false);
+                }
+
+                // Extract content between tags (support both XML and markdown)
+                let thinkingContent = "";
+                let responseContent = "";
+
+                if (currentSection === "thinking") {
+                    // Try XML format first (case-insensitive)
+                    const xmlThinkingMatch = buffer.match(/<thinking>([\s\S]*?)<\/thinking>/i);
+                    if (xmlThinkingMatch) {
+                        thinkingContent = xmlThinkingMatch[1].trim();
+                    } else {
+                        // Try markdown format
+                        const mdMatch = buffer.match(/### Thinking\n([\s\S]*?)(?=### Response|$)/i);
+                        if (mdMatch) {
+                            thinkingContent = mdMatch[1].trim();
+                        } else {
+                            // Extract everything after <thinking> tag
+                            const afterThinking = buffer.replace(/^[\s\S]*<thinking>/i, "");
+                            thinkingContent = afterThinking.replace(/<\/thinking>[\s\S]*/i, "").trim();
+                        }
+                    }
+
+                    // Only append new content
+                    if (thinkingContent.length > lastThinkingLen) {
+                        const newContent = thinkingContent.slice(lastThinkingLen);
+                        setStreamingThinking(prev => prev + newContent);
+                        lastThinkingLen = thinkingContent.length;
+                    }
+                } else if (currentSection === "response") {
+                    // Try XML format first
+                    const xmlResponseMatch = buffer.match(/<response>([\s\S]*?)<\/response>/i);
+                    if (xmlResponseMatch) {
+                        responseContent = xmlResponseMatch[1].trim();
+                    } else {
+                        // Try markdown format
+                        const mdMatch = buffer.match(/### Response\n([\s\S]*)/i);
+                        if (mdMatch) {
+                            responseContent = mdMatch[1].trim();
+                        } else {
+                            // Fallback: remove ### Thinking section and any remaining thinking tags
+                            responseContent = buffer
+                                .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+                                .replace(/### Thinking[\s\S]*?### Response\n?/gi, "")
+                                .trim();
+                        }
+                    }
+
+                    // Only append new content
+                    if (responseContent.length > lastResponseLen) {
+                        const newContent = responseContent.slice(lastResponseLen);
+                        setStreamingResponse(prev => prev + newContent);
+                        lastResponseLen = responseContent.length;
+                    }
+                } else {
+                    // No tags yet - treat everything as response (fallback)
+                    const cleanContent = buffer
+                        .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+                        .replace(/<response>[\s\S]*?<\/response>/gi, "")
+                        .replace(/### Thinking[\s\S]*?### Response\n?/gi, "")
+                        .trim();
+                    if (cleanContent.length > lastResponseLen) {
+                        const newContent = cleanContent.slice(lastResponseLen);
+                        setStreamingResponse(prev => prev + newContent);
+                        lastResponseLen = cleanContent.length;
+                    }
+                }
+
+                // Keep buffer manageable - only keep recent content
+                if (buffer.length > 2000) {
+                    buffer = buffer.slice(-1000);
+                }
+            }
+
+            // Clean up the remaining buffer
+            const lastChunk = decoder.decode();
+            if (lastChunk) {
+                fullContent += lastChunk;
+                if (currentSection === "thinking") {
+                    setStreamingThinking(prev => prev + lastChunk);
+                } else {
+                    setStreamingResponse(prev => prev + lastChunk);
+                }
+            }
+
+            setIsStreaming(false);
+
             const aiMessage: Message = {
                 id: `agent-${Date.now()}`,
                 team,
-                agent: data.message?.role === 'assistant' ? 'VibeCheck' : 'Assistant',
-                content: data.message?.content || 'I apologize, I couldn\'t process your request.',
+                agent: team === 'red' ? 'RED TEAM' : 'BLUE TEAM',
+                content: fullContent,
                 timestamp: new Date(),
                 isUser: false,
             };
@@ -538,7 +809,36 @@ export function TeamChat() {
 
             // IMPORTANT: Clear the temp message ID to prevent duplicates from realtime
             // The message is now in Supabase with a real UUID
-        } catch (err) {
+        } catch (err: unknown) {
+            // Check if this was an abort (user stopped the request)
+            if (err instanceof Error && err.name === 'AbortError') {
+                console.log('Request aborted by user');
+                setIsStopped(true);
+                setIsStreaming(false);
+                setIsLoading(false);
+
+                // Create partial message with what we have so far
+                const currentThinking = streamingThinking;
+                const currentResponse = streamingResponse;
+                const partialContent = `<thinking>${currentThinking}</thinking><response>${currentResponse}</response>`;
+
+                if (currentThinking || currentResponse) {
+                    const partialMessage: Message = {
+                        id: `stopped-${Date.now()}`,
+                        team,
+                        agent: team === 'red' ? 'RED TEAM' : 'BLUE TEAM',
+                        content: partialContent,
+                        timestamp: new Date(),
+                        isUser: false,
+                    };
+                    setMessages(prev => [...prev, partialMessage]);
+                }
+
+                // Remove the optimistic user message
+                setMessages(prev => prev.filter(m => m.id !== optimisticMessage.id));
+                return;
+            }
+
             console.error('Error sending message:', err);
             const errorMsg = err instanceof Error ? err.message : 'Failed to send message';
             setError('Connection error — retrying...');
@@ -551,13 +851,30 @@ export function TeamChat() {
                 handleSendMessage(team, content);
             }, 2000);
         } finally {
+            setIsStreaming(false);
             setIsLoading(false);
+            abortControllerRef.current = null;
+        }
+    };
+
+    // Handle stopping the current generation
+    const handleStop = () => {
+        if (abortControllerRef.current) {
+            console.log('Aborting stream...');
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
         }
     };
 
     // Handle team switching
     const handleTeamSwitch = (newTeam: 'red' | 'blue') => {
         if (newTeam === activeTeam) return;
+
+        // Abort any ongoing streaming request
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
 
         // Cancel existing subscription
         if (subscriptionRef.current) {
@@ -569,6 +886,8 @@ export function TeamChat() {
         setActiveTeam(newTeam);
         setInputValue('');
         setError(null);
+        setIsStopped(false);
+        setIsStreaming(false);
     };
 
     // Handle conversation/session switching
@@ -789,10 +1108,28 @@ export function TeamChat() {
                     {/* Sidebar Footer */}
                     <div className="mt-auto px-4 py-3 border-t border-white/[0.06] shrink-0 flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                            <div className={cn("w-1.5 h-1.5 rounded-full bg-[#2dffb3] animate-ping")} />
-                            <span className="font-['Inter'] font-[400] text-[0.6875rem] text-[#44444f]">
-                                {isLoading ? 'Processing...' : 'Ready'}
-                            </span>
+                            {isStreaming ? (
+                                <>
+                                    <div className={cn("w-1.5 h-1.5 rounded-full bg-red-500 animate-ping")} />
+                                    <span className="font-['Inter'] font-[400] text-[0.6875rem] text-red-400">
+                                        Generating...
+                                    </span>
+                                </>
+                            ) : isStopped ? (
+                                <>
+                                    <div className={cn("w-1.5 h-1.5 rounded-full bg-yellow-500")} />
+                                    <span className="font-['Inter'] font-[400] text-[0.6875rem] text-yellow-400">
+                                        Stopped
+                                    </span>
+                                </>
+                            ) : (
+                                <>
+                                    <div className={cn("w-1.5 h-1.5 rounded-full bg-[#2dffb3] animate-ping")} />
+                                    <span className="font-['Inter'] font-[400] text-[0.6875rem] text-[#44444f]">
+                                        {isLoading ? 'Processing...' : 'Ready'}
+                                    </span>
+                                </>
+                            )}
                         </div>
                         <button className="flex items-center justify-center text-[#44444f] hover:text-[#6b6b7a] transition-colors">
                             <Settings className="w-[14px] h-[14px]" />
@@ -815,6 +1152,13 @@ export function TeamChat() {
                         isDropdownOpen={isDropdownOpen}
                         setIsDropdownOpen={setIsDropdownOpen}
                         isLoadingHistory={isLoadingHistory}
+                        isStreaming={isStreaming}
+                        streamingThinking={streamingThinking}
+                        streamingResponse={streamingResponse}
+                        isThinkingOpen={isThinkingOpen}
+                        onToggleThinking={() => setIsThinkingOpen(!isThinkingOpen)}
+                        onStop={handleStop}
+                        isStopped={isStopped}
                     />
                 </main>
 
