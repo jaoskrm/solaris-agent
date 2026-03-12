@@ -85,7 +85,7 @@ function ThinkingRow({ line, index, isLast, isStreaming, isComplete }: ThinkingR
                     fontFamily: 'monospace',
                     fontSize: '0.8rem',
                     lineHeight: '1.6',
-                    color: '#94a3b8'
+                    color: 'rgba(255,255,255,0.85)'
                 }}
             >
                 {content}
@@ -132,14 +132,21 @@ function ThinkingBlock({ content, isStreaming, isComplete }: ThinkingBlockProps)
     const lines = cleaned.split('\n').filter(line => line.trim().length > 0);
 
     return (
-        <div className="relative pl-1" style={{
-            maxWidth: '85%',
+        <div className="relative pl-1 font-mono" style={{
+            maxWidth: '78%',
             padding: '12px 16px',
-            borderLeft: '2px solid rgba(99, 102, 241, 0.4)',
-            background: 'rgba(0,0,0,0.2)',
-            borderRadius: '6px',
+            borderLeft: '2px solid rgba(220,38,38,0.4)',
+            background: 'rgba(0,0,0,0.45)',
+            backdropFilter: 'blur(20px)',
+            borderRadius: '12px',
+            border: '1px solid rgba(255,255,255,0.06)',
             maxHeight: '300px',
-            overflowY: 'auto'
+            overflowY: 'auto',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+            marginBottom: '8px',
+            marginLeft: '32px',
+            zIndex: 2,
+            position: 'relative'
         }}>
             {/* Vertical dashed connecting line */}
             {lines.length > 1 && (
@@ -304,14 +311,31 @@ export function TeamChatMessage({
                 <span className="font-['JetBrains_Mono'] font-[500] text-[0.6875rem] tracking-[0.06em] uppercase text-white/50">
                     {msg.isUser ? 'You' : msg.agent}
                 </span>
-                <span className="font-['JetBrains_Mono'] font-[400] text-[0.625rem] text-[#44444f] ml-[8px]">
+                <span className="font-['JetBrains_Mono'] font-[400] text-[0.625rem] text-white/30 ml-[8px]">
                     {formatTime(msg.timestamp)}
                 </span>
             </div>
 
-            <div className={cn("border border-white/[0.07] rounded-xl p-4 mb-3 bg-white/[0.04] backdrop-blur-[16px]",
-                msg.isUser ? "border-l-2 border-l-white/20" : "border-l-2 border-l-white/10"
-            )}>
+            <div
+                className={cn("border mb-3 backdrop-blur-[20px]",
+                    msg.isUser ? "ml-auto text-right" : ""
+                )}
+                style={{
+                    background: msg.isUser
+                        ? 'rgba(255,255,255,0.07)'
+                        : 'rgba(0,0,0,0.45)',
+                    border: msg.isUser ? '1px solid rgba(255,255,255,0.1)' : '1px solid rgba(255,255,255,0.07)',
+                    borderRadius: '18px',
+                    padding: msg.isUser ? '10px 16px' : '16px 20px',
+                    maxWidth: msg.isUser ? '60%' : '78%',
+                    marginRight: msg.isUser ? '32px' : undefined,
+                    marginLeft: msg.isUser ? undefined : '32px',
+                    backdropFilter: msg.isUser ? 'blur(20px)' : 'blur(20px)',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                    zIndex: 2,
+                    position: 'relative'
+                }}
+            >
                 {showThinking && (
                     <div className="mb-2">
                         {/* Thinking Header */}
@@ -385,7 +409,7 @@ export function TeamChatMessage({
                     </div>
                 )}
 
-                <div className="text-[0.875rem] text-white/90 leading-[1.6]">
+                <div className="text-[0.875rem] text-white/70 leading-[1.6]">
                     {renderMessageContent(responseContent)}
                 </div>
             </div>

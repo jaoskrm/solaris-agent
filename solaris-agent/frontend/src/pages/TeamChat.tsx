@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertCircle, ArrowUp, Shield, Code2, ChevronDown, ChevronUp, Check, MessageSquare, Plus, Settings, Loader2, MoreVertical, Trash2, Edit3, Square, ArrowDown } from 'lucide-react';
+import { AlertCircle, ArrowUp, Shield, Code2, ChevronDown, ChevronUp, Check, MessageSquare, Plus, Settings, Loader2, MoreVertical, Trash2, Edit3, Square, ArrowDown, PanelLeft, PanelRight, Paperclip } from 'lucide-react';
 import { sendChatMessage } from '../lib/api';
 import { supabase, ChatMessageFromDB, Conversation } from '../lib/supabase';
 import { cn } from '../lib/utils';
@@ -136,11 +136,12 @@ function ChatPanel({
     }, [isDropdownOpen]);
 
     useEffect(() => {
-        // Auto-scroll only when new messages arrive, and only if user hasn't scrolled up
-        if (!isUserScrolledUp) {
+        // Auto-scroll during streaming when content grows token by token
+        // Only if user hasn't scrolled up manually
+        if (!isUserScrolledUp && (streamingResponse || streamingThinking)) {
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
         }
-    }, [messages]);
+    }, [streamingResponse, streamingThinking]);
 
     // Handle scroll to detect if user scrolled up
     // Uses 100px threshold - immediately stops auto-scroll when user scrolls up more than 100px from bottom
@@ -180,7 +181,7 @@ function ChatPanel({
         }
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSend();
@@ -188,18 +189,21 @@ function ChatPanel({
     };
 
     return (
-        <div className={cn("flex flex-col h-full relative pb-[56px] md:pb-0 transition-colors duration-700 bg-[#0a0a0f]")}>
-
-            {/* Chat Header */}
-            <div className={cn("h-[60px] bg-[#0d0d12] border-b border-white/[0.04] px-6 flex items-center justify-between shrink-0 transition-colors duration-700")}>
+        <div className={cn("flex flex-col h-full relative pb-[56px] md:pb-0 transition-colors duration-700")} style={{
+            // No solid background - video shows through
+        }}>
+            {/* Chat Header - Transparent */}
+            <div className={cn("h-[60px] px-6 flex items-center justify-between shrink-0")} style={{
+                // Transparent - video shows through
+            }}>
                 <div className="flex items-center">
-                    <div className="w-[5px] h-[5px] rounded-full animate-pulse mr-3 bg-white/50" />
-                    <h1 className="font-['Syne'] font-[600] text-[1rem] text-[#6b6b7a]">
+                    <div className="w-[5px] h-[5px] rounded-full animate-pulse mr-3" style={{ backgroundColor: team === 'red' ? 'rgba(220,38,38,0.8)' : 'rgba(59,130,246,0.8)' }} />
+                    <h1 className="font-['Syne'] font-[600] text-[1rem] text-white tracking-wide">
                         {isRed ? "Red Team" : "Blue Team"}
                     </h1>
                 </div>
                 <div className="flex items-center">
-                    <span className="font-['Inter'] font-[400] text-[0.6875rem] uppercase text-white/40">
+                    <span className="font-['Inter'] font-[400] text-[0.6875rem] uppercase text-white/50">
                         ACTIVE
                     </span>
                     <div className="w-[5px] h-[5px] rounded-full animate-pulse ml-2 bg-white/40" />
@@ -217,7 +221,7 @@ function ChatPanel({
             )}
 
             {/* Message Feed */}
-            <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-6" onScroll={handleScroll} ref={scrollRef}>
+            <div className="flex-1 overflow-y-auto px-8 py-6 flex flex-col gap-6" onScroll={handleScroll} ref={scrollRef}>
                 {isLoadingHistory && messages.length === 0 ? (
                     // Show skeleton while loading history
                     <>
@@ -265,100 +269,177 @@ function ChatPanel({
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.8 }}
                     onClick={scrollToBottom}
-                    className="absolute bottom-0 left-1/2 transform -translate-x-1/2 mb-3 z-25 w-10 h-10 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center hover:bg-black/80 transition-colors shadow-lg cursor-pointer"
+                    className="absolute bottom-0 left-1/2 transform -translate-x-1/2 mb-3 z-25 w-10 h-10 rounded-full flex items-center justify-center transition-colors cursor-pointer"
+                    style={{
+                        background: 'rgba(255,255,255,0.08)',
+                        backdropFilter: 'blur(20px)',
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                    }}
                     title="Scroll to bottom"
                 >
                     <ChevronDown className="w-5 h-5 text-white/80" />
                 </motion.button>
             )}
 
-            {/* Input Bar */}
-            <div className={cn("h-[72px] bg-[#0d0d12] border-t border-white/[0.04] px-5 py-3 flex gap-3 items-center shrink-0 z-20 relative transition-colors duration-700")}>
-                {/* Agent Selector - Left of input */}
-                <div className="relative flex-shrink-0" ref={dropdownRef}>
-                    <button
-                        onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                        className="px-3 py-1.5 bg-white/[0.04] border border-white/[0.08] rounded-lg flex items-center gap-2 cursor-pointer flex-shrink-0 transition-all duration-150 hover:bg-white/[0.07] hover:border-white/[0.12]"
-                    >
-                        <div className={cn("w-[6px] h-[6px] rounded-full", activeTeam === 'red' ? "bg-red-500" : "bg-blue-400")} />
-                        <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/70">
-                            {activeTeam === 'red' ? 'Red Team' : 'Blue Team'}
-                        </span>
-                        <ChevronUp className="w-[12px] h-[12px] text-white/30" />
-                    </button>
 
-                    {/* Upward Dropdown Menu */}
-                    <AnimatePresence>
-                        {isDropdownOpen && (
-                            <motion.div
-                                initial={{ opacity: 0, y: 8, scale: 0.97 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: 8, scale: 0.97 }}
-                                transition={{ duration: 0.15, ease: "easeOut" }}
-                                className="absolute bottom-[calc(100%+8px)] left-0 min-w-[200px] z-50 bg-black/85 backdrop-blur-[24px] border border-white/[0.1] rounded-xl overflow-hidden p-1"
-                            >
-                                <div className="px-3 py-2 text-center border-b border-white/[0.06] mb-1">
-                                    <span className="font-['Inter'] font-[500] text-[0.625rem] text-white/25 tracking-[0.1em] uppercase">SWITCH AGENT</span>
-                                </div>
-                                <button
-                                    onClick={() => { setActiveTeam('red'); setIsDropdownOpen(false); }}
-                                    className="w-full px-3 py-2.5 rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150 hover:bg-white/5"
-                                >
-                                    <div className="w-[6px] h-[6px] rounded-full bg-red-500" />
-                                    <div className="flex flex-col items-start">
-                                        <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/80">Red Team</span>
-                                        <span className="font-['JetBrains_Mono'] font-[400] text-[0.625rem] text-white/30">Commander</span>
-                                    </div>
-                                    {activeTeam === 'red' && <Check className="w-[13px] h-[13px] text-white/60 ml-auto" />}
-                                </button>
-                                <button
-                                    onClick={() => { setActiveTeam('blue'); setIsDropdownOpen(false); }}
-                                    className="w-full px-3 py-2.5 rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150 hover:bg-white/5"
-                                >
-                                    <div className="w-[6px] h-[6px] rounded-full bg-blue-400" />
-                                    <div className="flex flex-col items-start">
-                                        <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/80">Blue Team</span>
-                                        <span className="font-['JetBrains_Mono'] font-[400] text-[0.625rem] text-white/30">Analysis</span>
-                                    </div>
-                                    {activeTeam === 'blue' && <Check className="w-[13px] h-[13px] text-white/60 ml-auto" />}
-                                </button>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </div>
-
-                <input
-                    type="text"
+            {/* Input Bar - Restyled */}
+            <div className={cn("flex flex-col shrink-0 z-20 relative")} style={{
+                maxWidth: '680px',
+                width: '100%',
+                margin: '0 auto 24px auto',
+                padding: '14px 16px',
+                background: 'rgba(20, 20, 28, 0.75)',
+                backdropFilter: 'blur(24px)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '16px'
+            }}>
+                {/* Textarea - Full width at top */}
+                <textarea
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder={activeTeam === 'red' ? 'Ask the Red Team...' : 'Ask the Blue Team...'}
                     disabled={isLoading || isLoadingHistory}
-                    className="flex-1 min-w-0 bg-black/50 border border-white/10 focus:border-white/20 focus:ring-white/10 rounded-xl h-[44px] px-5 font-['Inter'] text-[0.875rem] text-white/90 placeholder:font-['Inter'] placeholder:text-[#44444f] focus:ring-[2px] outline-none transition-all shadow-inner"
+                    rows={1}
+                    className="w-full font-['Inter'] text-[0.875rem] text-white/90 placeholder:font-['Inter'] placeholder:text-white/30 focus:ring-0 outline-none resize-none"
+                    style={{
+                        minHeight: '60px',
+                        maxHeight: '200px',
+                        background: 'transparent',
+                        border: 'none',
+                        borderRadius: '0',
+                        padding: '0',
+                        marginBottom: '12px',
+                    }}
                 />
-                {isStreaming ? (
-                    <button
-                        onClick={onStop}
-                        className="w-[40px] h-[40px] border rounded-xl flex items-center justify-center p-0 transition-all duration-150 group shrink-0 bg-red-500/20 border-red-500/40 hover:bg-red-500/30 hover:border-red-500/60"
-                        title="Stop generating"
-                    >
-                        <motion.div
-                            animate={{ scale: [1, 1.1, 1] }}
-                            transition={{ repeat: Infinity, duration: 1, ease: "easeInOut" }}
+
+                {/* Bottom row - flex with space-between */}
+                <div className="flex items-center justify-between">
+                    {/* Left side: Plus, Divider, Team Selector */}
+                    <div className="flex items-center gap-3">
+                        {/* Team Selector */}
+                        <div className="relative" ref={dropdownRef}>
+                            <button
+                                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                                className="px-3 py-1 border rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150"
+                                style={{
+                                    background: 'rgba(255,255,255,0.04)',
+                                    borderColor: 'rgba(255,255,255,0.1)',
+                                    backdropFilter: 'blur(16px)'
+                                }}
+                            >
+                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: activeTeam === 'red' ? '#ef4444' : '#3b82f6' }} />
+                                <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/90 tracking-wide">
+                                    {activeTeam === 'red' ? 'Red Team' : 'Blue Team'}
+                                </span>
+                                <ChevronUp className="w-[12px] h-[12px] text-white/40" />
+                            </button>
+
+                            {/* Upward Dropdown Menu */}
+                            <AnimatePresence>
+                                {isDropdownOpen && (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                                        transition={{ duration: 0.15, ease: "easeOut" }}
+                                        className="absolute bottom-[calc(100%+8px)] left-0 min-w-[200px] z-50 overflow-hidden"
+                                        style={{
+                                            background: 'rgba(15, 15, 20, 0.95)',
+                                            backdropFilter: 'blur(20px)',
+                                            border: '1px solid rgba(255, 255, 255, 0.15)',
+                                            borderRadius: '12px',
+                                            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.6)',
+                                            padding: '6px'
+                                        }}
+                                    >
+                                        <button
+                                            onClick={() => { setActiveTeam('red'); setIsDropdownOpen(false); }}
+                                            className="w-full rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150"
+                                            style={{
+                                                padding: '10px 14px',
+                                                borderRadius: '8px',
+                                                background: activeTeam === 'red' ? 'rgba(220, 38, 38, 0.2)' : 'transparent',
+                                                color: activeTeam === 'red' ? '#ffffff' : 'rgba(255, 255, 255, 0.9)'
+                                            }}
+                                        >
+                                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#ef4444' }} />
+                                            <div className="flex flex-col items-start">
+                                                <span className="font-['Inter'] font-[500] text-[0.875rem]" style={{ color: 'rgba(255, 255, 255, 0.9)' }}>Red Team</span>
+                                                <span className="font-['JetBrains_Mono'] font-[400]" style={{ color: 'rgba(255, 255, 255, 0.45)', fontSize: '0.75rem' }}>Commander</span>
+                                            </div>
+                                            {activeTeam === 'red' && <Check className="w-[13px] h-[13px] ml-auto" style={{ color: 'white', opacity: 1 }} />}
+                                        </button>
+                                        <button
+                                            onClick={() => { setActiveTeam('blue'); setIsDropdownOpen(false); }}
+                                            className="w-full rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150"
+                                            style={{
+                                                padding: '10px 14px',
+                                                borderRadius: '8px',
+                                                background: activeTeam === 'blue' ? 'rgba(37, 99, 235, 0.2)' : 'transparent',
+                                                color: activeTeam === 'blue' ? '#ffffff' : 'rgba(255, 255, 255, 0.9)'
+                                            }}
+                                        >
+                                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#3b82f6' }} />
+                                            <div className="flex flex-col items-start">
+                                                <span className="font-['Inter'] font-[500] text-[0.875rem]" style={{ color: 'rgba(255, 255, 255, 0.9)' }}>Blue Team</span>
+                                                <span className="font-['JetBrains_Mono'] font-[400]" style={{ color: 'rgba(255, 255, 255, 0.45)', fontSize: '0.75rem' }}>Analysis</span>
+                                            </div>
+                                            {activeTeam === 'blue' && <Check className="w-[13px] h-[13px] ml-auto" style={{ color: 'white', opacity: 1 }} />}
+                                        </button>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                        </div>
+                    </div>
+
+                    {/* Right side: Attachment, Send/Stop */}
+                    <div className="flex items-center gap-3">
+                        {/* Attachment icon */}
+                        <button
+                            className="flex items-center justify-center transition-colors duration-200 ease"
+                            style={{ color: 'rgba(255,255,255,0.4)' }}
+                            onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.8)'}
+                            onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.4)'}
+                            title="Attach file"
                         >
-                            <Square className="w-4 h-4 text-red-400 group-hover:text-red-300" />
-                        </motion.div>
-                    </button>
-                ) : (
-                    <PulsatingButton
-                        pulseColor={"rgba(255,255,255,0.1)"}
-                        className="w-[40px] h-[40px] border rounded-xl flex items-center justify-center p-0 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 group shrink-0 bg-white/5 border-white/10 hover:bg-white/10 hover:shadow-[0_0_14px_rgba(255,255,255,0.1)]"
-                        disabled={!inputValue.trim() || isLoading || isLoadingHistory}
-                        onClick={handleSend}
-                    >
-                        <ArrowUp className="w-5 h-5 text-white/60 group-hover:text-white" />
-                    </PulsatingButton>
-                )}
+                            <Paperclip className="w-4 h-4" />
+                        </button>
+
+                        {/* Send or Stop button */}
+                        {isStreaming ? (
+                            <button
+                                onClick={onStop}
+                                className="w-[32px] h-[32px] rounded-full flex items-center justify-center p-0 transition-all duration-150 group"
+                                style={{
+                                    background: 'rgba(255,255,255,0.15)',
+                                    border: 'none',
+                                }}
+                                title="Stop generating"
+                            >
+                                <motion.div
+                                    animate={{ scale: [1, 1.1, 1] }}
+                                    transition={{ repeat: Infinity, duration: 1, ease: "easeInOut" }}
+                                >
+                                    <Square className="w-3 h-3 text-white/70 group-hover:text-white" />
+                                </motion.div>
+                            </button>
+                        ) : (
+                            <button
+                                onClick={handleSend}
+                                disabled={!inputValue.trim() || isLoading || isLoadingHistory}
+                                className="w-[32px] h-[32px] rounded-full flex items-center justify-center p-0 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+                                style={{
+                                    background: team === 'red' ? 'rgba(220,38,38,0.8)' : 'rgba(37,99,235,0.8)',
+                                    border: `1px solid ${team === 'red' ? 'rgba(220,38,38,0.6)' : 'rgba(37,99,235,0.6)'}`,
+                                }}
+                            >
+                                <ArrowUp className="w-4 h-4 text-white" />
+                            </button>
+                        )}
+                    </div>
+                </div>
             </div>
         </div>
     );
@@ -372,6 +453,7 @@ export function TeamChat() {
     const [error, setError] = useState<string | null>(null);
     const [activeTeam, setActiveTeam] = useState<'red' | 'blue'>('red');
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
@@ -1004,28 +1086,89 @@ export function TeamChat() {
     };
 
     return (
-        <div className="w-full h-[calc(100vh-80px)] flex flex-col font-sans overflow-hidden relative bg-[#0c0c0e] isolation-isolate">
-            {/* Block video background */}
-            <div className="fixed inset-0 bg-[#0c0c0e] -z-[1]" />
+        <div className="w-full h-[calc(100vh-80px)] flex flex-col font-sans overflow-hidden relative isolation-isolate">
+            {/* No solid background - video shows through */}
+
+            {/* Frost/Blur Overlay - sits on top of background video but behind chat content */}
+            <div
+                style={{
+                    position: 'absolute',
+                    inset: 0,
+                    backdropFilter: 'blur(40px)',
+                    WebkitBackdropFilter: 'blur(40px)',
+                    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+                    zIndex: 1,
+                    pointerEvents: 'none'
+                }}
+            />
+
+            {/* Aurora Glow Overlay - team-specific */}
+            <div
+                className="absolute pointer-events-none"
+                style={{
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    height: '60%',
+                    zIndex: 2,
+                    background: activeTeam === 'red'
+                        ? 'radial-gradient(ellipse at 50% 120%, rgba(220,38,38,0.12) 0%, transparent 60%)'
+                        : 'radial-gradient(ellipse at 50% 120%, rgba(37,99,235,0.12) 0%, transparent 60%)'
+                }}
+            />
+
             <div className={cn("flex h-full w-full flex-col md:flex-row overflow-hidden")}>
-                {/* Desktop Sidebar */}
-                <div className={cn("hidden md:flex w-[260px] flex-col h-full bg-[#111116] border-r border-white/[0.06] relative shrink-0 z-10 transition-colors duration-700")}>
+                {/* Desktop Sidebar - Collapsible */}
+                <div
+                    className={cn(
+                        "hidden md:flex flex-col h-full relative shrink-0 z-10 overflow-hidden",
+                        isSidebarOpen ? "w-[200px]" : "w-0"
+                    )}
+                    style={{
+                        background: isSidebarOpen ? 'rgba(8,8,12,0.75)' : 'transparent',
+                        backdropFilter: 'blur(24px)',
+                        borderRight: isSidebarOpen ? '1px solid rgba(255,255,255,0.08)' : 'none',
+                        transition: 'width 250ms ease, background 250ms ease, border 250ms ease'
+                    }}
+                >
+                    {/* Toggle Button - Inside Sidebar (shown when open) */}
+                    {isSidebarOpen && (
+                        <div className="px-3 pt-3 pb-2">
+                            <button
+                                onClick={() => setIsSidebarOpen(false)}
+                                className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg transition-all hover:bg-white/10"
+                                style={{
+                                    background: 'rgba(255,255,255,0.06)',
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    borderRadius: '8px',
+                                }}
+                            >
+                                <PanelLeft className="w-3.5 h-3.5 text-white/70" />
+                            </button>
+                        </div>
+                    )}
                     {/* Top Brand Area */}
                     <div className="px-4 pt-4 pb-3 border-b border-white/[0.06] shrink-0">
-                        <div className="font-['Syne'] font-[700] text-[0.9375rem] text-[#e8e8f0]">VibeCheck</div>
-                        <div className="font-['Syne'] font-[600] text-[1.125rem] text-white mt-[2px]">Team Chat</div>
+                        <div className="font-['Syne'] font-[700] text-[0.9375rem] text-white/90 tracking-wide">VibeCheck</div>
+                        <div className="font-['Syne'] font-[600] text-[1.125rem] text-white/90 tracking-wide mt-[2px]">Team Chat</div>
                     </div>
 
                     {/* Conversations History */}
                     <div className="flex-1 overflow-y-auto px-3 py-3">
-                        <div className="font-['Inter'] font-[500] text-[0.625rem] text-[#44444f] tracking-[0.12em] px-1 mb-2 uppercase">CONVERSATIONS</div>
+                        <div className="font-['Inter'] font-[500] text-[0.625rem] text-white/50 tracking-[0.12em] px-1 mb-2 uppercase">CONVERSATIONS</div>
 
                         <button
                             onClick={handleNewChat}
-                            className="w-full px-3 py-2 mb-3 bg-white/[0.04] border border-white/[0.08] backdrop-blur-[16px] rounded-xl flex items-center gap-2 hover:bg-white/[0.07] hover:border-white/[0.14] transition-spring-stiffness-300-damping-25 group"
+                            className="w-full px-3 py-2 mb-3 border rounded-xl flex items-center gap-2 group transition-all"
+                            style={{
+                                background: 'rgba(255,255,255,0.04)',
+                                borderColor: 'rgba(255,255,255,0.1)',
+                                backdropFilter: 'blur(16px)',
+                                borderRadius: '16px'
+                            }}
                         >
-                            <Plus className="w-[13px] h-[13px] text-[#6b6b7a] group-hover:text-[#e8e8f0] transition-colors" />
-                            <span className="font-['Inter'] font-[400] text-[0.8125rem] text-[#9090a0] group-hover:text-[#e8e8f0] transition-colors">New Chat</span>
+                            <Plus className="w-[13px] h-[13px] text-white/50 group-hover:text-white transition-colors" />
+                            <span className="font-['Inter'] font-[400] text-[0.8125rem] text-white/70 group-hover:text-white/90 transition-colors">New Chat</span>
                         </button>
 
                         {conversations.length > 0 ? (
@@ -1047,14 +1190,18 @@ export function TeamChat() {
                                         <button
                                             onClick={() => handleSessionSwitch(conv.id)}
                                             className={cn(
-                                                "w-full px-3 py-2 rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150 hover:bg-white/[0.05]",
+                                                "w-full px-3 py-2 rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150",
                                                 conv.id === currentSessionId
-                                                    ? "bg-white/[0.08] text-[#e8e8f0] my-0.5"
-                                                    : "text-[#6b6b7a] hover:text-[#e8e8f0]"
+                                                    ? "bg-white/[0.08] text-white/90 my-0.5"
+                                                    : "text-white/50 hover:text-white/90 hover:bg-white/[0.06]"
                                             )}
+                                            style={{
+                                                background: conv.id === currentSessionId ? 'rgba(255,255,255,0.08)' : 'transparent',
+                                                backdropFilter: 'blur(10px)'
+                                            }}
                                         >
-                                            <MessageSquare className="w-[13px] h-[13px] text-[#44444f] shrink-0" />
-                                            <span className="font-['Inter'] font-[400] text-[0.8125rem] text-[#9090a0] truncate flex-1 text-left">{conv.title}</span>
+                                            <MessageSquare className="w-[13px] h-[13px] text-white/30 shrink-0" />
+                                            <span className="font-['Inter'] font-[400] text-[0.8125rem] text-white/70 truncate flex-1 text-left">{conv.title}</span>
                                             <button
                                                 onClick={(e) => {
                                                     e.stopPropagation();
@@ -1138,7 +1285,21 @@ export function TeamChat() {
                 </div>
 
                 {/* Main Content Area */}
-                <main className="flex-1 w-full h-full relative overflow-hidden flex flex-col min-h-[60vh] md:min-h-0 min-w-0">
+                <main className="flex-1 w-full h-full relative overflow-hidden flex flex-col min-h-[60vh] md:min-h-0 min-w-0 z-1">
+                    {/* Toggle Button - Shown when sidebar is closed */}
+                    {!isSidebarOpen && (
+                        <button
+                            onClick={() => setIsSidebarOpen(true)}
+                            className="absolute top-4 left-4 z-10 flex items-center justify-center gap-1.5 p-1.5 rounded-lg transition-all hover:bg-white/10"
+                            style={{
+                                background: 'rgba(255,255,255,0.06)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                            }}
+                        >
+                            <PanelRight className="w-3.5 h-3.5 text-white/70" />
+                        </button>
+                    )}
                     <ChatPanel
                         team={activeTeam}
                         messages={messages}
@@ -1163,7 +1324,13 @@ export function TeamChat() {
                 </main>
 
                 {/* Mobile Bottom Tab Bar */}
-                <div className="md:hidden fixed bottom-0 inset-x-0 h-[56px] bg-white/[0.05] backdrop-blur-[20px] border-t border-white/[0.08] z-50 flex items-center justify-around px-4">
+                <div className="md:hidden fixed bottom-0 inset-x-0 h-[56px] flex items-center justify-around px-4 z-50"
+                    style={{
+                        background: 'rgba(255,255,255,0.05)',
+                        backdropFilter: 'blur(20px)',
+                        borderTop: '1px solid rgba(255,255,255,0.08)'
+                    }}
+                >
                     <button
                         onClick={() => handleTeamSwitch('red')}
                         className={cn(
