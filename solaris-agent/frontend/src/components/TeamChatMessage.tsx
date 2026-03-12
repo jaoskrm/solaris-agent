@@ -323,13 +323,13 @@ export function TeamChatMessage({
                 style={{
                     background: msg.isUser
                         ? 'rgba(255,255,255,0.07)'
-                        : 'rgba(0,0,0,0.45)',
+                        : 'rgba(0,0,0,0.4)',
                     border: msg.isUser ? '1px solid rgba(255,255,255,0.1)' : '1px solid rgba(255,255,255,0.07)',
-                    borderRadius: '18px',
+                    borderRadius: '16px',
                     padding: msg.isUser ? '10px 16px' : '16px 20px',
-                    maxWidth: msg.isUser ? '60%' : '78%',
+                    maxWidth: msg.isUser ? '65%' : '78%',
                     marginRight: msg.isUser ? '32px' : undefined,
-                    marginLeft: msg.isUser ? undefined : '32px',
+                    marginLeft: msg.isUser ? 'auto' : '32px',
                     backdropFilter: msg.isUser ? 'blur(20px)' : 'blur(20px)',
                     boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
                     zIndex: 2,

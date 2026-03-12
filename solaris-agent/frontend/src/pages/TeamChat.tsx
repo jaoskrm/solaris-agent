@@ -102,8 +102,11 @@ function ChatPanel({
     const isRed = team === 'red';
     const scrollRef = useRef<HTMLDivElement>(null);
     const dropdownRef = useRef<HTMLDivElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+    const [attachment, setAttachment] = useState<File | null>(null);
+    const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
 
     // Close dropdown on click outside
     useEffect(() => {
@@ -288,13 +291,87 @@ function ChatPanel({
                 maxWidth: '680px',
                 width: '100%',
                 margin: '0 auto 24px auto',
-                padding: '14px 16px',
-                background: 'rgba(20, 20, 28, 0.75)',
-                backdropFilter: 'blur(24px)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: '16px'
+                padding: '12px 14px',
+                background: 'rgba(255,255,255,0.08)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '8px'
             }}>
-                {/* Textarea - Full width at top */}
+                {/* Team Selector - Above textarea */}
+                <div className="relative mb-3" ref={dropdownRef} style={{ width: 'fit-content' }}>
+                    <button
+                        onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                        className="px-3 py-1 border rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150"
+                        style={{
+                            background: 'rgba(255,255,255,0.04)',
+                            borderColor: 'rgba(255,255,255,0.1)',
+                            backdropFilter: 'blur(16px)'
+                        }}
+                    >
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: activeTeam === 'red' ? '#ef4444' : '#3b82f6' }} />
+                        <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/90 tracking-wide">
+                            {activeTeam === 'red' ? 'Red Team' : 'Blue Team'}
+                        </span>
+                        <ChevronUp className="w-[12px] h-[12px] text-white/40" />
+                    </button>
+
+                    {/* Upward Dropdown Menu */}
+                    <AnimatePresence>
+                        {isDropdownOpen && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                                transition={{ duration: 0.15, ease: "easeOut" }}
+                                className="absolute bottom-[calc(100%+8px)] left-0 min-w-[200px] z-50 overflow-hidden"
+                                style={{
+                                    background: 'rgba(15, 15, 20, 0.95)',
+                                    backdropFilter: 'blur(20px)',
+                                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                                    borderRadius: '12px',
+                                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.6)',
+                                    padding: '6px'
+                                }}
+                            >
+                                <button
+                                    onClick={() => { setActiveTeam('red'); setIsDropdownOpen(false); }}
+                                    className="w-full rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150"
+                                    style={{
+                                        padding: '10px 14px',
+                                        borderRadius: '8px',
+                                        background: activeTeam === 'red' ? 'rgba(220, 38, 38, 0.2)' : 'transparent',
+                                        color: activeTeam === 'red' ? '#ffffff' : 'rgba(255, 255, 255, 0.9)'
+                                    }}
+                                >
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#ef4444' }} />
+                                    <div className="flex flex-col items-start">
+                                        <span className="font-['Inter'] font-[500] text-[0.875rem]" style={{ color: 'rgba(255, 255, 255, 0.9)' }}>Red Team</span>
+                                        <span className="font-['JetBrains_Mono'] font-[400]" style={{ color: 'rgba(255, 255, 255, 0.45)', fontSize: '0.75rem' }}>Commander</span>
+                                    </div>
+                                    {activeTeam === 'red' && <Check className="w-[13px] h-[13px] ml-auto" style={{ color: 'white', opacity: 1 }} />}
+                                </button>
+                                <button
+                                    onClick={() => { setActiveTeam('blue'); setIsDropdownOpen(false); }}
+                                    className="w-full rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150"
+                                    style={{
+                                        padding: '10px 14px',
+                                        borderRadius: '8px',
+                                        background: activeTeam === 'blue' ? 'rgba(37, 99, 235, 0.2)' : 'transparent',
+                                        color: activeTeam === 'blue' ? '#ffffff' : 'rgba(255, 255, 255, 0.9)'
+                                    }}
+                                >
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#3b82f6' }} />
+                                    <div className="flex flex-col items-start">
+                                        <span className="font-['Inter'] font-[500] text-[0.875rem]" style={{ color: 'rgba(255, 255, 255, 0.9)' }}>Blue Team</span>
+                                        <span className="font-['JetBrains_Mono'] font-[400]" style={{ color: 'rgba(255, 255, 255, 0.45)', fontSize: '0.75rem' }}>Analysis</span>
+                                    </div>
+                                    {activeTeam === 'blue' && <Check className="w-[13px] h-[13px] ml-auto" style={{ color: 'white', opacity: 1 }} />}
+                                </button>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+
+                {/* Textarea - Full width */}
                 <textarea
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
@@ -304,8 +381,9 @@ function ChatPanel({
                     rows={1}
                     className="w-full font-['Inter'] text-[0.875rem] text-white/90 placeholder:font-['Inter'] placeholder:text-white/30 focus:ring-0 outline-none resize-none"
                     style={{
-                        minHeight: '60px',
+                        minHeight: '36px',
                         maxHeight: '200px',
+                        height: 'auto',
                         background: 'transparent',
                         border: 'none',
                         borderRadius: '0',
@@ -314,131 +392,88 @@ function ChatPanel({
                     }}
                 />
 
-                {/* Bottom row - flex with space-between */}
-                <div className="flex items-center justify-between">
-                    {/* Left side: Plus, Divider, Team Selector */}
-                    <div className="flex items-center gap-3">
-                        {/* Team Selector */}
-                        <div className="relative" ref={dropdownRef}>
-                            <button
-                                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                                className="px-3 py-1 border rounded-lg flex items-center gap-2 cursor-pointer transition-all duration-150"
-                                style={{
-                                    background: 'rgba(255,255,255,0.04)',
-                                    borderColor: 'rgba(255,255,255,0.1)',
-                                    backdropFilter: 'blur(16px)'
-                                }}
-                            >
-                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: activeTeam === 'red' ? '#ef4444' : '#3b82f6' }} />
-                                <span className="font-['Inter'] font-[500] text-[0.8125rem] text-white/90 tracking-wide">
-                                    {activeTeam === 'red' ? 'Red Team' : 'Blue Team'}
-                                </span>
-                                <ChevronUp className="w-[12px] h-[12px] text-white/40" />
-                            </button>
-
-                            {/* Upward Dropdown Menu */}
-                            <AnimatePresence>
-                                {isDropdownOpen && (
-                                    <motion.div
-                                        initial={{ opacity: 0, y: 8, scale: 0.97 }}
-                                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                                        exit={{ opacity: 0, y: 8, scale: 0.97 }}
-                                        transition={{ duration: 0.15, ease: "easeOut" }}
-                                        className="absolute bottom-[calc(100%+8px)] left-0 min-w-[200px] z-50 overflow-hidden"
-                                        style={{
-                                            background: 'rgba(15, 15, 20, 0.95)',
-                                            backdropFilter: 'blur(20px)',
-                                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                                            borderRadius: '12px',
-                                            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.6)',
-                                            padding: '6px'
-                                        }}
-                                    >
-                                        <button
-                                            onClick={() => { setActiveTeam('red'); setIsDropdownOpen(false); }}
-                                            className="w-full rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150"
-                                            style={{
-                                                padding: '10px 14px',
-                                                borderRadius: '8px',
-                                                background: activeTeam === 'red' ? 'rgba(220, 38, 38, 0.2)' : 'transparent',
-                                                color: activeTeam === 'red' ? '#ffffff' : 'rgba(255, 255, 255, 0.9)'
-                                            }}
-                                        >
-                                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#ef4444' }} />
-                                            <div className="flex flex-col items-start">
-                                                <span className="font-['Inter'] font-[500] text-[0.875rem]" style={{ color: 'rgba(255, 255, 255, 0.9)' }}>Red Team</span>
-                                                <span className="font-['JetBrains_Mono'] font-[400]" style={{ color: 'rgba(255, 255, 255, 0.45)', fontSize: '0.75rem' }}>Commander</span>
-                                            </div>
-                                            {activeTeam === 'red' && <Check className="w-[13px] h-[13px] ml-auto" style={{ color: 'white', opacity: 1 }} />}
-                                        </button>
-                                        <button
-                                            onClick={() => { setActiveTeam('blue'); setIsDropdownOpen(false); }}
-                                            className="w-full rounded-lg flex items-center gap-3 cursor-pointer transition-all duration-150"
-                                            style={{
-                                                padding: '10px 14px',
-                                                borderRadius: '8px',
-                                                background: activeTeam === 'blue' ? 'rgba(37, 99, 235, 0.2)' : 'transparent',
-                                                color: activeTeam === 'blue' ? '#ffffff' : 'rgba(255, 255, 255, 0.9)'
-                                            }}
-                                        >
-                                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#3b82f6' }} />
-                                            <div className="flex flex-col items-start">
-                                                <span className="font-['Inter'] font-[500] text-[0.875rem]" style={{ color: 'rgba(255, 255, 255, 0.9)' }}>Blue Team</span>
-                                                <span className="font-['JetBrains_Mono'] font-[400]" style={{ color: 'rgba(255, 255, 255, 0.45)', fontSize: '0.75rem' }}>Analysis</span>
-                                            </div>
-                                            {activeTeam === 'blue' && <Check className="w-[13px] h-[13px] ml-auto" style={{ color: 'white', opacity: 1 }} />}
-                                        </button>
-                                    </motion.div>
-                                )}
-                            </AnimatePresence>
-                        </div>
-                    </div>
-
-                    {/* Right side: Attachment, Send/Stop */}
-                    <div className="flex items-center gap-3">
-                        {/* Attachment icon */}
+                {/* Attachment Preview - Above textarea */}
+                {attachmentPreview && (
+                    <div className="relative mb-3" style={{ width: '80px', height: '80px' }}>
+                        <img
+                            src={attachmentPreview}
+                            alt="Attachment preview"
+                            className="w-full h-full rounded-lg object-cover"
+                        />
                         <button
-                            className="flex items-center justify-center transition-colors duration-200 ease"
-                            style={{ color: 'rgba(255,255,255,0.4)' }}
-                            onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.8)'}
-                            onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.4)'}
-                            title="Attach file"
+                            onClick={() => { setAttachment(null); setAttachmentPreview(null); }}
+                            className="absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center"
+                            style={{ background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(255,255,255,0.2)' }}
+                            title="Remove attachment"
                         >
-                            <Paperclip className="w-4 h-4" />
+                            <span style={{ color: 'white', fontSize: '12px', lineHeight: 1 }}>×</span>
                         </button>
-
-                        {/* Send or Stop button */}
-                        {isStreaming ? (
-                            <button
-                                onClick={onStop}
-                                className="w-[32px] h-[32px] rounded-full flex items-center justify-center p-0 transition-all duration-150 group"
-                                style={{
-                                    background: 'rgba(255,255,255,0.15)',
-                                    border: 'none',
-                                }}
-                                title="Stop generating"
-                            >
-                                <motion.div
-                                    animate={{ scale: [1, 1.1, 1] }}
-                                    transition={{ repeat: Infinity, duration: 1, ease: "easeInOut" }}
-                                >
-                                    <Square className="w-3 h-3 text-white/70 group-hover:text-white" />
-                                </motion.div>
-                            </button>
-                        ) : (
-                            <button
-                                onClick={handleSend}
-                                disabled={!inputValue.trim() || isLoading || isLoadingHistory}
-                                className="w-[32px] h-[32px] rounded-full flex items-center justify-center p-0 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
-                                style={{
-                                    background: team === 'red' ? 'rgba(220,38,38,0.8)' : 'rgba(37,99,235,0.8)',
-                                    border: `1px solid ${team === 'red' ? 'rgba(220,38,38,0.6)' : 'rgba(37,99,235,0.6)'}`,
-                                }}
-                            >
-                                <ArrowUp className="w-4 h-4 text-white" />
-                            </button>
-                        )}
                     </div>
+                )}
+
+                {/* Hidden file input */}
+                <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                            setAttachment(file);
+                            const reader = new FileReader();
+                            reader.onload = () => setAttachmentPreview(reader.result as string);
+                            reader.readAsDataURL(file);
+                        }
+                    }}
+                    accept="image/*"
+                    className="hidden"
+                    id="attachment-input"
+                />
+
+                {/* Bottom row - paperclip and send button only */}
+                <div className="flex items-center justify-end gap-3">
+                    {/* Attachment icon */}
+                    <button
+                        className="flex items-center justify-center transition-colors duration-200 ease"
+                        style={{ color: 'rgba(255,255,255,0.4)' }}
+                        onClick={() => fileInputRef.current?.click()}
+                        onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.8)'}
+                        onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.4)'}
+                        title="Attach file"
+                    >
+                        <Paperclip className="w-4 h-4" />
+                    </button>
+
+                    {/* Send or Stop button */}
+                    {isStreaming ? (
+                        <button
+                            onClick={onStop}
+                            className="w-[32px] h-[32px] rounded-full flex items-center justify-center p-0 transition-all duration-150 group"
+                            style={{
+                                background: 'rgba(255,255,255,0.15)',
+                                border: 'none',
+                            }}
+                            title="Stop generating"
+                        >
+                            <motion.div
+                                animate={{ scale: [1, 1.1, 1] }}
+                                transition={{ repeat: Infinity, duration: 1, ease: "easeInOut" }}
+                            >
+                                <Square className="w-3 h-3 text-white/70 group-hover:text-white" />
+                            </motion.div>
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleSend}
+                            disabled={!inputValue.trim() || isLoading || isLoadingHistory}
+                            className="w-[32px] h-[32px] rounded-full flex items-center justify-center p-0 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+                            style={{
+                                background: team === 'red' ? 'rgba(220,38,38,0.8)' : 'rgba(37,99,235,0.8)',
+                                border: `1px solid ${team === 'red' ? 'rgba(220,38,38,0.6)' : 'rgba(37,99,235,0.6)'}`,
+                            }}
+                        >
+                            <ArrowUp className="w-4 h-4 text-white" />
+                        </button>
+                    )}
                 </div>
             </div>
         </div>
@@ -1096,7 +1131,7 @@ export function TeamChat() {
                     inset: 0,
                     backdropFilter: 'blur(40px)',
                     WebkitBackdropFilter: 'blur(40px)',
-                    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+                    backgroundColor: 'rgba(0, 0, 0, 0.15)',
                     zIndex: 1,
                     pointerEvents: 'none'
                 }}
