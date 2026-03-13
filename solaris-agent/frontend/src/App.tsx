@@ -144,21 +144,17 @@ export default function App() {
         </div>
 
         {/* Right: GitHub + Start Scanning */}
-        <div className="flex items-center gap-6 text-sm font-medium">
-          {location.pathname === '/' && (
-            <>
-              <a href="#" className="hidden md:flex items-center gap-2 text-gray-300 hover:text-white transition-colors" aria-label="View on GitHub">
-                <Github className="w-4 h-4" aria-hidden="true" />
-                GitHub
-              </a>
-              <MagneticButton
-                onClick={() => navigate('/pipeline')}
-                aria-label="Start a security scan"
-              >
-                Start Scanning
-              </MagneticButton>
-            </>
-          )}
+        <div className="flex items-center gap-6 text-sm font-medium ml-auto">
+          <a href="#" className="hidden md:flex items-center gap-2 text-gray-300 hover:text-white transition-colors" aria-label="View on GitHub">
+            <Github className="w-4 h-4" aria-hidden="true" />
+            GitHub
+          </a>
+          <MagneticButton
+            onClick={() => navigate('/pipeline')}
+            aria-label="Start a security scan"
+          >
+            Start Scanning
+          </MagneticButton>
         </div>
       </nav>
 
