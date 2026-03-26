@@ -24,7 +24,7 @@ from typing import Any
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tstypes
 import tree_sitter_python as tspy
-from tree_sitter import Language, Parser, Node, Tree, QueryCursor
+from tree_sitter import Language, Parser, Node, Tree
 
 logger = logging.getLogger(__name__)
 
@@ -342,9 +342,7 @@ class CodeParser:
             ]
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         for capture_name, capture_nodes in captures.items():
@@ -411,9 +409,7 @@ class CodeParser:
         """Extract Express route definitions."""
         nodes: list[ParsedNode] = []
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # Group captures by call_expression node
         # Use start_byte as unique identifier since id() can vary for same logical node
@@ -558,9 +554,7 @@ class CodeParser:
             ]
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         # For this query, there's no capture name, so we iterate over all nodes
@@ -652,9 +646,7 @@ class CodeParser:
         """Extract ORM method calls (Sequelize/Mongoose patterns)."""
         nodes: list[ParsedNode] = []
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # Group captures by call_expression
         call_nodes: dict[int, dict[str, Node]] = {}
@@ -794,9 +786,7 @@ class CodeParser:
                 source: (string) @source)
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(import_query)
-        captures = cursor.captures(root)
+        captures = import_query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         for capture_name, capture_nodes in captures.items():
@@ -828,9 +818,7 @@ class CodeParser:
                 arguments: (arguments (string) @source))
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(require_query)
-        captures = cursor.captures(root)
+        captures = require_query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         for capture_name, capture_nodes in captures.items():
@@ -877,9 +865,7 @@ class CodeParser:
                 name: (identifier) @name)
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         for capture_name, capture_nodes in captures.items():
@@ -925,9 +911,7 @@ class CodeParser:
                 name: (identifier) @name)
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         for capture_name, capture_nodes in captures.items():
@@ -967,9 +951,7 @@ class CodeParser:
             ]
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         for capture_name, capture_nodes in captures.items():
@@ -1014,9 +996,7 @@ class CodeParser:
             ]
         """)
         
-        # Use QueryCursor for tree-sitter v0.24
-        cursor = QueryCursor(query)
-        captures = cursor.captures(root)
+        captures = query.captures(root)
         
         # tree-sitter v0.24 returns dict: {capture_name: [nodes]}
         for capture_name, capture_nodes in captures.items():

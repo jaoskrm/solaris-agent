@@ -78,6 +78,7 @@ class RedTeamState(TypedDict):
     # "live" for running app URL, "static" for code/repo analysis
     mode: str | None  # Optional: will be auto-detected if not provided
     fast_mode: bool  # Skip recon tools for faster execution
+    repo_url: str | None  # GitHub repository URL if mode == "repo"
 
 
 def detect_target_type(target: str) -> str:

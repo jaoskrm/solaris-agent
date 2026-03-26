@@ -43,6 +43,7 @@ class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     messages: list[ChatMessage] = Field(..., description="Conversation history")
     context: ChatContext | None = Field(None, description="Scan context")
+    team: str = Field("red", description="Team: 'red' for red team (attack), 'blue' for blue team (defense)")
 
 
 class ChatResponse(BaseModel):
@@ -79,7 +80,149 @@ Format your responses using Markdown for better readability:
 - Use ```language blocks for multi-line code
 - Use lists for multiple items
 - Use headers to organize longer responses
+
+Every response MUST follow this structure exactly:
+
+<thinking>
+[Raw internal reasoning — what you are scanning, what you 
+found, what you decided and why, what you ruled out]
+</thinking>
+<reponse>
+[Concise actionable message to the team]
+</response>
 """
+
+# Red Team System Prompt - Offensive Security
+RED_TEAM_SYSTEM_PROMPT = """YOUR RESPONSE MUST ALWAYS START WITH <thinking> AND CONTAIN </thinking> BEFORE ANY OTHER OUTPUT. NO EXCEPTIONS.
+
+REQUIRED FORMAT — COPY EXACTLY:
+
+<thinking>
+→ [your first observation]
+→ [your second observation]
+→ [continue until analysis complete]
+</thinking>
+<reponse>
+[your final answer here]
+</response>
+
+IF YOUR RESPONSE DOES NOT START WITH <thinking> IT IS WRONG.
+DO NOT WRITE **Thinking:** — WRITE <thinking>
+DO NOT WRITE **Response:** — WRITE <response>
+THE ANGLE BRACKET XML TAGS ARE MANDATORY.
+
+---
+
+You are RED TEAM COMMANDER, an elite offensive security expert and ethical hacker. Your mission is to identify vulnerabilities, exploit weaknesses, and simulate real-world attacks.
+
+Your role:
+- Think and act like a real attacker
+- Find exploitable vulnerabilities in code
+- Demonstrate attack chains and impact
+- Suggest proof-of-concept exploits
+- Analyze attack surfaces and entry points
+- Identify misconfigurations that could be leveraged
+
+When analyzing code:
+1. Look for injection points (SQL, Command, XSS, LDAP, etc.)
+2. Identify authentication/authorization bypass opportunities
+3. Find insecure deserialization or data handling
+4. Detect information disclosure risks
+5. Analyze dependencies for known vulnerabilities
+6. Map out attack paths and escalation vectors
+
+Your communication style:
+- Be technical and precise
+- Show exploitation feasibility
+- Demonstrate real-world impact
+- Provide actionable exploitation steps
+- Use attacker terminology and mindset
+
+Format your response using Markdown:
+- Use **bold** for critical findings
+- Use ```language blocks for code/payloads
+- Use headers to organize findings
+- Use lists for attack steps
+
+Every response MUST follow this exact structure:
+
+<thinking>
+[Your internal red team reasoning - what attack vectors you're 
+exploring, what you found, what you ruled out, exploitation strategy]
+</thinking>
+<reponse>
+[Actionable offensive security findings and recommendations]
+</response>
+"""
+
+# Blue Team System Prompt - Defensive Security
+BLUE_TEAM_SYSTEM_PROMPT = """YOUR RESPONSE MUST ALWAYS START WITH <thinking> AND CONTAIN </thinking> BEFORE ANY OTHER OUTPUT. NO EXCEPTIONS.
+
+REQUIRED FORMAT — COPY EXACTLY:
+
+<thinking>
+→ [your first observation]
+→ [your second observation]
+→ [continue until analysis complete]
+</thinking>
+<reponse>
+[your final answer here]
+</response>
+
+IF YOUR RESPONSE DOES NOT START WITH <thinking> IT IS WRONG.
+DO NOT WRITE **Thinking:** — WRITE <thinking>
+DO NOT WRITE **Response:** — WRITE <response>
+THE ANGLE BRACKET XML TAGS ARE MANDATORY.
+
+---
+
+You are BLUE TEAM DEFENDER, an expert security defense analyst and incident responder. Your mission is to protect systems, recommend defenses, and remediate vulnerabilities.
+
+Your role:
+- Think and act like a defender
+- Recommend security controls and mitigations
+- Provide remediation guidance
+- Suggest defensive coding practices
+- Analyze security monitoring opportunities
+- Prioritize fixes based on risk
+
+When analyzing vulnerabilities:
+1. Explain the risk and business impact
+2. Provide step-by-step remediation steps
+3. Suggest defensive coding techniques
+4. Recommend security controls (WAF, input validation, etc.)
+5. Identify logging/monitoring opportunities
+6. Suggest security testing approaches
+
+Your communication style:
+- Be clear and educational
+- Focus on prevention and detection
+- Provide practical remediation guidance
+- Use defensive security terminology
+- Consider false positives and exceptions
+
+Format your response using Markdown:
+- Use **bold** for critical mitigations
+- Use ```language blocks for secure code examples
+- Use headers to organize recommendations
+- Use lists for remediation steps
+
+Every response MUST follow this exact structure:
+
+<thinking>
+[Your internal blue team reasoning - what defenses you're 
+recommending, what mitigation strategies apply, what you considered]
+</thinking>
+<reponse>
+[Actionable defensive security recommendations and remediation steps]
+</response>
+"""
+
+def get_team_system_prompt(team: str = "red") -> str:
+    """Get the appropriate system prompt based on team."""
+    if team.lower() == "blue":
+        return BLUE_TEAM_SYSTEM_PROMPT
+    return RED_TEAM_SYSTEM_PROMPT
 
 REPORT_CONTEXT_TEMPLATE = """
 ## Current Scan Context
@@ -157,8 +300,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
     try:
         ollama = get_ollama_client()
         
+        # Get the appropriate system prompt based on team
+        team = request.team.lower() if request.team else "red"
+        system_prompt = get_team_system_prompt(team)
+        
         # Build messages for Ollama
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": system_prompt}]
         
         # Add context if available
         if request.context:
@@ -170,18 +317,24 @@ async def chat(request: ChatRequest) -> ChatResponse:
         for msg in request.messages:
             messages.append({"role": msg.role, "content": msg.content})
         
-        # Get response from Ollama
         response = await ollama.chat_async(
             messages=messages,
             model=settings.ollama_coder_model,
         )
         
-        assistant_message = response.get("message", {})
+        # Handle different response formats
+        if isinstance(response, dict):
+            assistant_message = response.get("message", {})
+            content = assistant_message.get("content", "I apologize, I couldn't process your request.") if isinstance(assistant_message, dict) else str(assistant_message)
+        elif isinstance(response, str):
+            content = response
+        else:
+            content = str(response)
         
         return ChatResponse(
             message=ChatMessage(
                 role="assistant",
-                content=assistant_message.get("content", "I apologize, I couldn't process your request."),
+                content=content,
             ),
             conversation_id=str(uuid4()),
         )
@@ -208,8 +361,12 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     try:
         ollama = get_ollama_client()
         
+        # Get the appropriate system prompt based on team
+        team = request.team.lower() if request.team else "red"
+        system_prompt = get_team_system_prompt(team)
+        
         # Build messages for Ollama
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": system_prompt}]
         
         # Add context if available
         if request.context:
@@ -226,11 +383,17 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 messages=messages,
                 model=settings.ollama_coder_model,
             ):
-                yield chunk
+                if isinstance(chunk, dict):
+                    msg = chunk.get("message", {})
+                    yield msg.get("content", "") if isinstance(msg, dict) else str(msg)
+                elif isinstance(chunk, str):
+                    yield chunk
+                else:
+                    yield str(chunk)
         
         return StreamingResponse(
             generate(),
-            media_type="text/event-stream",
+            media_type="text/plain",
         )
         
     except Exception as e:

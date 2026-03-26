@@ -170,6 +170,38 @@ class OllamaClient:
 
         return response["message"]["content"]
 
+    async def chat_stream_async(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        **kwargs: Any,
+    ):
+        """
+        Generate a streaming chat completion (async).
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            model: Model to use (defaults to coder model)
+            **kwargs: Additional parameters (temperature, etc.)
+
+        Yields:
+            Chunks of the generated response
+        """
+        model = model or self._coder_model
+        logger.debug(f"Streaming chat completion with {model}, {len(messages)} messages")
+
+        response = await self.async_client.chat(
+            model=model,
+            messages=messages,
+            stream=True,
+            **kwargs,
+        )
+        async for chunk in response:
+            if "message" in chunk and "content" in chunk["message"]:
+                yield chunk["message"]["content"]
+            elif "content" in chunk:
+                yield chunk["content"]
+
     def complete(
         self,
         prompt: str,

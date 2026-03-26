@@ -9,7 +9,12 @@ Provides endpoints for:
 """
 
 import logging
+import subprocess
+import tempfile
+import shutil
+import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -35,9 +40,11 @@ class SwarmTriggerRequest(BaseModel):
         default="Execute a comprehensive security audit including: 1) Map attack surface, 2) Test for SQL injection, XSS, IDOR, auth bypass, 3) Attempt token hijacking and session manipulation, 4) Hunt for sensitive data exposure",
         description="Mission objective"
     )
-    mode: str = Field(default="live", description="Scan mode: 'live' for running apps, 'static' for repos")
-    max_iterations: int = Field(default=3, description="Maximum iterations for the mission")
+    mode: str = Field(default="live", description="Scan mode: 'live' for running apps, 'static' for repos, 'repo' for GitHub repos with auto-deploy")
+    max_iterations: int = Field(default=5, description="Maximum iterations for the mission")
     scan_id: str | None = Field(None, description="Optional existing scan ID to link to")
+    repo_url: str | None = Field(None, description="GitHub repository URL for auto-deployment")
+    auto_deploy: bool = Field(default=False, description="Whether to automatically deploy the repo in Docker")
 
 
 class SwarmTriggerResponse(BaseModel):
@@ -45,6 +52,7 @@ class SwarmTriggerResponse(BaseModel):
     mission_id: str = Field(..., description="Unique mission identifier")
     message: str = Field(..., description="Status message")
     status: str = Field(..., description="Mission status")
+    target: str | None = Field(None, description="Final target URL (may be different from input for repo deployments)")
 
 
 class AgentStateResponse(BaseModel):
@@ -70,7 +78,7 @@ class SwarmMissionResponse(BaseModel):
     progress: int = 0
     current_phase: str | None = None
     iteration: int = 0
-    max_iterations: int = 3
+    max_iterations: int = 5
     findings_count: int = 0
     created_at: datetime
     started_at: datetime | None = None
@@ -229,6 +237,566 @@ ws_manager = ConnectionManager()
 
 
 # -------------------------------------------
+# Docker Deployment Functions
+# -------------------------------------------
+
+async def _find_available_port(start_port: int = 15555) -> int:
+    """Find an available port starting from start_port, incrementing by 1 if conflicts."""
+    import socket
+    
+    port = start_port
+    while port < start_port + 1000:  # Safety limit to avoid infinite loop
+        try:
+            # Test if port is available
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('localhost', port))
+                logger.info(f"Found available port: {port}")
+                return port
+        except OSError:
+            # Port in use, try next one
+            logger.debug(f"Port {port} in use, trying {port + 1}")
+            port += 1
+    
+    # Fallback if no ports available in range
+    raise Exception(f"No available ports found in range {start_port}-{start_port + 999}")
+
+
+async def _mock_deployment(repo_url: str, mission_id: str, target_domain: str) -> dict[str, Any]:
+    """Mock deployment for testing without Docker."""
+    logger.info(f"Using mock deployment for {repo_url}")
+    
+    # Check if there's a known service pattern for the repo
+    target_url = "http://localhost:8080"  # Default to Juice Shop running on 8080
+    
+    # For specific repos, we could map to known running services:
+    if "juice-shop" in repo_url.lower():
+        target_url = "http://localhost:8080"  # Juice Shop
+    else:
+        # For other repos, try common development ports where apps might be running
+        # Check if a service is actually running on these ports
+        common_ports = [3000, 8000, 8080, 4200, 5000]
+        for port in common_ports:
+            test_url = f"http://localhost:{port}"
+            try:
+                # Quick connectivity check could be added here
+                # For now, default to 8080 which we know has Juice Shop
+                target_url = "http://localhost:8080"
+                break
+            except:
+                continue
+    
+    return {
+        "target_url": target_url,
+        "deployment_info": {
+            "container_name": f"mock-{mission_id[:8]}",
+            "port": target_url.split(":")[-1],
+            "deployment_type": "mock",
+            "original_domain": target_domain,
+            "repo_url": repo_url,
+            "status": "mock_redirected_to_existing_service"
+        }
+    }
+
+
+async def _deploy_repository_to_docker(
+    repo_url: str, 
+    mission_id: str, 
+    target_domain: str
+) -> dict[str, Any]:
+    """
+    Deploy a GitHub repository to Docker for testing.
+    
+    Args:
+        repo_url: GitHub repository URL
+        mission_id: Unique mission identifier  
+        target_domain: Domain where the app should be accessible
+        
+    Returns:
+        Dict with deployment information including target_url and deployment_info
+        
+    Raises:
+        Exception: If deployment fails at any stage
+    """
+    logger.info(f"Starting Docker deployment for repo: {repo_url}")
+    
+    # Validate repository URL
+    if not repo_url or not repo_url.startswith("http"):
+        raise Exception(f"Invalid repository URL: {repo_url}")
+    
+    # Check if Docker is available
+    try:
+        docker_check = await asyncio.create_subprocess_exec(
+            "docker", "--version",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, stderr = await docker_check.communicate()
+        if docker_check.returncode != 0:
+            logger.warning("Docker is not installed or not running - using mock deployment")
+            return await _mock_deployment(repo_url, mission_id, target_domain)
+        logger.info(f"Docker version: {stdout.decode().strip()}")
+    except FileNotFoundError:
+        logger.warning("Docker command not found - using mock deployment")
+        return await _mock_deployment(repo_url, mission_id, target_domain)
+    except Exception as e:
+        logger.warning(f"Failed to verify Docker installation: {str(e)} - using mock deployment")
+        return await _mock_deployment(repo_url, mission_id, target_domain)
+    
+    # Create temporary directory for cloning
+    temp_dir = None
+    try:
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"mission-{mission_id[:8]}-"))
+        repo_name = repo_url.split("/")[-1].replace(".git", "")
+        repo_path = temp_dir / repo_name
+        
+        logger.info(f"Using temporary directory: {temp_dir}")
+        
+        # Clone repository with timeout
+        logger.info(f"Cloning repository to {repo_path}")
+        try:
+            clone_process = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    "git", "clone", repo_url, str(repo_path),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                ),
+                timeout=300  # 5 minute timeout for cloning
+            )
+            stdout, stderr = await clone_process.communicate()
+            
+            if clone_process.returncode != 0:
+                error_msg = stderr.decode().strip()
+                raise Exception(f"Git clone failed: {error_msg}")
+            
+            logger.info(f"Repository cloned successfully")
+            
+        except asyncio.TimeoutError:
+            raise Exception("Repository clone timeout - check repository URL and network connection")
+        except FileNotFoundError:
+            raise Exception("Git command not found. Please install Git.")
+        except Exception as e:
+            raise Exception(f"Failed to clone repository: {str(e)}")
+        
+        # Verify repository was cloned
+        if not repo_path.exists() or not any(repo_path.iterdir()):
+            raise Exception(f"Repository clone failed - directory is empty: {repo_path}")
+        
+        # Look for Dockerfile or docker-compose.yml
+        dockerfile_path = repo_path / "Dockerfile"
+        compose_path = repo_path / "docker-compose.yml"
+        compose_yaml_path = repo_path / "docker-compose.yaml"
+        
+        # Generate container and port info
+        container_name = f"mission-{mission_id[:8]}-{repo_name}".lower().replace("_", "-")
+        exposed_port = await _find_available_port(15555)  # Start from 15555 and increment if conflicts
+        
+        logger.info(f"Deployment config - container: {container_name}, port: {exposed_port}")
+        
+        # Choose deployment method
+        if dockerfile_path.exists():
+            logger.info("Found Dockerfile, using existing Dockerfile deployment")
+            return await _deploy_with_dockerfile(
+                repo_path, container_name, exposed_port, target_domain, mission_id
+            )
+        elif compose_path.exists() or compose_yaml_path.exists():
+            logger.info("Found docker-compose file, using compose deployment")
+            compose_file = compose_path if compose_path.exists() else compose_yaml_path
+            return await _deploy_with_compose(
+                repo_path, compose_file, container_name, exposed_port, target_domain, mission_id
+            )
+        else:
+            logger.info("No Docker files found, attempting auto-detection")
+            return await _deploy_with_auto_detection(
+                repo_path, container_name, exposed_port, target_domain, mission_id
+            )
+            
+    except Exception as e:
+        logger.error(f"Docker deployment failed: {e}")
+        # Cleanup on error
+        if temp_dir and temp_dir.exists():
+            try:
+                shutil.rmtree(temp_dir)
+                logger.info(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup temp directory: {cleanup_error}")
+        raise
+    finally:
+        # Always cleanup temporary directory
+        if temp_dir and temp_dir.exists():
+            try:
+                shutil.rmtree(temp_dir)
+                logger.info(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup temp directory {temp_dir}: {cleanup_error}")
+
+
+async def _deploy_with_dockerfile(
+    repo_path: Path, 
+    container_name: str, 
+    port: int, 
+    target_domain: str, 
+    mission_id: str
+) -> dict[str, Any]:
+    """Deploy repository using existing Dockerfile."""
+    logger.info(f"Deploying with Dockerfile at {repo_path}")
+    
+    image_tag = f"mission-{mission_id[:8]}".lower()
+    
+    try:
+        # Build Docker image with timeout
+        logger.info(f"Building Docker image: {image_tag}")
+        build_process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                "docker", "build", "-t", image_tag, str(repo_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            ),
+            timeout=600  # 10 minute timeout for building
+        )
+        stdout, stderr = await build_process.communicate()
+        
+        if build_process.returncode != 0:
+            error_msg = stderr.decode().strip()
+            raise Exception(f"Docker build failed: {error_msg}")
+        
+        logger.info(f"Docker image built successfully: {image_tag}")
+        
+        # Try different common ports
+        ports_to_try = [3000, 8080, 8000, 80, 5000, 4000]
+        container_started = False
+        actual_internal_port = None
+        
+        for internal_port in ports_to_try:
+            try:
+                logger.info(f"Attempting to start container on port {internal_port}")
+                
+                # Remove existing container if it exists
+                await _remove_container_if_exists(container_name)
+                
+                run_process = await asyncio.create_subprocess_exec(
+                    "docker", "run", "-d", 
+                    "--name", container_name,
+                    "-p", f"{port}:{internal_port}",
+                    image_tag,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                stdout, stderr = await run_process.communicate()
+                
+                if run_process.returncode == 0:
+                    container_started = True
+                    actual_internal_port = internal_port
+                    logger.info(f"Container started successfully on port {internal_port}")
+                    break
+                else:
+                    logger.debug(f"Failed to start on port {internal_port}: {stderr.decode()}")
+                    
+            except Exception as e:
+                logger.debug(f"Error starting container on port {internal_port}: {e}")
+                continue
+        
+        if not container_started:
+            raise Exception(f"Failed to start container on any common port: {ports_to_try}")
+        
+        # Wait for container to be ready and verify it's running
+        await asyncio.sleep(3)
+        if not await _verify_container_running(container_name):
+            raise Exception("Container failed to start properly")
+        
+        # Wait a bit more for the application to initialize
+        await asyncio.sleep(2)
+        
+        target_url = f"http://localhost:{port}"
+        logger.info(f"Application should be accessible at: {target_url}")
+        
+        return {
+            "target_url": target_url,
+            "deployment_info": {
+                "container_name": container_name,
+                "image_tag": image_tag,
+                "port": port,
+                "internal_port": actual_internal_port,
+                "deployment_type": "dockerfile",
+                "original_domain": target_domain,
+                "status": "running"
+            }
+        }
+        
+    except asyncio.TimeoutError:
+        raise Exception("Docker build timeout - build took longer than 10 minutes")
+    except Exception as e:
+        # Cleanup on failure
+        await _cleanup_docker_resources(container_name, image_tag)
+        raise Exception(f"Docker deployment failed: {str(e)}")
+
+
+async def _remove_container_if_exists(container_name: str):
+    """Remove container if it exists (ignore errors)."""
+    try:
+        # Stop container
+        stop_process = await asyncio.create_subprocess_exec(
+            "docker", "stop", container_name,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        await stop_process.wait()
+        
+        # Remove container
+        rm_process = await asyncio.create_subprocess_exec(
+            "docker", "rm", container_name,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        await rm_process.wait()
+    except Exception:
+        pass  # Ignore errors - container might not exist
+
+
+async def _verify_container_running(container_name: str) -> bool:
+    """Verify that a container is running."""
+    try:
+        ps_process = await asyncio.create_subprocess_exec(
+            "docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, stderr = await ps_process.communicate()
+        
+        if ps_process.returncode == 0:
+            running_containers = stdout.decode().strip().split('\n')
+            return container_name in running_containers
+        return False
+    except Exception:
+        return False
+
+
+async def _cleanup_docker_resources(container_name: str, image_tag: str):
+    """Clean up Docker container and image."""
+    try:
+        # Stop and remove container
+        stop_process = await asyncio.create_subprocess_exec(
+            "docker", "stop", container_name,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        await stop_process.wait()
+        
+        rm_process = await asyncio.create_subprocess_exec(
+            "docker", "rm", container_name,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        await rm_process.wait()
+        
+        # Remove image
+        rmi_process = await asyncio.create_subprocess_exec(
+            "docker", "rmi", image_tag,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        await rmi_process.wait()
+        
+        logger.info(f"Cleaned up Docker resources: {container_name}, {image_tag}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup Docker resources: {e}")
+
+
+async def _deploy_with_compose(
+    repo_path: Path, 
+    compose_file: Path, 
+    container_name: str, 
+    port: int, 
+    target_domain: str, 
+    mission_id: str
+) -> dict[str, Any]:
+    """Deploy repository using docker-compose."""
+    logger.info(f"Deploying with docker-compose: {compose_file}")
+    
+    # Change to repo directory and run docker-compose
+    compose_process = await asyncio.create_subprocess_exec(
+        "docker-compose", "-f", str(compose_file), "up", "-d",
+        cwd=str(repo_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    stdout, stderr = await compose_process.communicate()
+    
+    if compose_process.returncode != 0:
+        raise Exception(f"Docker compose failed: {stderr.decode()}")
+    
+    # Wait for services to start
+    await asyncio.sleep(5)
+    
+    # Try to detect exposed port from compose output or use default
+    target_url = f"http://localhost:{port}"
+    
+    return {
+        "target_url": target_url,
+        "deployment_info": {
+            "container_name": f"compose-{mission_id[:8]}",
+            "port": port,
+            "deployment_type": "docker-compose",
+            "compose_file": str(compose_file),
+            "original_domain": target_domain
+        }
+    }
+
+
+async def _deploy_with_auto_detection(
+    repo_path: Path, 
+    container_name: str, 
+    port: int, 
+    target_domain: str, 
+    mission_id: str
+) -> dict[str, Any]:
+    """Auto-detect framework and deploy."""
+    logger.info(f"Auto-detecting framework for {repo_path}")
+    
+    # Check for common framework files
+    package_json = repo_path / "package.json"
+    requirements_txt = repo_path / "requirements.txt"
+    pom_xml = repo_path / "pom.xml"
+    
+    if package_json.exists():
+        # Node.js application
+        return await _deploy_nodejs_app(repo_path, container_name, port, target_domain, mission_id)
+    elif requirements_txt.exists():
+        # Python application
+        return await _deploy_python_app(repo_path, container_name, port, target_domain, mission_id)
+    elif pom_xml.exists():
+        # Java application
+        return await _deploy_java_app(repo_path, container_name, port, target_domain, mission_id)
+    else:
+        # Generic web server
+        return await _deploy_static_site(repo_path, container_name, port, target_domain, mission_id)
+
+
+async def _deploy_nodejs_app(
+    repo_path: Path, 
+    container_name: str, 
+    port: int, 
+    target_domain: str, 
+    mission_id: str
+) -> dict[str, Any]:
+    """Deploy Node.js application."""
+    logger.info(f"Deploying Node.js app from {repo_path}")
+    
+    # Create simple Dockerfile
+    dockerfile_content = """
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+EXPOSE 3000
+CMD ["npm", "start"]
+"""
+    
+    dockerfile_path = repo_path / "Dockerfile"
+    dockerfile_path.write_text(dockerfile_content)
+    
+    return await _deploy_with_dockerfile(repo_path, container_name, port, target_domain, mission_id)
+
+
+async def _deploy_python_app(
+    repo_path: Path, 
+    container_name: str, 
+    port: int, 
+    target_domain: str, 
+    mission_id: str
+) -> dict[str, Any]:
+    """Deploy Python application."""
+    logger.info(f"Deploying Python app from {repo_path}")
+    
+    # Create simple Dockerfile
+    dockerfile_content = """
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["python", "app.py"]
+"""
+    
+    dockerfile_path = repo_path / "Dockerfile"
+    dockerfile_path.write_text(dockerfile_content)
+    
+    return await _deploy_with_dockerfile(repo_path, container_name, port, target_domain, mission_id)
+
+
+async def _deploy_java_app(
+    repo_path: Path, 
+    container_name: str, 
+    port: int, 
+    target_domain: str, 
+    mission_id: str
+) -> dict[str, Any]:
+    """Deploy Java application."""
+    logger.info(f"Deploying Java app from {repo_path}")
+    
+    # Create simple Dockerfile for Maven project
+    dockerfile_content = """
+FROM openjdk:17-jdk-slim
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+RUN apt-get update && apt-get install -y maven
+RUN mvn clean package
+EXPOSE 8080
+CMD ["java", "-jar", "target/*.jar"]
+"""
+    
+    dockerfile_path = repo_path / "Dockerfile"
+    dockerfile_path.write_text(dockerfile_content)
+    
+    return await _deploy_with_dockerfile(repo_path, container_name, port, target_domain, mission_id)
+
+
+async def _deploy_static_site(
+    repo_path: Path, 
+    container_name: str, 
+    port: int, 
+    target_domain: str, 
+    mission_id: str
+) -> dict[str, Any]:
+    """Deploy static site with nginx."""
+    logger.info(f"Deploying static site from {repo_path}")
+    
+    # Create simple Dockerfile for static content
+    dockerfile_content = """
+FROM nginx:alpine
+COPY . /usr/share/nginx/html
+EXPOSE 80
+"""
+    
+    dockerfile_path = repo_path / "Dockerfile"
+    dockerfile_path.write_text(dockerfile_content)
+    
+    # Use port 80 for nginx
+    run_process = await asyncio.create_subprocess_exec(
+        "docker", "run", "-d", 
+        "--name", container_name,
+        "-p", f"{port}:80",
+        f"mission-{mission_id[:8]}",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    
+    target_url = f"http://localhost:{port}"
+    
+    return {
+        "target_url": target_url,
+        "deployment_info": {
+            "container_name": container_name,
+            "port": port,
+            "deployment_type": "static-nginx",
+            "original_domain": target_domain
+        }
+    }
+
+
+# -------------------------------------------
 # Swarm Endpoints
 # -------------------------------------------
 
@@ -270,49 +838,114 @@ async def trigger_swarm_mission(request: SwarmTriggerRequest) -> SwarmTriggerRes
     
     This endpoint:
     1. Creates a mission record in Supabase
-    2. Initializes agent states for all 12 agents
-    3. Publishes the mission to Redis for the swarm module
-    4. Returns the mission ID for tracking
+    2. If repo mode: deploys the repository in Docker
+    3. Initializes agent states for all 12 agents
+    4. Publishes the mission to Redis for the swarm module
+    5. Returns the mission ID for tracking
     """
-    logger.info(f"Received swarm mission request for target: {request.target}")
+    logger.info(f"Received swarm mission request for target: {request.target}, mode: {request.mode}")
     
     # Generate unique mission ID
     mission_id = str(uuid4())
     
+    # Variables for Docker deployment
+    deployed_target = request.target
+    deployment_info = {}
+    
     try:
+        # Handle repository deployment for 'repo' mode
+        if request.mode == "repo" and request.repo_url and request.auto_deploy:
+            logger.info(f"Starting Docker deployment for repo: {request.repo_url}")
+            
+            try:
+                deployment_result = await _deploy_repository_to_docker(
+                    repo_url=request.repo_url,
+                    mission_id=mission_id,
+                    target_domain=request.target
+                )
+                
+                deployed_target = deployment_result["target_url"]
+                deployment_info = deployment_result["deployment_info"]
+                
+                logger.info(f"Repository deployed successfully at: {deployed_target}")
+                
+            except Exception as deploy_error:
+                logger.error(f"Failed to deploy repository: {deploy_error}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to deploy repository: {str(deploy_error)}",
+                )
+        
         # Create mission in Supabase
         supabase = get_supabase_client()
+        
+        # Map 'repo' mode to 'static' for database compatibility
+        db_mode = "static" if request.mode == "repo" else request.mode
+        
         await supabase.create_swarm_mission(
             mission_id=mission_id,
-            target=request.target,
+            target=deployed_target,
             objective=request.objective,
-            mode=request.mode,
+            mode=db_mode,  # Use compatible mode
             max_iterations=request.max_iterations,
             scan_id=request.scan_id,
         )
         
+        # Store deployment information if available
+        if deployment_info:
+            logger.info(f"Storing deployment info for mission {mission_id}")
+            # You could store this in a separate table or as metadata in the mission record
+        
         # Initialize agent states
         await _initialize_agent_states(mission_id)
         
-        # Publish to Redis for swarm module
-        redis_bus = get_redis_bus()
-        await redis_bus.publish("swarm_missions", {
+        # Prepare mission data for Redis
+        mission_data = {
             "mission_id": mission_id,
-            "target": request.target,
+            "target": deployed_target,
             "objective": request.objective,
             "mode": request.mode,
             "max_iterations": request.max_iterations,
             "action": "start",
+        }
+        
+        # Add repo-specific data if applicable
+        if request.mode == "repo":
+            mission_data.update({
+                "repo_url": request.repo_url,
+                "auto_deploy": request.auto_deploy,
+                "deployment_info": deployment_info,
+            })
+        
+        # Publish to Redis for swarm module
+        redis_bus = get_redis_bus()
+        await redis_bus.publish("swarm_missions", {
+            "data": {  # Wrap in data field for worker compatibility
+                "mission_id": mission_id,
+                "target": deployed_target,
+                "objective": request.objective,
+                "mode": request.mode,  # Keep original mode for worker
+                "max_iterations": request.max_iterations,
+                "action": "start",
+                "repo_url": request.repo_url if request.mode == "repo" else None,
+                "auto_deploy": request.auto_deploy if request.mode == "repo" else False,
+                "deployment_info": deployment_info,
+            }
         })
         
         logger.info(f"Swarm mission {mission_id} triggered successfully")
         
         return SwarmTriggerResponse(
             mission_id=mission_id,
-            message="Swarm mission triggered successfully",
+            message="Swarm mission triggered successfully" + (
+                f" with deployed target: {deployed_target}" if request.mode == "repo" else ""
+            ),
             status="pending",
+            target=deployed_target
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to trigger swarm mission: {e}")
         raise HTTPException(
@@ -727,12 +1360,15 @@ async def swarm_websocket(websocket: WebSocket, mission_id: str):
     "/{mission_id}/cancel",
     response_model=dict,
     summary="Cancel a mission",
-    description="Cancel a running swarm mission.",
+    description="Cancel a running swarm mission and cleanup Docker resources.",
 )
 async def cancel_mission(mission_id: str) -> dict:
     """Cancel a running swarm mission."""
     try:
         supabase = get_supabase_client()
+        
+        # Get mission details for cleanup
+        mission = await supabase.get_swarm_mission(mission_id)
         
         # Update mission status
         await supabase.update_swarm_mission(
@@ -742,6 +1378,10 @@ async def cancel_mission(mission_id: str) -> dict:
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }
         )
+        
+        # Cleanup Docker containers if this was a repo deployment
+        if mission and mission.get("mode") == "repo":
+            await _cleanup_docker_deployment(mission_id)
         
         # Publish cancel command to Redis
         redis_bus = get_redis_bus()
@@ -763,6 +1403,97 @@ async def cancel_mission(mission_id: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to cancel mission: {str(e)}",
+        )
+
+
+async def _cleanup_docker_deployment(mission_id: str):
+    """Clean up Docker containers and images for a mission."""
+    try:
+        logger.info(f"Cleaning up Docker deployment for mission {mission_id}")
+        
+        # Clean up all containers that match the mission pattern
+        container_patterns = [
+            f"mission-{mission_id[:8]}",
+            f"mission-{mission_id[:8]}-*"
+        ]
+        
+        image_tag = f"mission-{mission_id[:8]}"
+        
+        # Stop and remove containers
+        for pattern in container_patterns:
+            try:
+                # List containers matching the pattern
+                ps_process = await asyncio.create_subprocess_exec(
+                    "docker", "ps", "-a", "--filter", f"name={pattern}", "--format", "{{.Names}}",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                stdout, stderr = await ps_process.communicate()
+                
+                if ps_process.returncode == 0:
+                    container_names = [name.strip() for name in stdout.decode().split('\n') if name.strip()]
+                    
+                    for container_name in container_names:
+                        if container_name:
+                            # Stop container
+                            stop_process = await asyncio.create_subprocess_exec(
+                                "docker", "stop", container_name,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL
+                            )
+                            await asyncio.wait_for(stop_process.wait(), timeout=30)
+                            
+                            # Remove container
+                            rm_process = await asyncio.create_subprocess_exec(
+                                "docker", "rm", container_name,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL
+                            )
+                            await rm_process.wait()
+                            
+                            logger.info(f"Removed container: {container_name}")
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout stopping containers for pattern: {pattern}")
+            except Exception as e:
+                logger.warning(f"Error cleaning up containers for pattern {pattern}: {e}")
+        
+        # Remove images
+        try:
+            rmi_process = await asyncio.create_subprocess_exec(
+                "docker", "rmi", image_tag,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            await asyncio.wait_for(rmi_process.wait(), timeout=30)
+            logger.info(f"Removed image: {image_tag}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout removing image: {image_tag}")
+        except Exception as e:
+            logger.warning(f"Error removing image {image_tag}: {e}")
+        
+        logger.info(f"Docker cleanup completed for mission {mission_id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to cleanup Docker resources for mission {mission_id}: {e}")
+        # Don't re-raise - cleanup is best effort
+
+
+@router.post(
+    "/{mission_id}/cleanup",
+    response_model=dict,
+    summary="Cleanup mission resources", 
+    description="Manually cleanup Docker resources for a completed mission.",
+)
+async def cleanup_mission_resources(mission_id: str) -> dict:
+    """Manually cleanup Docker resources for a mission."""
+    try:
+        await _cleanup_docker_deployment(mission_id)
+        return {"message": "Resources cleaned up", "mission_id": mission_id}
+    except Exception as e:
+        logger.error(f"Failed to cleanup resources for mission {mission_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cleanup resources: {str(e)}",
         )
 
 

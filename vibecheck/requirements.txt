@@ -33,7 +33,7 @@ tenacity>=9.0.0
 # mypy>=1.13.0
 
 # Week 2
-tree-sitter==0.24.0
+tree-sitter>=0.25.0,<0.26.0
 tree-sitter-javascript
 tree-sitter-typescript
 tree-sitter-python

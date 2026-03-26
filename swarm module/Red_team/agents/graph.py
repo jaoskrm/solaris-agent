@@ -80,7 +80,7 @@ async def blue_team_enrichment_node(state: RedTeamState) -> dict[str, Any]:
         
         # Enrich state with Blue Team findings
         enriched_state = await enrich_state_with_blue_team_findings(
-            dict(state), target
+            dict(state), target, state.get("repo_url")
         )
 
         # Log summary
@@ -276,6 +276,7 @@ def create_initial_state(
     max_reflections: int = 3,
     fast_mode: bool = False,
     mode: str | None = None,
+    repo_url: str | None = None,
 ) -> RedTeamState:
     """
     Create the initial state for a red team mission.
@@ -328,9 +329,10 @@ def create_initial_state(
         blue_team_recon_results=[],
         blue_team_intelligence_brief="",
     )
-    # Add mode and fast_mode flags (mode is auto-detected if not provided)
+    # Add mode, fast_mode, and repo_url flags (mode is auto-detected if not provided)
     state["mode"] = detected_mode
     state["fast_mode"] = fast_mode
+    state["repo_url"] = repo_url
     
     # Create mission record in Supabase synchronously to ensure it's created before events
     # Use synchronous insert to avoid event loop issues

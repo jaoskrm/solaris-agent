@@ -130,6 +130,7 @@ async def process_mission(mission_data: dict, msg_id: str | None = None) -> bool
                 target=target,
                 max_iterations=mission_data.get("max_iterations", 5),
                 mission_id=effective_mission_id,
+                repo_url=mission_data.get("repo_url"),
             )
             
             print(f"\n{COLORS['system']}Starting mission execution...{COLORS['reset']}")

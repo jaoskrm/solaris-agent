@@ -252,6 +252,7 @@ class BlueTeamBridge:
         target: str,
         min_severity: str = "medium",
         include_unconfirmed: bool = False,
+        repo_url: str | None = None,
     ) -> list[BlueTeamFinding]:
         """
         Retrieve Blue Team findings for a target.
@@ -270,13 +271,13 @@ class BlueTeamBridge:
 
         # Try Supabase first
         supabase_findings = await self._get_from_supabase(
-            target, min_severity, include_unconfirmed
+            target, min_severity, include_unconfirmed, repo_url
         )
         findings.extend(supabase_findings)
 
         # If no Supabase results, try to match by repo URL patterns
         if not findings:
-            findings = await self._get_by_repo_pattern(target, min_severity)
+            findings = await self._get_by_repo_pattern(target, min_severity, repo_url)
         
         # If still no findings and target looks like a repo, trigger Blue Team scan
         if not findings and self._looks_like_repo(target):
@@ -288,7 +289,7 @@ class BlueTeamBridge:
                 await asyncio.sleep(2)
                 # Try fetching again
                 findings = await self._get_from_supabase(
-                    target, min_severity, include_unconfirmed
+                    target, min_severity, include_unconfirmed, repo_url
                 )
 
         # Sort by severity (critical first)
@@ -309,6 +310,7 @@ class BlueTeamBridge:
         target: str,
         min_severity: str,
         include_unconfirmed: bool,
+        repo_url: str | None = None,
     ) -> list[BlueTeamFinding]:
         """Query Supabase for Blue Team findings."""
         try:
@@ -333,8 +335,8 @@ class BlueTeamBridge:
             loop = asyncio.get_event_loop()
 
             # Extract repo name from target for filtering
-            repo_name = self._extract_repo_name(target)
-            logger.info(f"Extracted repo name '{repo_name}' from target '{target}'")
+            repo_name = self._extract_repo_name(target, repo_url)
+            logger.info(f"Extracted repo name '{repo_name}' from target '{target}'" + (f" with repo_url fallback '{repo_url}'" if repo_url and not repo_name else ""))
             
             # First, find matching scan_ids from scan_queue
             scan_ids = []
@@ -360,7 +362,7 @@ class BlueTeamBridge:
                         .select("id, repo_url, created_at")
                         .ilike("repo_url", "%juice%")
                         .order("created_at", desc=True)
-                        .limit(50)  # Get up to 50 scans
+                        .limit(100)  # Increased from 50 to match manual run capabilities
                     )
                     scan_result = await loop.run_in_executor(None, lambda: scan_query.execute())
                     if scan_result and hasattr(scan_result, 'data') and scan_result.data:
@@ -411,7 +413,7 @@ class BlueTeamBridge:
                         .select("*")
                         .in_("severity", ["critical", "high"])
                         .order("created_at", desc=True)
-                        .limit(50)
+                        .limit(100)
                     )
                     result = await loop.run_in_executor(None, lambda: query.execute())
                     if result and hasattr(result, 'data'):
@@ -494,10 +496,10 @@ class BlueTeamBridge:
             logger.error(f"Failed to query Supabase for Blue Team findings: {e}")
             return []
 
-    async def _get_by_repo_pattern(self, target: str, min_severity: str) -> list[BlueTeamFinding]:
+    async def _get_by_repo_pattern(self, target: str, min_severity: str, repo_url: str | None = None) -> list[BlueTeamFinding]:
         """Try to match findings by repo URL pattern."""
         # Extract repo name from various URL formats
-        repo_name = self._extract_repo_name(target)
+        repo_name = self._extract_repo_name(target, repo_url)
         if not repo_name:
             return []
 
@@ -518,7 +520,7 @@ class BlueTeamBridge:
                 lambda: supabase.table("vulnerabilities")
                 .select("*, scans!inner(repo_url)")
                 .ilike("scans.repo_url", f"%{repo_name}%")
-                .limit(50)
+                .limit(100)
                 .execute()
             )
 
@@ -549,8 +551,8 @@ class BlueTeamBridge:
             logger.error(f"Failed repo pattern query: {e}")
             return []
 
-    def _extract_repo_name(self, target: str) -> str | None:
-        """Extract repo name from various URL formats."""
+    def _extract_repo_name(self, target: str, repo_url: str | None = None) -> str | None:
+        """Extract repo name from various URL formats with repo_url fallback."""
         import re
 
         # GitHub HTTPS: https://github.com/user/repo
@@ -573,11 +575,25 @@ class BlueTeamBridge:
                 '8080': 'juice-shop',
                 '8000': 'app',
             }
-            return port_to_app.get(port)
+            app_name = port_to_app.get(port)
+            if app_name:
+                return app_name
 
         # Just repo name
         if '/' not in target and len(target) > 0:
             return target
+
+        # Fallback: extract from repo_url if provided and no match from target yet
+        if repo_url:
+            # GitHub HTTPS: https://github.com/user/repo
+            match = re.search(r'github\.com/[^/]+/([^/]+)', repo_url)
+            if match:
+                return match.group(1).replace('.git', '')
+            
+            # Git SSH: git@github.com:user/repo.git  
+            match = re.search(r'github\.com:([^/]+)/([^/]+)', repo_url)
+            if match:
+                return match.group(2).replace('.git', '')
 
         return None
 
@@ -737,6 +753,7 @@ def get_blue_team_bridge() -> BlueTeamBridge:
 async def enrich_state_with_blue_team_findings(
     state: dict[str, Any],
     target: str,
+    repo_url: str | None = None,
 ) -> dict[str, Any]:
     """
     Enrich Red Team state with Blue Team findings.
@@ -754,7 +771,7 @@ async def enrich_state_with_blue_team_findings(
     bridge = get_blue_team_bridge()
 
     # Get findings
-    findings = await bridge.get_findings_for_target(target)
+    findings = await bridge.get_findings_for_target(target, repo_url=repo_url)
 
     # Convert to recon results format
     recon_results = [f.to_recon_result() for f in findings]

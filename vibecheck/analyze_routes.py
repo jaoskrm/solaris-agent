@@ -10,7 +10,7 @@ from pathlib import Path
 import tree_sitter_python
 import tree_sitter_javascript
 import tree_sitter_typescript
-from tree_sitter import Language, Parser, Node, QueryCursor
+from tree_sitter import Language, Parser, Node
 
 # Default file to analyze - can be overridden via environment variable
 DEFAULT_FILE = Path(__file__).parent.parent / "vibecoded-test-app" / "targets" / "juice-shop-source" / "server.ts"
