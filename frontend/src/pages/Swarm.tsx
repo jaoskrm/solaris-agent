@@ -16,6 +16,7 @@ import {
   type SwarmExploit,
   type SwarmExploitsResponse,
 } from '../lib/api';
+import { extractTokens, formatTokenDisplay } from '../lib/utils';
 
 // Types
 interface NodeDef {
@@ -59,6 +60,10 @@ interface Finding {
   confirmed: boolean;
   agent: string;
   cve: string;
+  description?: string;
+  target?: string;
+  endpoint?: string;
+  evidence?: Record<string, any>;
 }
 
 // Constants
@@ -287,6 +292,10 @@ export function Swarm() {
   const [reportsExpanded, setReportsExpanded] = useState(false);
   const [findingsFullscreen, setFindingsFullscreen] = useState(false);
 
+  // Expanded item state
+  const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null);
+  const [expandedExploit, setExpandedExploit] = useState<SwarmExploit | null>(null);
+
   // Exploit data for reports
   const [exploitsList, setExploitsList] = useState<SwarmExploit[]>([]);
   const [isLoadingExploits, setIsLoadingExploits] = useState<boolean>(false);
@@ -344,6 +353,10 @@ export function Swarm() {
                 confirmed: f.confirmed || false,
                 agent: f.agent_name || f.agent || 'Unknown',
                 cve: f.cve_id || f.cve || '',
+                description: f.description,
+                target: f.target,
+                endpoint: f.endpoint,
+                evidence: f.evidence,
               }));
               setFindingsList(mappedFindings);
               setConfirmedFindingsCount(mappedFindings.filter(f => f.confirmed).length);
@@ -399,6 +412,10 @@ export function Swarm() {
               confirmed: f.confirmed || false,
               agent: f.agent_name || f.agent || 'Unknown',
               cve: f.cve_id || f.cve || '',
+              description: f.description,
+              target: f.target,
+              endpoint: f.endpoint,
+              evidence: f.evidence,
             }));
             setFindingsList(mappedFindings);
             setConfirmedFindingsCount(mappedFindings.filter(f => f.confirmed).length);
@@ -902,6 +919,10 @@ export function Swarm() {
         confirmed: f.confirmed || false,
         agent: f.agent_name || f.agent || 'Unknown',
         cve: f.cve_id || f.cve || '',
+        description: f.description,
+        target: f.target,
+        endpoint: f.endpoint,
+        evidence: f.evidence,
       }));
       console.log('[Swarm] Mapped findings count:', mappedFindings.length);
       setFindingsList(mappedFindings);
@@ -925,7 +946,7 @@ export function Swarm() {
       const exploitsResponse: SwarmExploitsResponse = await getSwarmExploits(missionId, 100);
       console.log('[Swarm] Exploits response:', exploitsResponse);
       
-      const exploits = exploitsResponse.exploits || [];
+      const exploits = Array.isArray(exploitsResponse) ? exploitsResponse : (exploitsResponse?.exploits || []);
       console.log('[Swarm] Number of exploits:', exploits.length);
       
       setExploitsList(exploits);
@@ -1824,7 +1845,7 @@ export function Swarm() {
                   No exploits reported yet...
                 </div>
               ) : (
-                <div className="flex gap-3 h-[180px] w-max pb-2">
+                <div className="flex gap-3 h-[180px] pb-2" style={{ overflowX: 'auto', minWidth: 'max-content' }}>
                   {exploitsList.map((exploit, index) => {
                     const isSuccess = exploit.success;
                     const hasEvidence = exploit.evidence && Object.keys(exploit.evidence).length > 0;
@@ -1832,12 +1853,13 @@ export function Swarm() {
                     return (
                       <div 
                         key={exploit.id || index}
-                        className="w-[300px] shrink-0 h-full border border-[rgba(255,255,255,0.08)] rounded-[1px] flex flex-col overflow-hidden"
+                        className="w-[300px] shrink-0 h-full border border-[rgba(255,255,255,0.08)] rounded-[1px] flex flex-col overflow-hidden cursor-pointer hover:border-[rgba(200,169,110,0.3)] transition-all"
                         style={{ 
                           background: isSuccess 
                             ? 'rgba(74,222,128,0.06)' 
                             : 'rgba(240,140,140,0.06)' 
                         }}
+                        onClick={() => setExpandedExploit(exploit)}
                       >
                         <div className="px-3 py-2 border-b border-[rgba(255,255,255,0.04)]">
                           <div className="flex items-center justify-between mb-1">
@@ -1862,50 +1884,50 @@ export function Swarm() {
                         </div>
                         
                         <div className="flex-1 overflow-y-auto">
-                        {(exploit.payload || exploit.command_executed) && (
-                          <div className="px-3 py-2 border-b border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)]">
-                            <div className="text-[7px] text-[rgba(255,255,255,0.3)] mb-1 tracking-[0.15em]">PAYLOAD</div>
-                            <div className="text-[9px] text-[rgba(255,255,255,0.7)] font-mono break-all">
-                              {exploit.payload || exploit.command_executed}
+                          {(exploit.payload || exploit.command_executed) && (
+                            <div className="px-3 py-2 border-b border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)]">
+                              <div className="text-[7px] text-[rgba(255,255,255,0.3)] mb-1 tracking-[0.15em]">PAYLOAD</div>
+                              <div className="text-[9px] text-[rgba(255,255,255,0.7)] font-mono break-all">
+                                {exploit.payload || exploit.command_executed}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
 
-                        {isSuccess && hasEvidence && (
-                          <div className="px-3 py-2 bg-[rgba(74,222,128,0.04)]">
-                            <div className="text-[7px] text-[rgba(74,222,128,0.8)] mb-1 tracking-[0.15em]">EVIDENCE</div>
-                            <div className="text-[9px] text-[rgba(255,255,255,0.8)] space-y-1">
-                              {Object.entries(exploit.evidence).map(([key, value]) => (
-                                <div key={key} className="flex gap-2">
-                                  <span className="text-[rgba(200,169,110,0.7)] shrink-0 min-w-[60px] capitalize">
-                                    {key.replace(/_/g, ' ')}:
-                                  </span>
-                                  <span className="break-all font-mono">
-                                    {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
-                                  </span>
-                                </div>
-                              ))}
+                          {isSuccess && hasEvidence && (
+                            <div className="px-3 py-2 bg-[rgba(74,222,128,0.04)]">
+                              <div className="text-[7px] text-[rgba(74,222,128,0.8)] mb-1 tracking-[0.15em]">EVIDENCE</div>
+                              <div className="text-[9px] text-[rgba(255,255,255,0.8)] space-y-1">
+                                {Object.entries(exploit.evidence).map(([key, value]) => (
+                                  <div key={key} className="flex gap-2">
+                                    <span className="text-[rgba(200,169,110,0.7)] shrink-0 min-w-[60px] capitalize">
+                                      {key.replace(/_/g, ' ')}:
+                                    </span>
+                                    <span className="break-all font-mono">
+                                      {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
 
-                        {exploit.error_message && !isSuccess && (
-                          <div className="px-3 py-2 bg-[rgba(240,140,140,0.04)]">
-                            <div className="text-[7px] text-[rgba(240,140,140,0.8)] mb-1 tracking-[0.15em]">ERROR</div>
-                            <div className="text-[9px] text-[rgba(255,255,255,0.8)] font-mono break-all">
-                              {exploit.error_message}
+                          {exploit.error_message && !isSuccess && (
+                            <div className="px-3 py-2 bg-[rgba(240,140,140,0.04)]">
+                              <div className="text-[7px] text-[rgba(240,140,140,0.8)] mb-1 tracking-[0.15em]">ERROR</div>
+                              <div className="text-[9px] text-[rgba(255,255,255,0.8)] font-mono break-all">
+                                {exploit.error_message}
+                              </div>
                             </div>
-                          </div>
-                        )}
-                        
-                        {exploit.stdout && (
-                          <div className="px-3 py-2 border-t border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)]">
-                            <div className="text-[7px] text-[rgba(255,255,255,0.3)] mb-1 tracking-[0.15em]">OUTPUT</div>
-                            <div className="text-[9px] text-[rgba(255,255,255,0.7)] font-mono break-all max-h-20 overflow-y-auto">
-                              {exploit.stdout}
+                          )}
+                          
+                          {exploit.stdout && (
+                            <div className="px-3 py-2 border-t border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)]">
+                              <div className="text-[7px] text-[rgba(255,255,255,0.3)] mb-1 tracking-[0.15em]">OUTPUT</div>
+                              <div className="text-[9px] text-[rgba(255,255,255,0.7)] font-mono break-all max-h-20 overflow-y-auto">
+                                {exploit.stdout}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
                         </div>
                       </div>
                     );
@@ -1914,6 +1936,170 @@ export function Swarm() {
               )}
             </div>
         </div>
+
+        {/* Exploit Fullscreen Overlay */}
+        {expandedExploit && (
+          <div 
+            className="fixed inset-0 z-[100] flex items-center justify-center"
+            style={{ background: 'rgba(0,0,0,0.92)' }}
+            onClick={() => setExpandedExploit(null)}
+          >
+            <div 
+              className="w-[700px] max-w-[90vw] max-h-[85vh] flex flex-col overflow-hidden"
+              style={{ 
+                background: 'linear-gradient(180deg, rgba(6,10,16,0.98) 0%, rgba(3,4,6,0.99) 100%)', 
+                borderRadius: '4px', 
+                border: '1px solid rgba(255,255,255,0.12)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div className="flex items-center gap-3 px-6 py-4 border-b border-[rgba(255,255,255,0.08)]">
+                <div 
+                  className={`text-[10px] px-3 py-1 rounded-[1px] tracking-[0.1em] ${
+                    expandedExploit.success 
+                      ? 'bg-[rgba(74,222,128,0.15)] text-[rgba(74,222,128,0.9)]' 
+                      : 'bg-[rgba(240,140,140,0.15)] text-[rgba(240,140,140,0.9)]'
+                  }`}
+                >
+                  {expandedExploit.success ? 'SUCCESS' : 'FAILED'}
+                </div>
+                <div className="text-[14px] text-[rgba(255,255,255,0.8)]">
+                  <span className="text-[rgba(200,169,110,0.9)]">{expandedExploit.exploit_type}</span>
+                  {expandedExploit.tool_used && <span className="text-[rgba(255,255,255,0.5)] text-[12px]"> via {expandedExploit.tool_used}</span>}
+                </div>
+                <div className="flex-1" />
+                <div className="text-[10px] text-[rgba(255,255,255,0.4)]">
+                  {new Date(expandedExploit.created_at).toLocaleString()}
+                </div>
+                <button
+                  onClick={() => setExpandedExploit(null)}
+                  className="ml-4 text-[16px] px-3 py-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-[rgba(255,255,255,0.5)] transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                {/* Target */}
+                <div>
+                  <div className="text-[9px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-2">TARGET</div>
+                  <div className="text-[12px] text-[rgba(255,255,255,0.7)] font-mono bg-[rgba(255,255,255,0.03)] p-3 rounded break-all">
+                    {expandedExploit.target_url}
+                  </div>
+                </div>
+
+                {/* Method */}
+                <div>
+                  <div className="text-[9px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-2">METHOD</div>
+                  <div className="text-[12px] text-[rgba(255,255,255,0.7)]">
+                    {expandedExploit.method}
+                  </div>
+                </div>
+
+                {/* Payload */}
+                {(expandedExploit.payload || expandedExploit.command_executed) && (
+                  <div>
+                    <div className="text-[9px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-2">PAYLOAD</div>
+                    <div className="text-[11px] text-[rgba(255,255,255,0.7)] font-mono bg-[rgba(255,255,255,0.03)] p-3 rounded whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+                      {typeof expandedExploit.payload === 'string' 
+                        ? expandedExploit.payload 
+                        : JSON.stringify(expandedExploit.payload || expandedExploit.command_executed, null, 2)}
+                    </div>
+                  </div>
+                )}
+
+                {/* Response Code */}
+                {expandedExploit.response_code && (
+                  <div>
+                    <div className="text-[9px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-2">RESPONSE CODE</div>
+                    <div className="text-[12px] text-[rgba(255,255,255,0.7)]">
+                      HTTP {expandedExploit.response_code}
+                    </div>
+                  </div>
+                )}
+
+                {/* Evidence */}
+                {expandedExploit.evidence && Object.keys(expandedExploit.evidence).length > 0 && (
+                  <div>
+                    <div className="text-[9px] text-[rgba(74,222,128,0.8)] tracking-[0.15em] mb-2">EVIDENCE</div>
+                    <div className="text-[11px] text-[rgba(255,255,255,0.7)] space-y-2 bg-[rgba(74,222,128,0.03)] p-3 rounded">
+                      {Object.entries(expandedExploit.evidence).map(([key, value]) => (
+                        <div key={key} className="flex gap-3">
+                          <span className="text-[rgba(200,169,110,0.7)] shrink-0 min-w-[100px] capitalize">
+                            {key.replace(/_/g, ' ')}:
+                          </span>
+                          <span className="font-mono break-all text-[10px]">
+                            {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Extracted Tokens/Secrets */}
+                {(() => {
+                  const tokens = extractTokens(expandedExploit.stdout, expandedExploit.command_executed);
+                  if (tokens.length === 0) return null;
+                  return (
+                    <div>
+                      <div className="text-[9px] text-[rgba(255,215,0,0.9)] tracking-[0.15em] mb-2">EXTRACTED TOKENS & SECRETS</div>
+                      <div className="text-[11px] text-[rgba(255,255,255,0.7)] space-y-2 bg-[rgba(255,215,0,0.05)] p-3 rounded">
+                        {tokens.map((token, idx) => (
+                          <div key={idx} className="flex flex-col gap-1 p-2 bg-[rgba(0,0,0,0.2)] rounded">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[rgba(255,215,0,0.8)] text-[8px] px-2 py-[1px] rounded bg-[rgba(255,215,0,0.15)] capitalize">
+                                {token.type}
+                              </span>
+                              <span className="text-[rgba(255,255,255,0.5)] text-[7px]">
+                                from {token.source}
+                              </span>
+                            </div>
+                            <div className="font-mono text-[9px] text-[rgba(255,255,255,0.85)] break-all bg-[rgba(255,255,255,0.03)] p-2 rounded">
+                              {formatTokenDisplay(token.value)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Error */}
+                {expandedExploit.error_message && !expandedExploit.success && (
+                  <div>
+                    <div className="text-[9px] text-[rgba(240,140,140,0.8)] tracking-[0.15em] mb-2">ERROR</div>
+                    <div className="text-[11px] text-[rgba(255,255,255,0.7)] bg-[rgba(240,140,140,0.05)] p-3 rounded">
+                      {expandedExploit.error_message}
+                    </div>
+                  </div>
+                )}
+
+                {/* Output */}
+                {expandedExploit.stdout && (
+                  <div>
+                    <div className="text-[9px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-2">OUTPUT</div>
+                    <div className="text-[10px] text-[rgba(255,255,255,0.6)] font-mono bg-[rgba(255,255,255,0.03)] p-3 rounded whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                      {expandedExploit.stdout}
+                    </div>
+                  </div>
+                )}
+
+                {/* Stderr */}
+                {expandedExploit.stderr && (
+                  <div>
+                    <div className="text-[9px] text-[rgba(240,140,140,0.6)] tracking-[0.15em] mb-2">STDERR</div>
+                    <div className="text-[10px] text-[rgba(255,255,255,0.5)] font-mono bg-[rgba(240,140,140,0.03)] p-3 rounded whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+                      {expandedExploit.stderr}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Findings Report Panel (row E) */}
         <div
@@ -1979,33 +2165,18 @@ export function Swarm() {
             </div>
             <div className="rpt-body flex-1 overflow-y-auto px-2 py-[7px] flex flex-col gap-1 min-h-0" style={{ minHeight: '100px' }}>
               {findingsList.map((f, i) => (
-                <div
-                  key={i}
-                  className={`p-[7px_10px] cursor-pointer relative overflow-hidden transition-all duration-200 hover:bg-[rgba(255,255,255,0.032)] hover:border-[rgba(255,255,255,0.08)] min-h-[50px] ${
-                    f.confirmed ? 'bg-[rgba(150,210,170,0.028)] border-[rgba(150,210,170,0.12)]' : 'bg-[rgba(255,255,255,0.016)] border border-[rgba(255,255,255,0.04)]'
-                  }`}
-                  style={{ borderRadius: '1px' }}
-                >
+                <div key={i}>
                   <div
-                    className="absolute left-0 top-0 bottom-0 w-[2px]"
-                    style={{
-                      background:
-                        f.sev === 'critical'
-                          ? 'rgba(240,140,140,0.85)'
-                          : f.sev === 'high'
-                          ? 'rgba(230,170,110,0.85)'
-                          : f.sev === 'medium'
-                          ? 'rgba(200,200,140,0.80)'
-                          : 'rgba(140,180,210,0.75)',
-                      boxShadow:
-                        f.sev === 'critical' || f.sev === 'high' ? `0 0 8px ${f.sev === 'critical' ? 'rgba(240,140,140,0.85)' : 'rgba(230,170,110,0.85)'}` : undefined,
-                    }}
-                  />
-                  <div className="flex items-center gap-[7px] mb-[3px]">
+                    className={`p-[7px_10px] cursor-pointer relative overflow-hidden transition-all duration-200 hover:bg-[rgba(255,255,255,0.032)] hover:border-[rgba(255,255,255,0.08)] ${
+                      f.confirmed ? 'bg-[rgba(150,210,170,0.028)] border-[rgba(150,210,170,0.12)]' : 'bg-[rgba(255,255,255,0.016)] border border-[rgba(255,255,255,0.04)]'
+                    } ${expandedFindingId === f.title ? 'rounded-b-none' : ''}`}
+                    style={{ borderRadius: '1px' }}
+                    onClick={() => setExpandedFindingId(expandedFindingId === f.title ? null : (f.title as string))}
+                  >
                     <div
-                      className="text-[8px] tracking-[0.14em] px-[6px] py-[1px] border rounded-[1px] shrink-0"
+                      className="absolute left-0 top-0 bottom-0 w-[2px]"
                       style={{
-                        color:
+                        background:
                           f.sev === 'critical'
                             ? 'rgba(240,140,140,0.85)'
                             : f.sev === 'high'
@@ -2013,49 +2184,108 @@ export function Swarm() {
                             : f.sev === 'medium'
                             ? 'rgba(200,200,140,0.80)'
                             : 'rgba(140,180,210,0.75)',
-                        borderColor:
-                          f.sev === 'critical'
-                            ? 'rgba(240,140,140,0.85)'
-                            : f.sev === 'high'
-                            ? 'rgba(230,170,110,0.85)'
-                            : f.sev === 'medium'
-                            ? 'rgba(200,200,140,0.80)'
-                            : 'rgba(140,180,210,0.75)',
+                        boxShadow:
+                          f.sev === 'critical' || f.sev === 'high' ? `0 0 8px ${f.sev === 'critical' ? 'rgba(240,140,140,0.85)' : 'rgba(230,170,110,0.85)'}` : undefined,
                       }}
-                    >
-                      {f.sev.toUpperCase()}
+                    />
+                    <div className="flex items-center gap-[7px] mb-[3px]">
+                      <div
+                        className="text-[8px] tracking-[0.14em] px-[6px] py-[1px] border rounded-[1px] shrink-0"
+                        style={{
+                          color:
+                            f.sev === 'critical'
+                              ? 'rgba(240,140,140,0.85)'
+                              : f.sev === 'high'
+                              ? 'rgba(230,170,110,0.85)'
+                              : f.sev === 'medium'
+                              ? 'rgba(200,200,140,0.80)'
+                              : 'rgba(140,180,210,0.75)',
+                          borderColor:
+                            f.sev === 'critical'
+                              ? 'rgba(240,140,140,0.85)'
+                              : f.sev === 'high'
+                              ? 'rgba(230,170,110,0.85)'
+                              : f.sev === 'medium'
+                              ? 'rgba(200,200,140,0.80)'
+                              : 'rgba(140,180,210,0.75)',
+                        }}
+                      >
+                        {f.sev.toUpperCase()}
+                      </div>
+                      <div className="text-[11px] text-[rgba(255,255,255,0.7)] flex-1 tracking-[0.01em]">{f.title}</div>
+                      <div className="text-[9px] text-[rgba(255,255,255,0.3)]">
+                        {expandedFindingId === f.title ? '▲' : '▼'}
+                      </div>
+                      {f.confirmed ? (
+                        <div
+                          className="text-[6.5px] tracking-[0.12em] px-[6px] py-[1px] rounded-[1px] border"
+                          style={{
+                            background: 'rgba(150,210,170,0.06)',
+                            borderColor: 'rgba(150,210,170,0.18)',
+                            color: 'rgba(150,210,170,0.75)',
+                          }}
+                        >
+                          CONFIRMED
+                        </div>
+                      ) : (
+                        <div
+                          className="text-[6.5px] tracking-[0.12em] px-[6px] py-[1px] rounded-[1px] border"
+                          style={{
+                            background: 'rgba(255,255,255,0.04)',
+                            borderColor: 'rgba(255,255,255,0.08)',
+                            color: 'rgba(255,255,255,0.28)',
+                          }}
+                        >
+                          STATIC
+                        </div>
+                      )}
                     </div>
-                    <div className="text-[11px] text-[rgba(255,255,255,0.7)] flex-1 tracking-[0.01em]">{f.title}</div>
-                    {f.confirmed ? (
-                      <div
-                        className="text-[6.5px] tracking-[0.12em] px-[6px] py-[1px] rounded-[1px] border"
-                        style={{
-                          background: 'rgba(150,210,170,0.06)',
-                          borderColor: 'rgba(150,210,170,0.18)',
-                          color: 'rgba(150,210,170,0.75)',
-                        }}
-                      >
-                        CONFIRMED
-                      </div>
-                    ) : (
-                      <div
-                        className="text-[6.5px] tracking-[0.12em] px-[6px] py-[1px] rounded-[1px] border"
-                        style={{
-                          background: 'rgba(255,255,255,0.04)',
-                          borderColor: 'rgba(255,255,255,0.08)',
-                          color: 'rgba(255,255,255,0.28)',
-                        }}
-                      >
-                        STATIC
-                      </div>
-                    )}
+                    <div className="text-[7px] text-[rgba(255,255,255,0.28)] tracking-[0.06em] flex gap-[10px]">
+                      <span>{f.type}</span>
+                      <span>{f.src}</span>
+                      {f.cve && <span style={{ color: 'rgba(240,140,140,0.85)' }}>{f.cve}</span>}
+                      <span style={{ color: 'rgba(255,255,255,0.28)' }}>{f.agent}</span>
+                    </div>
                   </div>
-                  <div className="text-[7px] text-[rgba(255,255,255,0.28)] tracking-[0.06em] flex gap-[10px]">
-                    <span>{f.type}</span>
-                    <span>{f.src}</span>
-                    {f.cve && <span style={{ color: 'rgba(240,140,140,0.85)' }}>{f.cve}</span>}
-                    <span style={{ color: 'rgba(255,255,255,0.28)' }}>{f.agent}</span>
-                  </div>
+                  {expandedFindingId === f.title && (
+                    <div className="px-3 py-3 bg-[rgba(0,0,0,0.3)] border-x border-b border-[rgba(255,255,255,0.06)]" style={{ borderBottomLeftRadius: '1px', borderBottomRightRadius: '1px' }}>
+                      {f.description && (
+                        <div className="mb-2">
+                          <div className="text-[7px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-1">DESCRIPTION</div>
+                          <div className="text-[9px] text-[rgba(255,255,255,0.6)]">{f.description}</div>
+                        </div>
+                      )}
+                      {f.target && (
+                        <div className="mb-2">
+                          <div className="text-[7px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-1">TARGET</div>
+                          <div className="text-[9px] text-[rgba(255,255,255,0.6)] font-mono">{f.target}</div>
+                        </div>
+                      )}
+                      {f.endpoint && f.endpoint !== f.target && (
+                        <div className="mb-2">
+                          <div className="text-[7px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-1">ENDPOINT</div>
+                          <div className="text-[9px] text-[rgba(255,255,255,0.6)] font-mono">{f.endpoint}</div>
+                        </div>
+                      )}
+                      {f.evidence && Object.keys(f.evidence).length > 0 && (
+                        <div>
+                          <div className="text-[7px] text-[rgba(255,255,255,0.4)] tracking-[0.15em] mb-1">EVIDENCE</div>
+                          <div className="text-[9px] text-[rgba(255,255,255,0.6)] space-y-1">
+                            {Object.entries(f.evidence).slice(0, 5).map(([key, value]) => (
+                              <div key={key} className="flex gap-2">
+                                <span className="text-[rgba(200,169,110,0.7)] shrink-0 min-w-[60px] capitalize">
+                                  {key.replace(/_/g, ' ')}:
+                                </span>
+                                <span className="font-mono break-all">
+                                  {typeof value === 'object' ? JSON.stringify(value).slice(0, 100) : String(value).slice(0, 100)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
