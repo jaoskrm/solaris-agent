@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.redis_bus import redis_bus
 from core.config import settings
 from core.platform_compat import COLORS, SYMBOLS, safe_print
+from sandbox.sandbox_manager import target_container_manager, get_sandbox_target
 
 # Configure logging
 logging.basicConfig(
@@ -122,6 +123,37 @@ async def process_mission(mission_data: dict, msg_id: str | None = None) -> bool
             from agents.tools.ffuf_tool import ffuf_tool, ffuf_quick_tool
             from agents.tools.sqlmap_tool import sqlmap_tool, sqlmap_quick_tool, sqlmap_deep_tool
             
+            # Deploy target container if this is a repo mission
+            deployed_target_url = None
+            if mode == "repo" and repo_url:
+                print(f"\n{COLORS['system']}Deploying target container from repo...{COLORS['reset']}")
+                deployment_result = await target_container_manager.deploy_target(
+                    repo_url=repo_url,
+                    target_url=target,
+                    mission_id=effective_mission_id,
+                )
+                
+                if not deployment_result.get("success"):
+                    print(f"\n{SYMBOLS['cross']} Failed to deploy target container")
+                    print(f"  Error: {deployment_result.get('error', 'Unknown error')}")
+                    return False
+                
+                deployed_target_url = deployment_result["target_url"]
+                deployment_info = {
+                    "container_name": deployment_result["container_name"],
+                    "image_tag": deployment_result["image_tag"],
+                    "container_port": deployment_result["container_port"],
+                    "host_port": deployment_result["host_port"],
+                }
+                
+                print(f"{SYMBOLS['check']} Target container deployed!")
+                print(f"  Container: {deployment_result['container_name']}")
+                print(f"  URL: {deployed_target_url}")
+                print(f"  Port mapping: {deployment_result['container_port']} -> {deployment_result['host_port']}")
+                
+                # Update the target URL to the deployed container's URL
+                target = deployed_target_url
+            
             # Register tools
             tool_registry.register(nmap_tool)
             tool_registry.register(nuclei_tool)
@@ -175,8 +207,8 @@ async def process_mission(mission_data: dict, msg_id: str | None = None) -> bool
             print(f"\n{SYMBOLS['check']} Mission completed successfully!")
             
             # Cleanup Docker resources if this was a repo mission
-            if mode == "repo" and deployment_info:
-                await _cleanup_mission_containers(effective_mission_id, deployment_info)
+            if mode == "repo" and repo_url:
+                await target_container_manager.cleanup()
             
             return True
             
@@ -190,16 +222,17 @@ async def process_mission(mission_data: dict, msg_id: str | None = None) -> bool
             print(f"\n{SYMBOLS['cross']} Mission failed: {e}")
             
             # Cleanup on failure if this was a repo mission
-            if mode == "repo" and deployment_info:
-                await _cleanup_mission_containers(effective_mission_id, deployment_info)
+            if mode == "repo" and repo_url:
+                await target_container_manager.cleanup()
             
             return False
     elif action == "cancel":
         print(f"\n{SYMBOLS['stop']} Mission cancellation requested")
         
         # Cleanup Docker resources if this was a repo mission
-        if mode == "repo" and deployment_info:
-            await _cleanup_mission_containers(effective_mission_id, deployment_info)
+        if mode == "repo" and repo_url:
+            from sandbox.sandbox_manager import target_container_manager
+            await target_container_manager.cleanup()
         
         return True
     else:

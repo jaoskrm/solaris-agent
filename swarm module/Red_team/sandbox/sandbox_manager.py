@@ -43,10 +43,14 @@ SHARED_DIR_CONTAINER = "/tmp/vibecheck/shared"
 if IS_LINUX:
     DOCKER_NETWORK_MODE = "host"
     DOCKER_TARGET_HOST = "localhost"
+    # On Linux with host network, use localhost directly with internal Juice Shop port (3000)
+    SANDBOX_TARGET_PORT = "3000"
 else:
     # Windows and macOS use host.docker.internal to reach host
+    # The host's Juice Shop is exposed on port 8080 (see docker-compose.yml)
     DOCKER_NETWORK_MODE = None  # Will use default bridge
     DOCKER_TARGET_HOST = "host.docker.internal"
+    SANDBOX_TARGET_PORT = "8080"  # Translate to host port where Juice Shop is exposed
 
 
 @dataclass
@@ -88,6 +92,23 @@ class SharedSandboxManager:
             self._client = docker.from_env()
         return self._client
 
+    async def ensure_image(self) -> None:
+        """Ensure the sandbox image exists locally, building if necessary."""
+        client = self._get_client()
+        try:
+            client.images.get(SANDBOX_IMAGE)
+            logger.info("Sandbox image '%s' exists", SANDBOX_IMAGE)
+        except NotFound:
+            logger.info("Building sandbox image '%s'...", SANDBOX_IMAGE)
+            await asyncio.to_thread(
+                client.images.build,
+                path=str(SANDBOX_DOCKERFILE.parent),
+                dockerfile=SANDBOX_DOCKERFILE.name,
+                tag=SANDBOX_IMAGE,
+                rm=True,
+            )
+            logger.info("Sandbox image built successfully")
+
     async def ensure_shared_sandbox(self) -> Any:
         """
         Ensure the shared 'vibecheck-sandbox' container is running.
@@ -126,6 +147,9 @@ class SharedSandboxManager:
             # Create shared directory for file exchange (cross-platform)
             SHARED_DIR_HOST.mkdir(parents=True, exist_ok=True)
 
+            # Ensure the sandbox image is built (this was missing - fixes 404 on first run)
+            await self.ensure_image()
+
             # Create new shared container with cross-platform networking
             try:
                 # Build container kwargs dynamically for cross-platform support
@@ -139,13 +163,18 @@ class SharedSandboxManager:
                     },
                     "environment": {
                         "TARGET_HOST": DOCKER_TARGET_HOST,
+                        "TARGET_PORT": SANDBOX_TARGET_PORT,
                     },
                     "cap_add": ["NET_RAW", "NET_ADMIN"],
                 }
                 
                 # Add network mode only for Linux (host networking)
+                # On Windows/Mac, also add to the red_team network for communication with target containers
                 if DOCKER_NETWORK_MODE:
                     container_kwargs["network_mode"] = DOCKER_NETWORK_MODE
+                else:
+                    # On Windows/Mac, connect to the same network as target containers
+                    container_kwargs["network"] = NETWORK_NAME
                 
                 container = await asyncio.to_thread(
                     client.containers.run,
@@ -174,6 +203,16 @@ class SharedSandboxManager:
         """
         container = await self.ensure_shared_sandbox()
 
+        # Debug: Show container network info
+        logger.debug(f"[Docker Debug] Container short_id: {container.short_id}")
+        logger.debug(f"[Docker Debug] Container status: {container.status}")
+        logger.debug(f"[Docker Debug] Container network mode: {container.attrs.get('HostConfig', {}).get('NetworkMode', 'unknown')}")
+        
+        # Show active target globals
+        logger.debug(f"[Docker Debug] _active_target_url: {_active_target_url}")
+        logger.debug(f"[Docker Debug] _active_target_host: {_active_target_host}")
+        logger.debug(f"[Docker Debug] _active_target_port: {_active_target_port}")
+        
         logger.info("Sandbox exec: %s", command[:80])
 
         try:
@@ -532,3 +571,368 @@ class SandboxManager:
 # Default instances
 sandbox_manager = SandboxManager()
 shared_sandbox_manager = SharedSandboxManager()
+
+
+def get_sandbox_target() -> tuple[str, str]:
+    """
+    Returns the (host, port) tuple for the sandbox to reach host services.
+    
+    On Linux with host network: returns ("localhost", "3000")
+    On Windows/Mac with bridge: returns ("host.docker.internal", "8080")
+    """
+    if IS_LINUX:
+        return ("localhost", "3000")
+    else:
+        return (DOCKER_TARGET_HOST, SANDBOX_TARGET_PORT)
+
+
+def translate_url_for_sandbox(url: str) -> str:
+    """
+    Translate a URL from localhost:PORT format to the correct sandbox host:port.
+    
+    Uses the active target container's host:port if deployed, otherwise falls back
+    to the default sandbox target (for pre-existing services like manually started Juice Shop).
+    
+    E.g., "http://localhost:8080/api" -> "http://host.docker.internal:8080/api" (on Windows/Mac)
+    """
+    import re
+    
+    logger.debug(f"[URL Translation] Input URL: {url}")
+    logger.debug(f"[URL Translation] Active target: host={_active_target_host}, port={_active_target_port}")
+    
+    # Use active target if set, otherwise use default sandbox target
+    if _active_target_host and _active_target_port:
+        host = _active_target_host
+        port = _active_target_port
+        logger.debug(f"[URL Translation] Using active target: {host}:{port}")
+    else:
+        host, port = get_sandbox_target()
+        logger.debug(f"[URL Translation] Using default sandbox target: {host}:{port}")
+    
+    # Extract the port from the input URL if present, otherwise use the target port
+    port_match = re.search(r'(localhost|127\.0\.0\.1):(\d+)', url)
+    if port_match:
+        input_port = port_match.group(2)
+        logger.debug(f"[URL Translation] Input URL has explicit port: {input_port}")
+        # Replace the port in the URL with the correct host:port
+        url = re.sub(r'(localhost|127\.0\.0\.1):\d+', f'{host}:{port}', url)
+    else:
+        # No explicit port in URL - this shouldn't normally happen with full URLs
+        # but handle it by replacing just the host
+        url = re.sub(r'(localhost|127\.0\.0\.1)([/:])', f'{host}\\2', url)
+    
+    logger.debug(f"[URL Translation] Output URL: {url}")
+    return url
+
+
+# Global state for the active target container
+_active_target_url: str | None = None
+_active_target_host: str | None = None
+_active_target_port: str | None = None
+
+
+class TargetContainerManager:
+    """
+    Manages the target application container - clones repo, builds image, runs container.
+    
+    This handles the workflow where a user provides:
+    - GitHub repo URL
+    - Target URL (e.g., http://localhost:31754)
+    
+    The manager will:
+    1. Clone the repo
+    2. Detect Dockerfile and internal port
+    3. Build image from repo
+    4. Run container with port mapping
+    5. Return the URL for exploits to target
+    """
+
+    def __init__(self):
+        self._client: docker.DockerClient | None = None
+        self._repo_path: Path | None = None
+        self._container: Any = None
+        self._image_tag: str | None = None
+        self._mission_id: str | None = None
+        self._deployed_url: str | None = None
+
+    def _get_client(self) -> docker.DockerClient:
+        if self._client is None:
+            self._client = docker.from_env()
+        return self._client
+
+    def _extract_port_from_url(self, url: str) -> int:
+        """Extract port number from URL like http://localhost:31754"""
+        import re
+        match = re.search(r':(\d+)', url)
+        if match:
+            return int(match.group(1))
+        # Default to 3000 if no port specified
+        return 3000
+
+    def _find_dockerfile(self, repo_path: Path) -> Path | None:
+        """Find Dockerfile in the repo (also checks Dockerfile.dev, Dockerfile.prod)"""
+        patterns = ["Dockerfile", "Dockerfile.dev", "Dockerfile.prod", "Dockerfile.prod stage"]
+        for pattern in patterns:
+            dockerfile = repo_path / pattern
+            if dockerfile.exists():
+                return dockerfile
+        return None
+
+    def _detect_internal_port(self, dockerfile: Path) -> int | None:
+        """Detect the internal port from EXPOSE in Dockerfile"""
+        import re
+        try:
+            content = dockerfile.read_text()
+            # Look for EXPOSE directive
+            match = re.search(r'EXPOSE\s+(\d+)', content)
+            if match:
+                return int(match.group(1))
+            # Also check for common patterns like PORT=3000 in env files
+            port_match = re.search(r'PORT\s*=\s*(\d+)', content)
+            if port_match:
+                return int(port_match.group(1))
+        except Exception:
+            pass
+        return None
+
+    async def deploy_target(
+        self,
+        repo_url: str,
+        target_url: str,
+        mission_id: str,
+    ) -> dict:
+        """
+        Deploy the target application container.
+        
+        Args:
+            repo_url: GitHub repo URL to clone
+            target_url: The target URL (e.g., http://localhost:31754)
+            mission_id: Mission ID for naming resources
+            
+        Returns:
+            dict with keys:
+                - success: bool
+                - target_url: The translated URL for exploits to use
+                - container_port: The internal port of the container
+                - host_port: The mapped host port
+                - container_name: Name of the container
+                - error: Error message if failed
+        """
+        import subprocess
+        import shutil
+        
+        self._mission_id = mission_id
+        client = self._get_client()
+        
+        logger.info(f"=== TARGET CONTAINER DEPLOYMENT STARTING ===")
+        logger.info(f"[DEBUG] repo_url: {repo_url}")
+        logger.info(f"[DEBUG] target_url: {target_url}")
+        logger.info(f"[DEBUG] mission_id: {mission_id}")
+        logger.info(f"[DEBUG] platform: Windows={IS_WINDOWS}, Mac={IS_MAC}, Linux={IS_LINUX}")
+        
+        # Extract the host port from target_url
+        host_port = self._extract_port_from_url(target_url)
+        logger.info(f"[DEBUG] Extracted host_port from URL: {host_port}")
+        
+        try:
+            # Step 1: Clone the repo
+            logger.info(f"Cloning repo: {repo_url}")
+            temp_dir = Path(tempfile.mkdtemp(prefix="vibecheck_target_"))
+            self._repo_path = temp_dir / "repo"
+            
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", repo_url, str(self._repo_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                return {
+                    "success": False,
+                    "error": f"Git clone failed: {result.stderr}",
+                    "target_url": target_url,
+                }
+            logger.info(f"Repo cloned to: {self._repo_path}")
+            
+            # Step 2: Find Dockerfile
+            dockerfile_path = self._find_dockerfile(self._repo_path)
+            if not dockerfile_path:
+                return {
+                    "success": False,
+                    "error": "No Dockerfile found in repo. Please add a Dockerfile to the repository.",
+                    "target_url": target_url,
+                }
+            logger.info(f"Dockerfile found: {dockerfile_path.name}")
+            
+            # Step 3: Detect internal port
+            internal_port = self._detect_internal_port(dockerfile_path)
+            if not internal_port:
+                # Default to 3000 if not detected
+                internal_port = 3000
+                logger.warning(f"Could not detect internal port, defaulting to {internal_port}")
+            else:
+                logger.info(f"Internal port detected: {internal_port}")
+            
+            # Step 4: Build the image
+            image_tag = f"target-{mission_id[:8]}"
+            self._image_tag = image_tag
+            
+            logger.info(f"[DEBUG] Building Docker image: {image_tag}")
+            logger.info(f"[DEBUG] Build path: {self._repo_path}")
+            logger.info(f"[DEBUG] Dockerfile: {dockerfile_path.name}")
+            
+            # Check if image already exists
+            try:
+                existing = client.images.get(image_tag)
+                logger.info(f"[DEBUG] Image {image_tag} already exists, removing it first")
+                client.images.remove(image_tag, force=True)
+            except NotFound:
+                pass
+            
+            build_result = await asyncio.to_thread(
+                client.images.build,
+                path=str(self._repo_path),
+                dockerfile=dockerfile_path.name,
+                tag=image_tag,
+                rm=True,
+            )
+            logger.info(f"[DEBUG] Image build completed. Image: {image_tag}")
+            
+            # Step 5: Run the container
+            container_name = f"target-{mission_id[:8]}"
+            
+            # Determine network mode
+            if IS_LINUX:
+                network_mode = "host"
+                container_url = f"http://localhost:{internal_port}"
+            else:
+                network_mode = "bridge"
+                container_url = f"http://host.docker.internal:{host_port}"
+            
+            logger.info(f"[DEBUG] Network mode: {network_mode}")
+            logger.info(f"[DEBUG] Container URL will be: {container_url}")
+            logger.info(f"[DEBUG] Port mapping: container {internal_port} -> host {host_port}")
+            
+            # Create shared directory for file exchange
+            SHARED_DIR_HOST.mkdir(parents=True, exist_ok=True)
+            
+            container_kwargs = {
+                "image": image_tag,
+                "name": container_name,
+                "detach": True,
+                "mem_limit": "1g",
+                "ports": {f"{internal_port}/tcp": host_port},
+                "environment": {
+                    "PORT": str(internal_port),
+                    "NODE_ENV": "development",
+                },
+            }
+            
+            if network_mode == "host":
+                container_kwargs["network_mode"] = "host"
+            else:
+                container_kwargs["network"] = NETWORK_NAME
+            
+            logger.info(f"[DEBUG] Creating container with kwargs: {container_kwargs}")
+            
+            self._container = await asyncio.to_thread(
+                client.containers.run,
+                **container_kwargs
+            )
+            logger.info(f"[DEBUG] Container created with ID: {self._container.id}")
+            
+            # Wait a moment for container to initialize
+            await asyncio.sleep(3)
+            
+            # Verify container is running
+            self._container.reload()
+            logger.info(f"[DEBUG] Container status after reload: {self._container.status}")
+            
+            if self._container.status != "running":
+                # Try to get logs
+                try:
+                    logs = await asyncio.to_thread(self._container.logs, stdout=True, stderr=True)
+                    logger.error(f"[DEBUG] Container logs: {logs}")
+                except Exception as e:
+                    logger.error(f"[DEBUG] Could not get container logs: {e}")
+                    
+                return {
+                    "success": False,
+                    "error": f"Container failed to start. Status: {self._container.status}",
+                    "target_url": target_url,
+                }
+            
+            logger.info(f"[DEBUG] Container is running! Container short ID: {self._container.short_id}")
+            logger.info(f"[DEBUG] Container name: {container_name}")
+            logger.info(f"[DEBUG] Container network mode: {network_mode}")
+            
+            # Store the deployed URL for use by translate_url_for_sandbox
+            global _active_target_url, _active_target_host, _active_target_port
+            _active_target_url = container_url
+            if IS_LINUX:
+                _active_target_host = "localhost"
+            else:
+                _active_target_host = "host.docker.internal"
+            _active_target_port = str(host_port)
+            self._deployed_url = container_url
+            
+            return {
+                "success": True,
+                "target_url": container_url,
+                "container_port": internal_port,
+                "host_port": host_port,
+                "container_name": container_name,
+                "image_tag": image_tag,
+            }
+            
+        except Exception as e:
+            logger.exception(f"Failed to deploy target: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "target_url": target_url,
+            }
+
+    async def cleanup(self):
+        """Clean up the target container and cloned repo."""
+        global _active_target_url, _active_target_host, _active_target_port
+        
+        # Clear the active target state
+        _active_target_url = None
+        _active_target_host = None
+        _active_target_port = None
+        
+        client = self._get_client()
+        
+        # Stop and remove container
+        if self._container:
+            try:
+                await asyncio.to_thread(self._container.stop, timeout=10)
+                await asyncio.to_thread(self._container.remove, force=True)
+                logger.info(f"Removed container: {self._container.name}")
+            except Exception as e:
+                logger.warning(f"Failed to remove container: {e}")
+            self._container = None
+        
+        # Remove image
+        if self._image_tag:
+            try:
+                client.images.remove(self._image_tag, force=True)
+                logger.info(f"Removed image: {self._image_tag}")
+            except Exception as e:
+                logger.warning(f"Failed to remove image: {e}")
+            self._image_tag = None
+        
+        # Remove cloned repo
+        if self._repo_path and self._repo_path.exists():
+            try:
+                import shutil
+                shutil.rmtree(self._repo_path.parent)
+                logger.info(f"Removed repo directory: {self._repo_path.parent}")
+            except Exception as e:
+                logger.warning(f"Failed to remove repo directory: {e}")
+            self._repo_path = None
+
+
+# Global target container manager instance
+target_container_manager = TargetContainerManager()

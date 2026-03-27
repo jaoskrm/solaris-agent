@@ -8,7 +8,7 @@ import logging
 import shlex
 
 from agents.tools.registry import ToolSpec
-from sandbox.sandbox_manager import shared_sandbox_manager, ExecResult
+from sandbox.sandbox_manager import shared_sandbox_manager, ExecResult, translate_url_for_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,10 @@ async def curl_execute(
             command="curl (no url)",
         )
     
-    # Replace localhost with host.docker.internal for Docker sandbox access to host
-    docker_url = actual_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+    # Translate localhost URLs to correct sandbox host:port
+    logger.info(f"[curl_tool] Original URL: {actual_url}")
+    docker_url = translate_url_for_sandbox(actual_url)
+    logger.info(f"[curl_tool] Translated URL: {docker_url}")
 
     # Add timeout to prevent infinite hangs
     parts = ["curl", "-s", "-i", f"-X {method}", f"--max-time {max_time}"]

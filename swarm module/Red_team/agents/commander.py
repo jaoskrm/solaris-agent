@@ -489,9 +489,16 @@ async def commander_plan(state: RedTeamState) -> dict[str, Any]:
 
     for task_spec in tasks:
         agent = task_spec.get("agent", "agent_alpha")
+        
+        # Handle target being a list (attack surface) or string
+        target_value = task_spec.get("target", state.get('target', 'http://localhost:3000'))
+        if isinstance(target_value, list):
+            # Use first element if list, or fall back to state target
+            target_value = target_value[0] if target_value else state.get('target', 'http://localhost:3000')
+        
         task = TaskAssignment(
             description=task_spec.get("description", "Perform reconnaissance"),
-            target=task_spec.get("target", state.get('target', 'http://localhost:3000')),
+            target=target_value,
             tools_allowed=task_spec.get("tools_allowed", []),
         )
         task_payload = task.model_dump()
@@ -956,9 +963,15 @@ async def commander_observe(state: RedTeamState) -> dict[str, Any]:
 
     for task_spec in tasks:
         agent = task_spec.get("agent", "agent_alpha")
+        
+        # Handle target being a list (attack surface) or string
+        target_value = task_spec.get("target", state.get('target', 'http://localhost:3000'))
+        if isinstance(target_value, list):
+            target_value = target_value[0] if target_value else state.get('target', 'http://localhost:3000')
+        
         task = TaskAssignment(
             description=task_spec.get("description", "Continue operations"),
-            target=task_spec.get("target", state.get('target', 'http://localhost:3000')),
+            target=target_value,
             tools_allowed=task_spec.get("tools_allowed", []),
         )
         task_payload = task.model_dump()

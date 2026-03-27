@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 
 from agents.tools.registry import ToolSpec
-from sandbox.sandbox_manager import shared_sandbox_manager, ExecResult
+from sandbox.sandbox_manager import shared_sandbox_manager, ExecResult, translate_url_for_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ async def python_exec_execute(
     timeout: int = 30,
 ) -> ExecResult:
     """
-    Execute a Python script inside the sandbox.
+    Execute Python code in the sandbox.
 
     Args:
         mission_id: Active mission ID
@@ -27,8 +27,6 @@ async def python_exec_execute(
         script_path: Path to Python script file (alternative to code)
         timeout: Execution timeout in seconds
     """
-    # Docker host for sandbox to access host services
-    host = "host.docker.internal"
     
     # Handle both code and script_path arguments
     if script_path:
@@ -36,10 +34,8 @@ async def python_exec_execute(
         command = f"python3 {script_path}"
     elif code:
         # It's inline code - execute directly
-        # Replace localhost with Docker host for sandbox access
-        code = code.replace("localhost:3000", f"{host}:3000")
-        code = code.replace("localhost", host)
-        code = code.replace("127.0.0.1", host)
+        # Translate localhost URLs to correct sandbox host:port
+        code = translate_url_for_sandbox(code)
 
         # Write code to temp file and execute
         # Using heredoc to avoid quoting issues
