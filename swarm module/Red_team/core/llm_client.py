@@ -59,7 +59,7 @@ class LLMClient:
             except Exception as e:
                 logger.warning(f"Ollama primary failed: {e}")
                 # Try fallback model if different
-                ollama_fallback = fallback_model or "vaultbox/qwen3.5-uncensored:9b"
+                ollama_fallback = fallback_model or "qwen2.5-coder:7b-instruct"
                 if ollama_fallback != model:
                     logger.info(f"🔄 Trying Ollama fallback: {ollama_fallback}")
                     response = await ollama_client.chat(

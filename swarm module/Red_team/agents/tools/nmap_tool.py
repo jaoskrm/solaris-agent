@@ -38,7 +38,8 @@ def _sanitize_nmap_args(args: str, port_args: str) -> str:
     system_port = port_match.group(0) if port_match else ""
     
     # Remove any -p flags from user args to prevent duplicates
-    args_cleaned = re.sub(r'-p(?:\s+\S+|\-)?', '', args)
+    # Use negative lookbehind to avoid matching -p in --top-ports or similar
+    args_cleaned = re.sub(r'(?<!-)-p(?:\s+\S+|\-)?', '', args)
     
     # Remove duplicate flag categories
     flags_to_dedup = ['-sV', '-sC', '-sS', '-sT', '-sU', '-A', '-O']
