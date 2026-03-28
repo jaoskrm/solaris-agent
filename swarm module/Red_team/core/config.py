@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # OpenRouter available as backup if Ollama fails
     #
     # OLLAMA_CASCADE (local):
-    # 1st → qwen2.5-coder:7b      (best for exploit code generation)
+    # 1st → qwen2.5-coder:7b-instruct (best for exploit code generation)
     # 2nd → llama3:latest          (reliable general-purpose)
     # 3rd → mistral:latest         (good reasoning, fast)
     # 4th → deepseek-r1:8b         (good reasoning fallback)

@@ -145,11 +145,11 @@ OLLAMA_BASE_URL=http://localhost:11434
 OPENROUTER_API_KEY=
 JUICE_SHOP_URL=http://localhost:3000
 
-# Models - all use vaultbox/qwen3.5-uncensored:9b
-COMMANDER_MODEL=vaultbox/qwen3.5-uncensored:9b
-RECON_MODEL=vaultbox/qwen3.5-uncensored:9b
-EXPLOIT_MODEL=vaultbox/qwen3.5-uncensored:9b
-CRITIC_MODEL=vaultbox/qwen3.5-uncensored:9b
+# Models - all use qwen2.5-coder:7b-instruct
+COMMANDER_MODEL=qwen2.5-coder:7b-instruct
+RECON_MODEL=qwen2.5-coder:7b-instruct
+EXPLOIT_MODEL=qwen2.5-coder:7b-instruct
+CRITIC_MODEL=qwen2.5-coder:7b-instruct
 "@ | Out-File -FilePath ".env" -Encoding utf8
         Write-Host "[OK] Created default .env file" -ForegroundColor Green
     }

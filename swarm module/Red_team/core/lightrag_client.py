@@ -41,7 +41,7 @@ class LightRAGClient:
                 self._rag = LightRAG(
                     working_dir=str(self._working_dir / "default"),
                     llm_model_func=ollama_model_complete,
-                    llm_model_name="qwen2.5-coder:7b",
+                    llm_model_name="qwen2.5-coder:7b-instruct",
                     embedding_func=ollama_embedding,
                     embedding_model_name="nomic-embed-text:v1.5",
                 )
@@ -65,7 +65,7 @@ class LightRAGClient:
                 self._mission_rags[mission_id] = LightRAG(
                     working_dir=str(mission_dir),
                     llm_model_func=ollama_model_complete,
-                    llm_model_name="qwen2.5-coder:7b",
+                    llm_model_name="qwen2.5-coder:7b-instruct",
                     embedding_func=ollama_embedding,
                     embedding_model_name="nomic-embed-text:v1.5",
                 )
