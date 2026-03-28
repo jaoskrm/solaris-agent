@@ -15,6 +15,7 @@ import {
   type SwarmFindingResponse,
   type SwarmExploit,
   type SwarmExploitsResponse,
+  type SwarmMission,
 } from '../lib/api';
 import { extractTokens, formatTokenDisplay } from '../lib/utils';
 
@@ -293,6 +294,11 @@ export function Swarm() {
   const [reportsExpanded, setReportsExpanded] = useState(false);
   const [findingsFullscreen, setFindingsFullscreen] = useState(false);
 
+  // Mission history
+  const [missionHistory, setMissionHistory] = useState<SwarmMission[]>([]);
+  const [showMissionHistory, setShowMissionHistory] = useState(false);
+  const [loadingMissionHistory, setLoadingMissionHistory] = useState(false);
+
   // Expanded item state
   const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null);
   const [expandedExploit, setExpandedExploit] = useState<SwarmExploit | null>(null);
@@ -305,6 +311,73 @@ export function Swarm() {
   const getMissionIdFromUrl = (): string | null => {
     const params = new URLSearchParams(window.location.search);
     return params.get('missionId');
+  };
+
+  // Load mission history
+  const loadMissionHistory = async () => {
+    setLoadingMissionHistory(true);
+    try {
+      const response = await getSwarmMissions(20, 0);
+      setMissionHistory(response.missions || []);
+    } catch (err) {
+      console.error('[Swarm] Failed to load mission history:', err);
+    } finally {
+      setLoadingMissionHistory(false);
+    }
+  };
+
+  // View a mission from history
+  const viewMissionFromHistory = async (mission: SwarmMission) => {
+    console.log('[Swarm] Loading mission from history:', mission.id);
+    setMissionId(mission.id);
+    setMissionStatus(mission.status || 'pending');
+    setMissionTarget(mission.target || '');
+    setMissionProgress(mission.progress || 0);
+    setShowMissionHistory(false);
+    
+    // Fetch full mission details
+    try {
+      const fullMission = await getSwarmMission(mission.id);
+      setMissionStatus(fullMission.status || mission.status || 'pending');
+      setMissionProgress(fullMission.progress || 0);
+      setMissionTarget(fullMission.target || mission.target || '');
+      
+      // Fetch events
+      const events = await getSwarmTimelineEvents(mission.id, 50);
+      if (events.length > 0) {
+        const newLines = events.slice(0, 20).map((e: any) => ({
+          t: new Date(e.created_at).toLocaleTimeString(),
+          s: `[${e.agent_name || 'system'}] ${e.title || e.event_type} ${e.description || ''}`
+        }));
+        setTerminalLines(newLines);
+      }
+      
+      // Fetch findings
+      const findings = await getSwarmFindings(mission.id);
+      const findingsArray = Array.isArray(findings) ? findings : (findings?.findings || []);
+      const mappedFindings: Finding[] = findingsArray.map((f: any) => ({
+        sev: (f.severity || 'medium') as 'critical' | 'high' | 'medium' | 'low',
+        title: f.title || 'Untitled Finding',
+        type: f.finding_type || f.type || 'Unknown',
+        src: f.source || 'Unknown',
+        confirmed: f.confirmed || false,
+        description: f.description || '',
+        target: f.target || mission.target || '',
+        endpoint: f.endpoint || '',
+        evidence: f.evidence || {},
+        createdAt: f.created_at || new Date().toISOString(),
+      }));
+      setFindingsList(mappedFindings);
+      
+      // Fetch exploits
+      const exploitsResponse = await getSwarmExploits(mission.id, 100);
+      const exploits = Array.isArray(exploitsResponse) ? exploitsResponse : (exploitsResponse?.exploits || []);
+      setExploitsList(exploits);
+      
+      console.log('[Swarm] Loaded mission history:', fullMission.status, findingsArray.length, 'findings', exploits.length, 'exploits');
+    } catch (err) {
+      console.error('[Swarm] Failed to load mission details:', err);
+    }
   };
 
   // Convert vertical wheel to horizontal scroll for Mission Reports
@@ -1553,8 +1626,15 @@ export function Swarm() {
               ELAPSED <span className="text-[#c8a96e]">{formatTime(elapsed)}</span>
             </div>
             <button
+              onClick={() => { setShowMissionHistory(true); loadMissionHistory(); }}
+              className="ml-4 px-4 py-2 text-[8px] tracking-[0.14em] bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.1)] hover:bg-[rgba(255,255,255,0.1)] hover:border-[rgba(255,255,255,0.2)] transition-all duration-200 text-[rgba(255,255,255,0.6)] rounded-sm"
+              title="View Mission History"
+            >
+              HISTORY
+            </button>
+            <button
               onClick={() => setShowMissionModal(true)}
-              className="ml-6 px-4 py-2 text-[8px] tracking-[0.14em] bg-[rgba(200,169,110,0.1)] border border-[rgba(200,169,110,0.3)] hover:bg-[rgba(200,169,110,0.15)] hover:border-[rgba(200,169,110,0.5)] transition-all duration-200 text-[#c8a96e] rounded-sm"
+              className="ml-4 px-4 py-2 text-[8px] tracking-[0.14em] bg-[rgba(200,169,110,0.1)] border border-[rgba(200,169,110,0.3)] hover:bg-[rgba(200,169,110,0.15)] hover:border-[rgba(200,169,110,0.5)] transition-all duration-200 text-[#c8a96e] rounded-sm"
               title="Start New Mission"
             >
               + NEW MISSION
@@ -2596,6 +2676,117 @@ export function Swarm() {
                   {isCreatingMission ? 'DEPLOYING...' : 'START MISSION'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mission History Modal */}
+      {showMissionHistory && (
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.85)' }}
+          onClick={() => setShowMissionHistory(false)}
+        >
+          <div 
+            className="w-[600px] max-w-[90vw] max-h-[80vh] flex flex-col overflow-hidden rounded-lg"
+            style={{ 
+              background: 'linear-gradient(180deg, rgba(12,15,20,0.98) 0%, rgba(6,8,10,0.99) 100%)', 
+              border: '1px solid rgba(255,255,255,0.1)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[rgba(255,255,255,0.08)]">
+              <h2 
+                className="text-[14px] tracking-[0.15em]"
+                style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(255,255,255,0.9)' }}
+              >
+                Mission History
+              </h2>
+              <button
+                onClick={() => setShowMissionHistory(false)}
+                className="text-[rgba(255,255,255,0.4)] hover:text-[rgba(255,255,255,0.7)] transition-colors text-lg"
+              >
+                ×
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {loadingMissionHistory ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="w-6 h-6 border-2 border-[rgba(200,169,110,0.3)] border-t-[#c8a96e] rounded-full animate-spin" />
+                </div>
+              ) : missionHistory.length === 0 ? (
+                <div className="text-center py-12 text-[rgba(255,255,255,0.4)] text-[12px]">
+                  No missions found
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {missionHistory.map((mission) => (
+                    <div
+                      key={mission.id}
+                      onClick={() => viewMissionFromHistory(mission)}
+                      className="flex items-center justify-between p-4 rounded cursor-pointer transition-all border"
+                      style={{ 
+                        background: 'rgba(255,255,255,0.02)',
+                        borderColor: 'rgba(255,255,255,0.06)',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                        e.currentTarget.style.borderColor = 'rgba(200,169,110,0.3)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255,255,255,0.02)';
+                        e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)';
+                      }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div 
+                          className="w-2 h-2 rounded-full"
+                          style={{
+                            background: mission.status === 'completed' ? '#4ade80' :
+                                       mission.status === 'running' || mission.status === 'pending' ? '#60a5fa' :
+                                       mission.status === 'failed' ? '#f87171' : '#9ca3af'
+                          }}
+                        />
+                        <div>
+                          <div className="text-[11px] text-[rgba(255,255,255,0.8)] font-mono mb-1">
+                            {mission.target || 'No target'}
+                          </div>
+                          <div className="text-[10px] text-[rgba(255,255,255,0.4)]">
+                            {mission.created_at ? new Date(mission.created_at).toLocaleString() : 'Unknown date'}
+                          </div>
+                          {mission.objective && (
+                            <div className="text-[9px] text-[rgba(255,255,255,0.3)] mt-1 max-w-[300px] truncate">
+                              {mission.objective}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span 
+                          className="text-[9px] px-2 py-1 rounded tracking-wider"
+                          style={{
+                            background: mission.status === 'completed' ? 'rgba(74,222,128,0.1)' :
+                                       mission.status === 'running' || mission.status === 'pending' ? 'rgba(96,165,250,0.1)' :
+                                       mission.status === 'failed' ? 'rgba(248,113,113,0.1)' : 'rgba(156,163,175,0.1)',
+                            color: mission.status === 'completed' ? 'rgba(74,222,128,0.9)' :
+                                   mission.status === 'running' || mission.status === 'pending' ? 'rgba(96,165,250,0.9)' :
+                                   mission.status === 'failed' ? 'rgba(248,113,113,0.9)' : 'rgba(156,163,175,0.9)',
+                          }}
+                        >
+                          {mission.status?.toUpperCase() || 'UNKNOWN'}
+                        </span>
+                        <div className="text-[9px] text-[rgba(255,255,255,0.3)]">
+                          {mission.iteration || 0} iters
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
