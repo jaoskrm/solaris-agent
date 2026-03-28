@@ -7,11 +7,17 @@ import asyncio
 import logging
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY = 0.5  # seconds
+RETRY_BACKOFF = 2.0  # exponential backoff multiplier
 
 # Thread pool for synchronous Supabase operations
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -35,6 +41,50 @@ def is_valid_uuid(value: str | None) -> bool:
     if not value or value == "unknown":
         return False
     return bool(UUID_PATTERN.match(value))
+
+
+def _retry_with_backoff(func, max_retries=MAX_RETRIES, backoff=RETRY_BACKOFF):
+    """Execute a function with exponential backoff retry logic.
+    
+    Args:
+        func: The function to execute (should make a Supabase API call)
+        max_retries: Maximum number of retry attempts
+        backoff: Exponential backoff multiplier
+        
+    Returns:
+        The result of func() if successful
+        
+    Raises:
+        The last exception if all retries fail
+    """
+    last_exception = None
+    delay = RETRY_DELAY
+    
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            error_str = str(e).lower()
+            
+            # Don't retry for non-transient errors
+            if "404" in error_str or "not found" in error_str:
+                raise  # Re-raise 404s immediately
+            if "duplicate" in error_str or "conflict" in error_str:
+                raise  # Re-raise conflicts immediately
+            if "constraint" in error_str:
+                raise  # Re-raise constraint violations immediately
+                
+            # Retry on transient errors
+            if attempt < max_retries - 1:
+                logger.debug(f"Supabase request failed (attempt {attempt + 1}/{max_retries}), retrying in {delay}s: {e}")
+                time.sleep(delay)
+                delay *= backoff
+            else:
+                logger.warning(f"Supabase request failed after {max_retries} attempts: {e}")
+    
+    raise last_exception
+
 
 # Load environment variables from .env file if present
 try:
@@ -120,22 +170,23 @@ class RedTeamSupabaseClient:
             "phase": stage,
         }
         
-        try:
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                _executor,
+        def _do_insert():
+            return _retry_with_backoff(
                 lambda: self._client.table("swarm_agent_events").insert(event_data).execute()
             )
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(_executor, _do_insert)
             logger.debug(f"Logged kill chain event: {stage}/{event_type}")
             return True
         except RuntimeError:
             # No running event loop - run synchronously
-            result = self._client.table("swarm_agent_events").insert(event_data).execute()
+            result = _do_insert()
             logger.debug(f"Logged kill chain event: {stage}/{event_type}")
             return True
         except Exception as e:
             error_str = str(e).lower()
-            # Silently ignore 404 errors (table doesn't exist)
             if "404" in error_str or "not found" in error_str:
                 logger.debug(f"kill_chain_events table not found (404) - skipping log")
             elif "winerror 10035" in error_str:
@@ -218,19 +269,19 @@ class RedTeamSupabaseClient:
         if recent_logs is not None:
             state_data["recent_logs"] = recent_logs
         
+        def _do_upsert():
+            return _retry_with_backoff(
+                lambda: self._client.table("swarm_agent_states")
+                .upsert(state_data, on_conflict="mission_id,agent_id")
+                .execute()
+            )
+
         try:
             try:
                 loop = asyncio.get_running_loop()
-                # Use upsert to handle both insert and update
-                await loop.run_in_executor(
-                    _executor,
-                    lambda: self._client.table("swarm_agent_states")
-                    .upsert(state_data, on_conflict="mission_id,agent_id")
-                    .execute()
-                )
+                await loop.run_in_executor(_executor, _do_upsert)
             except RuntimeError:
-                # No running event loop - run synchronously
-                self._client.table("swarm_agent_states").upsert(state_data, on_conflict="mission_id,agent_id").execute()
+                _do_upsert()
             logger.debug(f"Updated agent state: {agent_name} ({agent_id}) = {status}")
             return True
         except Exception as e:
@@ -520,23 +571,20 @@ class RedTeamSupabaseClient:
         if parent_event_id is not None and is_valid_uuid(parent_event_id):
             event_data["parent_event_id"] = parent_event_id
 
+        def _do_insert():
+            return _retry_with_backoff(
+                lambda: self._client.table("swarm_events").insert(event_data).execute()
+            )
+
         try:
-            # DEBUG: Check if mission exists first
-            mission_check = self._client.table("swarm_missions").select("id").eq("id", mission_id).execute()
-            if not mission_check.data:
-                logger.warning(f"[DEBUG] Mission {mission_id} NOT FOUND in swarm_missions table! Events will be orphaned.")
-            else:
-                logger.info(f"[DEBUG] Mission {mission_id} exists in swarm_missions - OK")
-            
-            try:
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    _executor,
-                    lambda: self._client.table("swarm_events").insert(event_data).execute()
-                )
-            except RuntimeError:
-                # No running event loop - run synchronously
-                result = self._client.table("swarm_events").insert(event_data).execute()
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(_executor, _do_insert)
+            if result and result.data:
+                logger.debug(f"Logged swarm event: {event_type}/{title}")
+                return result.data[0]
+            return None
+        except RuntimeError:
+            result = _do_insert()
             if result and result.data:
                 logger.debug(f"Logged swarm event: {event_type}/{title}")
                 return result.data[0]
@@ -628,16 +676,20 @@ class RedTeamSupabaseClient:
         if deduplication_key is not None:
             attempt_data["deduplication_key"] = deduplication_key
 
+        def _do_insert():
+            return _retry_with_backoff(
+                lambda: self._client.table("swarm_exploit_attempts").insert(attempt_data).execute()
+            )
+
         try:
-            try:
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    _executor,
-                    lambda: self._client.table("swarm_exploit_attempts").insert(attempt_data).execute()
-                )
-            except RuntimeError:
-                # No running event loop - run synchronously
-                result = self._client.table("swarm_exploit_attempts").insert(attempt_data).execute()
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(_executor, _do_insert)
+            if result and result.data:
+                logger.debug(f"Logged exploit attempt: {exploit_type} on {target_url}")
+                return result.data[0]
+            return None
+        except RuntimeError:
+            result = _do_insert()
             if result and result.data:
                 logger.debug(f"Logged exploit attempt: {exploit_type} on {target_url}")
                 return result.data[0]
@@ -716,16 +768,20 @@ class RedTeamSupabaseClient:
         if confidence_score is not None:
             finding_data["confidence_score"] = confidence_score
 
+        def _do_insert():
+            return _retry_with_backoff(
+                lambda: self._client.table("swarm_findings").insert(finding_data).execute()
+            )
+
         try:
-            try:
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    _executor,
-                    lambda: self._client.table("swarm_findings").insert(finding_data).execute()
-                )
-            except RuntimeError:
-                # No running event loop - run synchronously
-                result = self._client.table("swarm_findings").insert(finding_data).execute()
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(_executor, _do_insert)
+            if result and result.data:
+                logger.debug(f"Logged swarm finding: {title} ({severity})")
+                return result.data[0]
+            return None
+        except RuntimeError:
+            result = _do_insert()
             if result and result.data:
                 logger.debug(f"Logged swarm finding: {title} ({severity})")
                 return result.data[0]

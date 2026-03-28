@@ -734,6 +734,15 @@ class TargetContainerManager:
         host_port = self._extract_port_from_url(target_url)
         logger.info(f"[DEBUG] Extracted host_port from URL: {host_port}")
         
+        # Step 0: Ensure the Docker network exists
+        try:
+            client.networks.get(NETWORK_NAME)
+            logger.info(f"[DEBUG] Network '{NETWORK_NAME}' already exists")
+        except NotFound:
+            logger.info(f"[DEBUG] Creating Docker network '{NETWORK_NAME}'")
+            client.networks.create(NETWORK_NAME, driver="bridge")
+            logger.info(f"[DEBUG] Network '{NETWORK_NAME}' created")
+        
         try:
             # Step 1: Clone the repo
             logger.info(f"Cloning repo: {repo_url}")
@@ -841,8 +850,9 @@ class TargetContainerManager:
             )
             logger.info(f"[DEBUG] Container created with ID: {self._container.id}")
             
-            # Wait a moment for container to initialize
-            await asyncio.sleep(3)
+            # Wait for container to initialize (with health check)
+            logger.info(f"[DEBUG] Waiting for container to start...")
+            await asyncio.sleep(2)
             
             # Verify container is running
             self._container.reload()
@@ -863,17 +873,46 @@ class TargetContainerManager:
                 }
             
             logger.info(f"[DEBUG] Container is running! Container short ID: {self._container.short_id}")
+            
+            # Health check: Wait for application to be ready
+            health_check_url = f"http://localhost:{host_port}"
+            logger.info(f"[DEBUG] Health checking: {health_check_url}")
+            
+            import httpx
+            max_retries = 30
+            retry_delay = 1
+            
+            for attempt in range(max_retries):
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as client_http:
+                        response = await client_http.get(health_check_url)
+                        if response.status_code < 500:  # Any non-server error means app is responding
+                            logger.info(f"[DEBUG] Health check passed on attempt {attempt + 1}")
+                            break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.debug(f"[DEBUG] Health check attempt {attempt + 1} failed: {e}")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logger.warning(f"[DEBUG] Health check failed after {max_retries} attempts: {e}")
+                        # Continue anyway - the app might just be slow to start
+            
+            logger.info(f"[DEBUG] Container should be ready at: {container_url}")
             logger.info(f"[DEBUG] Container name: {container_name}")
             logger.info(f"[DEBUG] Container network mode: {network_mode}")
             
             # Store the deployed URL for use by translate_url_for_sandbox
+            # NOTE: _active_target_port should be the INTERNAL port (3000), not the external mapped port.
+            # translate_url_for_sandbox replaces localhost:PORT in URLs with host.docker.internal:PORT.
+            # Since exploit URLs use localhost:3000 (Juice Shop's internal port), we store 3000 here.
+            # Docker's port mapping (host_port -> internal_port) handles the rest.
             global _active_target_url, _active_target_host, _active_target_port
             _active_target_url = container_url
             if IS_LINUX:
                 _active_target_host = "localhost"
             else:
                 _active_target_host = "host.docker.internal"
-            _active_target_port = str(host_port)
+            _active_target_port = str(internal_port)  # Use internal port (3000), not external (host_port)
             self._deployed_url = container_url
             
             return {
