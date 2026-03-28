@@ -1865,7 +1865,13 @@ export function Swarm() {
                 <div className="flex gap-3 h-[180px] pb-2" style={{ overflowX: 'auto', minWidth: 'max-content' }}>
                   {exploitsList.map((exploit, index) => {
                     const isSuccess = exploit.success;
-                    const hasEvidence = exploit.evidence && Object.keys(exploit.evidence).length > 0;
+                    let evidence = {};
+                    if (typeof exploit.evidence === 'string' && exploit.evidence) {
+                      try { evidence = JSON.parse(exploit.evidence); } catch { evidence = {}; }
+                    } else if (exploit.evidence && typeof exploit.evidence === 'object') {
+                      evidence = exploit.evidence;
+                    }
+                    const hasEvidence = evidence && typeof evidence === 'object' && Object.keys(evidence).length > 0;
                     
                     return (
                       <div 
@@ -1914,7 +1920,7 @@ export function Swarm() {
                             <div className="px-3 py-2 bg-[rgba(74,222,128,0.04)]">
                               <div className="text-[7px] text-[rgba(74,222,128,0.8)] mb-1 tracking-[0.15em]">EVIDENCE</div>
                               <div className="text-[9px] text-[rgba(255,255,255,0.8)] space-y-1">
-                                {Object.entries(exploit.evidence).map(([key, value]) => (
+                                {Object.entries(evidence).map(([key, value]) => (
                                   <div key={key} className="flex gap-2">
                                     <span className="text-[rgba(200,169,110,0.7)] shrink-0 min-w-[60px] capitalize">
                                       {key.replace(/_/g, ' ')}:
@@ -2038,23 +2044,31 @@ export function Swarm() {
                 )}
 
                 {/* Evidence */}
-                {expandedExploit.evidence && Object.keys(expandedExploit.evidence).length > 0 && (
-                  <div>
-                    <div className="text-[9px] text-[rgba(74,222,128,0.8)] tracking-[0.15em] mb-2">EVIDENCE</div>
-                    <div className="text-[11px] text-[rgba(255,255,255,0.7)] space-y-2 bg-[rgba(74,222,128,0.03)] p-3 rounded">
-                      {Object.entries(expandedExploit.evidence).map(([key, value]) => (
-                        <div key={key} className="flex gap-3">
-                          <span className="text-[rgba(200,169,110,0.7)] shrink-0 min-w-[100px] capitalize">
-                            {key.replace(/_/g, ' ')}:
-                          </span>
-                          <span className="font-mono break-all text-[10px]">
-                            {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
-                          </span>
-                        </div>
-                      ))}
+                {(() => {
+                  let expEvidence = {};
+                  if (typeof expandedExploit.evidence === 'string' && expandedExploit.evidence) {
+                    try { expEvidence = JSON.parse(expandedExploit.evidence); } catch { expEvidence = {}; }
+                  } else if (expandedExploit.evidence && typeof expandedExploit.evidence === 'object') {
+                    expEvidence = expandedExploit.evidence;
+                  }
+                  return expEvidence && typeof expEvidence === 'object' && Object.keys(expEvidence).length > 0 ? (
+                    <div>
+                      <div className="text-[9px] text-[rgba(74,222,128,0.8)] tracking-[0.15em] mb-2">EVIDENCE</div>
+                      <div className="text-[11px] text-[rgba(255,255,255,0.7)] space-y-2 bg-[rgba(74,222,128,0.03)] p-3 rounded">
+                        {Object.entries(expEvidence).map(([key, value]) => (
+                          <div key={key} className="flex gap-3">
+                            <span className="text-[rgba(200,169,110,0.7)] shrink-0 min-w-[100px] capitalize">
+                              {key.replace(/_/g, ' ')}:
+                            </span>
+                            <span className="font-mono break-all text-[10px]">
+                              {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  ) : null;
+                })()}
 
                 {/* Extracted Tokens/Secrets */}
                 {(() => {

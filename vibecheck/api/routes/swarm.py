@@ -8,6 +8,7 @@ Provides endpoints for:
 - Managing agent states
 """
 
+import json
 import logging
 import subprocess
 import tempfile
@@ -1291,7 +1292,7 @@ async def get_exploit_attempts(
                 error_message=attempt.get("error_message"),
                 stdout=attempt.get("stdout"),
                 stderr=attempt.get("stderr"),
-                evidence=attempt.get("evidence", {}),
+                evidence=attempt.get("evidence") if isinstance(attempt.get("evidence"), dict) else (json.loads(attempt["evidence"]) if isinstance(attempt["evidence"], str) else {}),
                 created_at=attempt["created_at"],
                 execution_time_ms=attempt.get("execution_time_ms"),
                 was_deduplicated=attempt.get("was_deduplicated", False),
