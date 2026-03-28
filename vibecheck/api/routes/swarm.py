@@ -918,19 +918,18 @@ async def trigger_swarm_mission(request: SwarmTriggerRequest) -> SwarmTriggerRes
             })
         
         # Publish to Redis for swarm module
+        # NOTE: Do NOT wrap in "data" field - the worker expects flat mission dict
         redis_bus = get_redis_bus()
         await redis_bus.publish("swarm_missions", {
-            "data": {  # Wrap in data field for worker compatibility
-                "mission_id": mission_id,
-                "target": deployed_target,
-                "objective": request.objective,
-                "mode": request.mode,  # Keep original mode for worker
-                "max_iterations": request.max_iterations,
-                "action": "start",
-                "repo_url": request.repo_url if request.mode == "repo" else None,
-                "auto_deploy": request.auto_deploy if request.mode == "repo" else False,
-                "deployment_info": deployment_info,
-            }
+            "mission_id": mission_id,
+            "target": deployed_target,
+            "objective": request.objective,
+            "mode": request.mode,
+            "max_iterations": request.max_iterations,
+            "action": "start",
+            "repo_url": request.repo_url if request.mode == "repo" else None,
+            "auto_deploy": request.auto_deploy if request.mode == "repo" else False,
+            "deployment_info": deployment_info,
         })
         
         logger.info(f"Swarm mission {mission_id} triggered successfully")

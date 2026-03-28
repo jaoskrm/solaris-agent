@@ -242,6 +242,7 @@ export function Swarm() {
   const containerRef = useRef<HTMLDivElement>(null);
   const labelsRef = useRef<HTMLDivElement>(null);
   const tickerRef = useRef<HTMLDivElement>(null);
+  const reportsBodyRef = useRef<HTMLDivElement>(null);
   const nodeMapRef = useRef<Record<string, {
     m: THREE.Mesh;
     wf: THREE.LineSegments;
@@ -305,6 +306,22 @@ export function Swarm() {
     const params = new URLSearchParams(window.location.search);
     return params.get('missionId');
   };
+
+  // Convert vertical wheel to horizontal scroll for Mission Reports
+  useEffect(() => {
+    const reportsBody = reportsBodyRef.current;
+    if (!reportsBody) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        reportsBody.scrollLeft += e.deltaY;
+      }
+    };
+
+    reportsBody.addEventListener('wheel', handleWheel, { passive: false });
+    return () => reportsBody.removeEventListener('wheel', handleWheel);
+  }, []);
 
   // Fetch latest mission with findings on page load
   useEffect(() => {
@@ -1835,7 +1852,7 @@ export function Swarm() {
               </div>
             </div>
             
-            <div className="rpt-body flex-1 overflow-y-auto px-[14px] py-[10px] text-[11px] leading-relaxed relative z-[3] min-h-0">
+            <div ref={reportsBodyRef} className="rpt-body flex-1 overflow-x-auto px-[14px] py-[10px] text-[11px] leading-relaxed relative z-[3] min-h-0">
               {isLoadingExploits ? (
                 <div className="text-[rgba(255,255,255,0.2)] italic">
                   Loading exploit data...
