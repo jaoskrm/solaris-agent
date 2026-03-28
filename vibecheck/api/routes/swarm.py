@@ -1263,6 +1263,7 @@ async def get_mission_statistics(mission_id: str) -> MissionStatisticsResponse:
 )
 async def get_exploit_attempts(
     mission_id: str,
+    limit: int = 500,
     exploit_type: str | None = None,
     success: bool | None = None,
 ) -> list[SwarmExploitAttemptResponse]:
@@ -1270,7 +1271,7 @@ async def get_exploit_attempts(
     try:
         supabase = get_supabase_client()
         attempts = await supabase.get_swarm_exploit_attempts(
-            mission_id, exploit_type=exploit_type, success=success
+            mission_id, limit=limit, exploit_type=exploit_type, success=success
         )
         
         return [

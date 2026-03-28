@@ -370,7 +370,7 @@ export function Swarm() {
       setFindingsList(mappedFindings);
       
       // Fetch exploits
-      const exploitsResponse = await getSwarmExploits(mission.id, 100);
+      const exploitsResponse = await getSwarmExploits(mission.id, 500);
       const exploits = Array.isArray(exploitsResponse) ? exploitsResponse : (exploitsResponse?.exploits || []);
       setExploitsList(exploits);
       
