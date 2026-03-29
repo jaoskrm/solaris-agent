@@ -364,8 +364,10 @@ async def verify_vdp_scope(evidence_url: str, target: str) -> None:
             f'VDP policy page returned {resp.status_code}: {evidence_url}'
         )
 
-    # Extract target hostname for matching
+    # Extract target hostname for matching (strip port if present)
     target_host = urlparse(target).netloc or target.split('/')[0]
+    if ':' in target_host:
+        target_host = target_host.rsplit(':', 1)[0]  # Remove port (e.g., example.com:8080)
     
     # Search policy page text for target domain
     soup = BeautifulSoup(resp.text, 'html.parser')
@@ -480,12 +482,20 @@ def deterministic_evaluate(result: ExploitResult) -> CriticVerdict:
 
     # SSRF: require out-of-band confirmation or internal asset reference
     if vuln == 'ssrf' and status in (200, 201, 301, 302):
-        ssrf_indicators = [
-            'internal', 'localhost', '169.254.169.254',  # AWS metadata
-            '10.', '192.168.', '172.16.',  # Private IP ranges
-            result.expected_ssrf_marker,  # OOB callback marker
+        # Use regex for RFC-1918 private IP detection — avoids matching version strings
+        import re
+        private_ip_patterns = [
+            r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b',  # 10.0.0.0/8
+            r'\b172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}\b',  # 172.16.0.0/12
+            r'\b192\.168\.\d{1,3}\.\d{1,3}\b',  # 192.168.0.0/16
+            r'\b169\.254\.\d{1,3}\.\d{1,3}\b',  # Link-local (AWS metadata)
+            r'\blocalhost\b',
+            r'\binternal\b',
         ]
-        if not any(indicator in body for indicator in ssrf_indicators):
+        has_private_ip = any(re.search(pattern, body) for pattern in private_ip_patterns)
+        has_oob_marker = result.expected_ssrf_marker and result.expected_ssrf_marker in body
+        
+        if not has_private_ip and not has_oob_marker:
             return CriticVerdict(success=False, reason='SSRF: no internal asset reference')
 
     # Path traversal: require file content or sensitive path confirmation
@@ -520,17 +530,20 @@ async def _update_coverage(
     mission_id: str,
     redis: aioredis.Redis,
     vuln_type: str
-) -> float:
+) -> float | None:
     """
-    Mark an OWASP category as tested. Returns updated coverage_score.
+    Mark an OWASP category as tested. Returns updated coverage_score or None.
     Uses Redis SETBIT for atomic category tracking.
     
     Called after Critic confirms a finding. Result is stored in state['coverage_score']
     and used by should_continue() for early-success routing.
+    
+    Returns None for unmapped vuln types — caller MUST check before updating state
+    to avoid zeroing out the accumulated coverage score.
     """
     category = OWASP_CATEGORY_MAP.get(vuln_type)
     if not category:
-        return 0.0  # Unknown vuln type — don't update coverage
+        return None  # Unknown vuln type — don't update coverage
     
     # A01=bit0, A02=bit1, ..., A10=bit9
     bit_index = int(category[1:]) - 1
@@ -540,6 +553,126 @@ async def _update_coverage(
     bits_set = await redis.bitcount(f'redteam:coverage:{mission_id}')
     
     return bits_set / OWASP_TOTAL_CATEGORIES
+
+
+**EventBus Interface (core/events.py):**
+
+```python
+# core/events.py — EventBus interface for WebSocket dashboard
+from typing import Any, Protocol
+from abc import ABC, abstractmethod
+
+# Event type constants — single source of truth for all event types
+COVERAGE_UPDATE = 'coverage_update'
+COST_UPDATE = 'cost_update'
+AUTH_FOUND = 'auth_credential'
+STALL_WARNING = 'stall_warning'
+BUDGET_WARNING = 'budget_warning'
+AGENT_THOUGHT = 'agent_thought'
+
+class WebSocketManager(Protocol):
+    """
+    Protocol for WebSocket connection manager.
+    
+    Sprint 5 implements this to provide the WebSocket broadcast layer.
+    """
+    
+    async def broadcast_to_mission(
+        self,
+        mission_id: str,
+        event: dict[str, Any]
+    ) -> None:
+        """Broadcast event to all connected clients subscribed to this mission."""
+        ...
+
+class EventBus(ABC):
+    """
+    Abstract event bus for real-time dashboard updates.
+    
+    Implementations handle WebSocket broadcast to mission-specific channels.
+    Injected via build_graph() to maintain testability and DI consistency.
+    """
+    
+    @abstractmethod
+    async def publish(self, mission_id: str, event: dict[str, Any]) -> None:
+        """Publish event to all connected clients for this mission."""
+        ...
+
+class WebSocketEventBus(EventBus):
+    """Production WebSocket event bus implementation."""
+    
+    def __init__(self, websocket_manager: WebSocketManager):
+        self._manager = websocket_manager
+    
+    async def publish(self, mission_id: str, event: dict[str, Any]) -> None:
+        await self._manager.broadcast_to_mission(mission_id, event)
+```
+
+**Critic Node Integration (agents/critic_node.py):**
+
+```python
+# agents/critic_node.py — Node implementation
+from core.events import COVERAGE_UPDATE
+
+async def _evaluate_findings(
+    state: RedTeamState,
+    redis: aioredis.Redis,
+    event_bus: EventBus,
+) -> RedTeamState:
+    """
+    Internal: Evaluate exploit results and update coverage tracking.
+    Separated from node entry point for testability.
+    
+    Args:
+        state: Current mission state
+        redis: Injected Redis client for coverage tracking
+        event_bus: Injected event bus for WebSocket emissions
+    """
+    for result in state.get('exploit_results', []):
+        verdict = deterministic_evaluate(result)
+        
+        if verdict.success:
+            # Update coverage ONLY for known vuln types (returns None for unknown)
+            new_coverage = await _update_coverage(
+                state['mission_id'], redis, result.vulnerability_type
+            )
+            if new_coverage is not None:
+                state['coverage_score'] = new_coverage
+                # Emit WebSocket event for dashboard (injected event_bus, not global)
+                await event_bus.publish(state['mission_id'], {
+                    'type': COVERAGE_UPDATE,  # Use constant from core/events.py
+                    'coverage_score': new_coverage,
+                    'tested_categories': round(new_coverage * 10),
+                })
+    
+    return state
+
+
+# agents/graph.py — Graph construction with dependency injection
+def build_graph(
+    redis: aioredis.Redis,
+    blackboard: Blackboard,
+    supabase: Client,
+    event_bus: EventBus,
+) -> CompiledGraph:
+    """
+    Build LangGraph with injected infrastructure dependencies.
+    All nodes receive dependencies via closure, NOT as parameters.
+    """
+    
+    async def critic_node(state: RedTeamState) -> RedTeamState:
+        """
+        Critic node entry point — LangGraph calls this with state only.
+        Dependencies are captured from build_graph closure.
+        """
+        return await _evaluate_findings(state, redis=redis, event_bus=event_bus)
+    
+    # Add node to graph
+    graph = StateGraph(RedTeamState)
+    graph.add_node('critic', critic_node)
+    # ... other nodes and edges ...
+    
+    return graph.compile()
 ```
 
 ---
@@ -583,7 +716,8 @@ class MissionThrottle:
 
     def _load_user_agents(self) -> list[str]:
         """Load rotating UA list for stealth mode."""
-        return []
+        from core.stealth_config import STEALTH_USER_AGENTS
+        return STEALTH_USER_AGENTS
 
     async def acquire(self) -> '_ThrottleContext':
         """
@@ -834,40 +968,57 @@ Add `workspace_path: str` to RedTeamState.
 
 **Crawler Agent Specification:**
 ```python
+import random
+from core.stealth_config import STEALTH_USER_AGENTS
+
 class CrawlerAgent:
+    def __init__(self, rng: random.Random | None = None):
+        """
+        Initialize crawler with optional isolated RNG for deterministic replay.
+        
+        Args:
+            rng: Optional random.Random instance for deterministic UA selection.
+                 If None, uses global random module.
+        """
+        self._rng = rng or random.Random()
+    
     async def crawl(self, target: str, depth: int = 3) -> SiteMap:
         stealth_context = await self._create_stealth_context()
         
         async with async_playwright() as pw:
             browser = await pw.chromium.launch()
-            context = await browser.new_context(**stealth_context)
-            page = await context.new_page()
-            
-            # Block telemetry/analytics
-            await page.route('**/*.{analytics,telemetry}*', lambda r: r.abort())
-            
-            requests = []
-            page.on('request', lambda r: requests.append({
-                'url': r.url, 'method': r.method, 'headers': dict(r.headers)
-            }))
-            
-            await page.goto(target)
-            await page.wait_for_load_state('networkidle')
-            
-            forms = await page.evaluate('''() =>
-                [...document.forms].map(f => ({
-                    action: f.action, method: f.method,
-                    fields: [...f.elements].map(e => ({name: e.name, type: e.type}))
-                }))''')
-            
-            sitemap = SiteMap(target=target, forms=forms, requests=requests)
-            sitemap.classify_owasp()
-            return sitemap
+            try:
+                context = await browser.new_context(**stealth_context)
+                page = await context.new_page()
+                
+                # Block telemetry/analytics
+                await page.route('**/*.{analytics,telemetry}*', lambda r: r.abort())
+                
+                requests = []
+                page.on('request', lambda r: requests.append({
+                    'url': r.url, 'method': r.method, 'headers': dict(r.headers)
+                }))
+                
+                await page.goto(target)
+                await page.wait_for_load_state('networkidle')
+                
+                forms = await page.evaluate('''() =>
+                    [...document.forms].map(f => ({
+                        action: f.action, method: f.method,
+                        fields: [...f.elements].map(e => ({name: e.name, type: e.type}))
+                    }))''')
+                
+                sitemap = SiteMap(target=target, forms=forms, requests=requests)
+                sitemap.classify_owasp()
+                return sitemap
+            finally:
+                # Ensure browser process is always closed (prevents leaks on exception)
+                await browser.close()
 
     async def _create_stealth_context(self) -> dict:
         """Apply playwright-stealth patches and rotating UA."""
         return {
-            'user_agent': random.choice(STEALTH_USER_AGENTS),
+            'user_agent': self._rng.choice(STEALTH_USER_AGENTS),
             'viewport': {'width': 1920, 'height': 1080},
             'locale': 'en-US',
             'timezone_id': 'America/New_York',
@@ -876,14 +1027,42 @@ class CrawlerAgent:
         }
 ```
 
-**Stealth UA List (minimum 20):**
+**Stealth Configuration (core/stealth_config.py):**
+
 ```python
-STEALTH_USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36...',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36...',
-    # ... 18+ more real-world UA strings
+# core/stealth_config.py — Single source of truth for stealth configuration
+# Shared between MissionThrottle (rate limiting) and CrawlerAgent (browser automation)
+
+STEALTH_USER_AGENTS: list[str] = [
+    # Chrome on Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    # Chrome on macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    # Safari on macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    # Firefox on Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+    # Firefox on macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
+    # Edge on Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+    # Chrome on Linux
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    # Firefox on Linux
+    'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/121.0',
 ]
+
+# Runtime warning if fewer than 20 UAs — use warnings.warn so the module still imports
+import warnings
+if len(STEALTH_USER_AGENTS) < 20:
+    warnings.warn(
+        f"Only {len(STEALTH_USER_AGENTS)} UAs defined — stealth rotation degraded. "
+        "Add at least 20 for effective anti-fingerprinting.",
+        stacklevel=2
+    )
 ```
+
+> **Note:** Both `MissionThrottle` (Part 3.4) and `CrawlerAgent` (Feature 3.1) import from this shared module. This ensures consistent UA rotation across all stealth operations.
 
 #### Feature 3.2 — Dynamic API Discovery
 
@@ -915,36 +1094,44 @@ async def discover_api_endpoints(
 
 #### Feature 3.3 — Intel / CVE Agent
 
+> **Implementation Note:** See **Part 3.4 — Dependency Injection Pattern** for the canonical `IntelAgent` class implementation with proper DI. The class form is preferred over the standalone function for testability and consistency with the rest of the codebase.
+
+**IntelAgent Interface:**
 ```python
-async def intel_agent(
-    state: RedTeamState,
-    blackboard: Blackboard  # Injected, not global
-) -> RedTeamState:
+class IntelAgent:
     """
     Intel agent — queries CISA KEV, NVD, Exploit-DB for stack vulnerabilities.
     
-    Args:
-        state: Current mission state
-        blackboard: Injected blackboard for state storage
+    See Part 3.4 for full implementation with dependency injection.
     """
-    stack = blackboard.get('stack_fingerprint', {})
-    findings = []
-    for component, version in stack.items():
-        kev_results = await cisa_kev_search(f'{component} {version}')
-        cves = await nvd_search(f'{component} {version}')
-        exploits = await exploitdb_search(component, version)
-        
-        for cve in cves[:3]:
-            poc = await synthesize_poc(cve, component, version)
-            findings.append(IntelFinding(
-                cve_id=cve.id, component=component,
-                cvss=cve.cvss_score, poc=poc,
-                in_kev=any(k.id == cve.id for k in kev_results),
-                exploit_db_url=exploits[0].url if exploits else None
-            ))
     
-    await blackboard.set('cve_intel', [f.dict() for f in sorted(findings, key=lambda x: x.cvss, reverse=True)])
-    return state
+    def __init__(self, redis: aioredis.Redis, blackboard: Blackboard):
+        self._redis = redis
+        self._blackboard = blackboard
+    
+    async def run(self, state: RedTeamState) -> RedTeamState:
+        """Execute intel gathering and update state."""
+        stack = self._blackboard.get('stack_fingerprint', {})
+        findings = []
+        
+        for component, version in stack.items():
+            kev_results = await cisa_kev_search(f'{component} {version}')
+            cves = await nvd_search(f'{component} {version}')
+            exploits = await exploitdb_search(component, version)
+            
+            for cve in cves[:3]:
+                poc = await synthesize_poc(cve, component, version)
+                findings.append(IntelFinding(
+                    cve_id=cve.id, component=component,
+                    cvss=cve.cvss_score, poc=poc,
+                    in_kev=any(k.id == cve.id for k in kev_results),
+                    exploit_db_url=exploits[0].url if exploits else None
+                ))
+        
+        await self._blackboard.set('cve_intel', [
+            f.dict() for f in sorted(findings, key=lambda x: x.cvss, reverse=True)
+        ])
+        return state
 ```
 
 ### 2.7 Sprint 4 — Self-Improvement Loop (Weeks 13-18)
@@ -1202,6 +1389,11 @@ CREATE TABLE swarm_mcp_servers (
 **Atomic Cost Recording (core/redis_bus.py):**
 ```python
 import aioredis
+import asyncio
+from typing import Set
+
+# Track background tasks to prevent premature GC/cancellation
+_background_tasks: Set[asyncio.Task] = set()
 
 async def record_llm_cost(
     redis: aioredis.Redis,
@@ -1215,6 +1407,8 @@ async def record_llm_cost(
     Returns True if budget exceeded.
     
     INCRBYFLOAT is atomic at Redis level — no read-then-write race conditions.
+    Background task tracking prevents audit writes from being cancelled
+    if the event loop shuts down before they complete.
     
     Args:
         redis: Injected aioredis.Redis client
@@ -1225,7 +1419,10 @@ async def record_llm_cost(
     ))
     
     # Fire-and-forget async write to Supabase for audit (non-blocking)
-    asyncio.create_task(_write_cost_ledger(supabase, mission_id, cost_usd))
+    # Track task to prevent cancellation before completion
+    task = asyncio.create_task(_write_cost_ledger(supabase, mission_id, cost_usd))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)  # Auto-cleanup on completion
     
     return new_total >= max_cost_usd
 
@@ -1277,14 +1474,21 @@ class IntelAgent:
         self._blackboard = blackboard
 
 # Graph construction with dependency injection:
-def build_graph(redis: aioredis.Redis, blackboard: Blackboard) -> CompiledGraph:
+def build_graph(
+    redis: aioredis.Redis,
+    blackboard: Blackboard,
+    supabase: Client,
+    event_bus: EventBus,
+) -> CompiledGraph:
     """
     Build LangGraph with injected infrastructure.
     
     This pattern enables:
-    - Unit testing with mock Redis/blackboard
+    - Unit testing with mock Redis/blackboard/supabase/event_bus
     - Multiple concurrent missions with isolated state
     - No global state pollution
+    
+    All infrastructure dependencies are injected here and captured in closures.
     """
     vault = CredentialVault(redis=redis)
     
@@ -1297,10 +1501,15 @@ def build_graph(redis: aioredis.Redis, blackboard: Blackboard) -> CompiledGraph:
         agent = IntelAgent(redis=redis, blackboard=blackboard)
         return await agent.run(state)
     
+    async def critic_node(state: RedTeamState) -> RedTeamState:
+        """Critic node with event_bus and redis injected via closure."""
+        return await _evaluate_findings(state, redis=redis, event_bus=event_bus)
+    
     # Build and return compiled graph
     graph = StateGraph(RedTeamState)
     graph.add_node('delta_auth', delta_auth_node)
     graph.add_node('intel', intel_node)
+    graph.add_node('critic', critic_node)
     ...
     return graph.compile()
 ```

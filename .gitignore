@@ -57,7 +57,7 @@ reports/
 htmlcov/
 .tox/
 .nox/
-
+secrets
 # Node.js / npm
 node_modules/
 npm-debug.log*
@@ -78,6 +78,7 @@ vibecheck/dashboard/node_modules/
 # Cloned repositories (scanned code)
 vibecheck/repos/
 repos/
+nul
 
 # Local data
 data/
