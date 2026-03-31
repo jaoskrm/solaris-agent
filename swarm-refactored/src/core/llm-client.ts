@@ -277,6 +277,74 @@ class OllamaClient {
   }
 }
 
+export function tryParseJSON(text: string): { success: true; data: object } | { success: false; error: string } {
+  try {
+    const data = JSON.parse(text);
+    return { success: true, data };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    return { success: false, error };
+  }
+}
+
+export function repairJSON(text: string): string {
+  let repaired = text.trim();
+  
+  repaired = repaired.replace(/^```json\s*/i, '');
+  repaired = repaired.replace(/^```\s*/i, '');
+  repaired = repaired.replace(/\s*```$/i, '');
+  
+  try {
+    JSON.parse(repaired);
+    return repaired;
+  } catch {
+  }
+  
+  const openBraces = (repaired.match(/{/g) || []).length;
+  let closeBraces = (repaired.match(/}/g) || []).length;
+  const openBrackets = (repaired.match(/\[/g) || []).length;
+  let closeBrackets = (repaired.match(/\]/g) || []).length;
+  
+  while (openBraces > closeBraces) {
+    repaired += '}';
+    closeBraces++;
+  }
+  while (openBrackets > closeBrackets) {
+    repaired += ']';
+    closeBrackets++;
+  }
+  
+  const lastOpen = repaired.lastIndexOf('{');
+  const lastClose = repaired.lastIndexOf('}');
+  if (lastOpen > lastClose) {
+    const nextBracket = repaired.indexOf('[', lastOpen);
+    const nextClose = repaired.indexOf('}', lastOpen);
+    if (nextBracket !== -1 && (nextClose === -1 || nextBracket < nextClose)) {
+    } else if (lastClose < lastOpen) {
+      repaired = repaired.substring(0, lastClose + 1);
+    }
+  }
+  
+  try {
+    JSON.parse(repaired);
+    return repaired;
+  } catch {
+  }
+  
+  const jsonMatch = repaired.match(/\{[\s\S]*"/);
+  if (jsonMatch) {
+    const tryStart = jsonMatch.index!;
+    const tryText = repaired.substring(tryStart);
+    try {
+      JSON.parse(tryText);
+      return tryText;
+    } catch {
+    }
+  }
+  
+  return repaired;
+}
+
 export const llmClient = new LLMClient();
 
 export { AGENT_MODEL_CONFIG };

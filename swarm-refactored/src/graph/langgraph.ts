@@ -82,8 +82,17 @@ export async function runMission(
     fastMode?: boolean;
   }
 ): Promise<RedTeamState> {
-  await redisBus.connect();
-  await supabaseClient.connect();
+  try {
+    await redisBus.connect();
+  } catch (error) {
+    console.warn('[Redis] Connection failed, running without message queue:', error);
+  }
+  
+  try {
+    await supabaseClient.connect();
+  } catch (error) {
+    console.warn('[Supabase] Connection failed, running without database:', error);
+  }
 
   const initialState: RedTeamState = {
     mission_id: missionId,

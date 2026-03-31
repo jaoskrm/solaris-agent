@@ -13,9 +13,15 @@ import type {
   MessageType,
 } from '../types/index.js';
 import { CommanderPlanSchema } from './schemas.js';
-import { llmClient } from '../core/llm-client.js';
+import { llmClient, repairJSON, tryParseJSON } from '../core/llm-client.js';
 import { supabaseClient } from '../core/supabase-client.js';
 import { redisBus } from '../core/redis-bus.js';
+
+function logWithTimestamp(message: string, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO'): void {
+  const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const prefix = level === 'ERROR' ? '❌' : level === 'WARN' ? '⚠️' : '📋';
+  console.info(`[${timestamp}] ${prefix} [commander] ${message}`);
+}
 
 const AGENT_ROLE_MAPPING: Record<string, string> = {
   'agent_alpha': 'agent_alpha',
@@ -280,17 +286,25 @@ export async function commander_plan(
   const prompt = buildCommanderPrompt(state, defenseIntel);
 
   const messages = [
-    { role: 'system' as const, content: 'You are Commander, orchestrating red team operations. Always respond with valid JSON matching the schema.' },
+    { role: 'system' as const, content: 'You are Commander, orchestrating red team operations. Always respond with valid JSON matching the schema. Do NOT include any markdown formatting or explanations - ONLY raw JSON.' },
     { role: 'user' as const, content: prompt },
   ];
 
   let plan;
   try {
     const response = await llmClient.chatForAgent('commander', messages);
-    const parsed = JSON.parse(response);
-    plan = CommanderPlanSchema.parse(parsed);
+    
+    const repaired = repairJSON(response);
+    const parseResult = tryParseJSON(repaired);
+    
+    if (parseResult.success) {
+      plan = CommanderPlanSchema.parse(parseResult.data);
+      logWithTimestamp(`Commander: Planning successful - strategy: ${plan.strategy.substring(0, 60)}...`);
+    } else {
+      throw new Error(`JSON parse failed: ${parseResult.error}`);
+    }
   } catch (error) {
-    console.error('Commander planning failed, using fallback tasks:', error);
+    logWithTimestamp(`Commander planning failed: ${error}, using fallback tasks`, 'WARN');
 
     const fallbackTasks = generateFallbackTasks(state);
     plan = {
@@ -310,6 +324,13 @@ export async function commander_plan(
 
   if (stealthMode) {
     state.blackboard.stealth_mode = true;
+  }
+
+  logWithTimestamp(`Strategy: ${plan.strategy}`);
+  logWithTimestamp(`Next phase: ${plan.next_phase}`);
+  logWithTimestamp(`Tasks: ${plan.tasks.length}`);
+  for (const task of plan.tasks) {
+    logWithTimestamp(`  → [${task.priority}] ${task.agent}: ${task.description} (${task.exploit_type})`);
   }
 
   const normalizedTasks: Task[] = plan.tasks.map((t: TaskAssignment) => ({
@@ -460,7 +481,7 @@ export async function commander_plan_node(
 
     return {
       ...stateUpdate,
-      messages: [...state.messages, ...messages],
+      messages: messages,
     };
   } catch (error) {
     console.error('Commander plan failed:', error);
@@ -481,7 +502,7 @@ export async function commander_observe_node(
 
     return {
       ...stateUpdate,
-      messages: [...state.messages, ...messages],
+      messages: messages,
     };
   } catch (error) {
     console.error('Commander observe failed:', error);

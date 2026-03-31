@@ -1,79 +1,169 @@
 import type { RedTeamState, Report, KillChainPhase, Phase } from '../types/index.js';
 import { supabaseClient } from '../core/supabase-client.js';
 import { redisBus } from '../core/redis-bus.js';
-import { v4 as uuidv4 } from 'uuid';
+
+function padRight(str: string, len: number): string {
+  return str.length >= len ? str.slice(0, len) : str + ' '.repeat(len - str.length);
+}
+
+function padCenter(str: string, len: number): string {
+  const padding = len - str.length;
+  if (padding <= 0) return str.slice(0, len);
+  const leftPad = Math.floor(padding / 2);
+  return ' '.repeat(leftPad) + str + ' '.repeat(padding - leftPad);
+}
+
+function padStart2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function formatTimestamp(): string {
+  const now = new Date();
+  return `${padStart2(now.getHours())}:${padStart2(now.getMinutes())}:${padStart2(now.getSeconds())}`;
+}
+
+function deduplicateExploits(exploits: { exploit_type: string; target: string; success: boolean; evidence: string }[]): { exploit_type: string; target: string; success: boolean; evidence: string }[] {
+  const seen = new Map<string, typeof exploits[0]>();
+  for (const exp of exploits) {
+    const key = `${exp.exploit_type}:${exp.target}`;
+    if (!seen.has(key) || exp.success) {
+      seen.set(key, exp);
+    }
+  }
+  return Array.from(seen.values());
+}
 
 function formatReportText(report: Report): string {
-  const lines: string[] = [
-    '='.repeat(60),
-    'RED TEAM MISSION REPORT',
-    '='.repeat(60),
-    '',
-    `Mission ID: ${report.report_metadata.mission_id}`,
-    `Generated: ${report.report_metadata.generated_at}`,
-    `Version: ${report.report_metadata.report_version}`,
-    '',
-    '-'.repeat(60),
-    'MISSION SUMMARY',
-    '-'.repeat(60),
-    `Objective: ${report.mission_summary.objective}`,
-    `Target: ${report.mission_summary.target}`,
-    `Final Phase: ${report.mission_summary.final_phase}`,
-    `Iterations: ${report.mission_summary.iterations_completed}/${report.mission_summary.max_iterations}`,
-    `Strategy: ${report.mission_summary.strategy}`,
-    '',
-    '-'.repeat(60),
-    'KILL CHAIN PROGRESS',
-    '-'.repeat(60),
-    `Progress: ${report.kill_chain_progress.progress_percentage.toFixed(1)}%`,
-    `Phases Completed: ${report.kill_chain_progress.phases_completed.join(', ')}`,
-    `Successful Exploits: ${report.kill_chain_progress.successful_exploits}`,
-    '',
-  ];
+  const timestamp = formatTimestamp();
+  const companyName = 'VIBECHECK ENTERPRISE SECURITY';
+  const lines: string[] = [];
 
-  if (report.kill_chain_progress.narrative.length > 0) {
-    lines.push('NARRATIVE:');
-    for (const step of report.kill_chain_progress.narrative) {
-      lines.push(`  ${step.step}. [${step.phase.toUpperCase()}] ${step.finding}`);
-      lines.push(`     Impact: ${step.impact}`);
-      lines.push(`     Evidence: ${step.evidence.slice(0, 100)}...`);
-    }
+  lines.push(`${timestamp} [agents.graph        ] INFO    MISSION COMPLETE - Generating Report`);
+  lines.push(`${timestamp} [agents.graph        ] INFO    ============================================================`);
+
+  const dedupedExploits = deduplicateExploits(report.exploitation_results);
+  lines.push(`${timestamp} [agents.report_generator] INFO    Deduplicated ${report.exploitation_results.length} exploits to ${dedupedExploits.length} (kept best per endpoint)`);
+
+  lines.push('');
+  lines.push('╔' + '═'.repeat(79) + '╗');
+  lines.push('║' + padCenter(companyName, 79) + '║');
+  lines.push('║' + padCenter('AUTONOMOUS RED TEAM ASSESSMENT', 79) + '║');
+  lines.push('╠' + '═'.repeat(79) + '╣');
+  lines.push('║' + padCenter('CONFIDENTIAL - PROPRIETARY SECURITY INTELLIGENCE', 79) + '║');
+  lines.push('╚' + '═'.repeat(79) + '╝');
+  lines.push('');
+
+  const generatedDate = report.report_metadata.generated_at;
+  lines.push(`${padRight('Report ID:', 20)} ${report.report_metadata.mission_id}`);
+  lines.push(`${padRight('Generated:', 20)} ${generatedDate}`);
+  lines.push(`${padRight('Target:', 20)} ${report.mission_summary.target}`);
+  lines.push(`${padRight('Classification:', 20)} CONFIDENTIAL - EXECUTIVE REVIEW`);
+  lines.push('');
+  lines.push('┌' + '─'.repeat(76) + '┐');
+  lines.push('│' + padCenter('CYBER-THREAT LANDSCAPE', 76) + '│');
+  lines.push('└' + '─'.repeat(76) + '┘');
+  lines.push('');
+  lines.push(`  ► Mission Objective: ${report.mission_summary.objective}`);
+  lines.push(`  ► Kill Chain Progress: ${report.kill_chain_progress.progress_percentage.toFixed(1)}% (${report.kill_chain_progress.phases_completed.join(', ')})`);
+  lines.push(`  ► Attack Vectors Tested: ${report.exploitation_results.length}`);
+  lines.push(`  ► Successful Compromises: ${report.kill_chain_progress.successful_exploits}`);
+  lines.push(`  ► Critical Findings: ${report.statistics.high_confidence_findings}`);
+  lines.push(`  ► Risk Level: ${report.kill_chain_progress.successful_exploits > 0 ? 'HIGH' : 'LOW'}`);
+  lines.push('');
+  lines.push('='.repeat(80));
+  lines.push('EXECUTIVE SUMMARY');
+  lines.push('='.repeat(80));
+  lines.push('');
+
+  if (report.kill_chain_progress.successful_exploits > 0) {
+    lines.push(`⚠️  CRITICAL: ${report.kill_chain_progress.successful_exploits} successful exploitation(s) confirmed. Immediate`);
+    lines.push('   remediation is required to prevent unauthorized access and data exfiltration.');
+  } else {
+    lines.push('✅ No successful exploits detected during this assessment.');
+  }
+
+  if (report.mission_summary.strategy) {
+    lines.push('');
+    lines.push(`Strategy: ${report.mission_summary.strategy.slice(0, 200)}`);
   }
 
   lines.push('');
-  lines.push('-'.repeat(60));
-  lines.push('STATISTICS');
-  lines.push('-'.repeat(60));
-  lines.push(`Total Messages: ${report.statistics.total_messages}`);
-  lines.push(`Intel Reports: ${report.statistics.intel_reports}`);
-  lines.push(`Exploit Attempts: ${report.statistics.exploit_attempts}`);
-  lines.push(`Successful Exploits: ${report.statistics.successful_exploits}`);
-  lines.push(`High Confidence Findings: ${report.statistics.high_confidence_findings}`);
-  lines.push(`Reflection Count: ${report.statistics.reflection_count}`);
-  lines.push(`Errors: ${report.statistics.errors_count}`);
+  lines.push('-'.repeat(80));
+  lines.push('MISSION DETAILS');
+  lines.push('-'.repeat(80));
+  lines.push(`Final Phase: ${report.mission_summary.final_phase}`);
+  lines.push(`Iterations Completed: ${report.mission_summary.iterations_completed}/${report.mission_summary.max_iterations}`);
+  lines.push('');
+
+  if (report.reconnaissance_findings.length > 0) {
+    lines.push('-'.repeat(80));
+    lines.push('RECONNAISSANCE FINDINGS');
+    lines.push('-'.repeat(80));
+    lines.push(`  ${report.reconnaissance_findings.length} findings recorded.`);
+    lines.push('');
+  }
+
+  lines.push('-'.repeat(80));
+  lines.push('EXPLOITATION RESULTS');
+  lines.push('-'.repeat(80));
+  lines.push('');
+
+  const successfulCount = dedupedExploits.filter(e => e.success).length;
+  const totalDeduplicated = dedupedExploits.length;
+  const successRate = totalDeduplicated > 0 ? Math.round((successfulCount / totalDeduplicated) * 100) : 0;
+
+  const tableHeader = '┌' + '─'.repeat(23) + '┬' + '─'.repeat(9) + '┬' + '─'.repeat(6) + '┬' + '─'.repeat(10) + '┐';
+  const tableSep = '├' + '─'.repeat(23) + '┼' + '─'.repeat(9) + '┼' + '─'.repeat(6) + '┼' + '─'.repeat(10) + '┤';
+  const tableEnd = '└' + '─'.repeat(23) + '┴' + '─'.repeat(9) + '┴' + '─'.repeat(6) + '┴' + '─'.repeat(10) + '┘';
+
+  lines.push(tableHeader);
+  lines.push('│' + padCenter('Exploit', 23) + '│' + padCenter('Status', 9) + '│' + padCenter('Time', 6) + '│' + padCenter('Severity', 10) + '│');
+  lines.push(tableSep);
+
+  const displayExploits = dedupedExploits.slice(0, 45);
+  for (const exp of displayExploits) {
+    const status = exp.success ? '✅ WIN  ' : '❌ FAIL ';
+    lines.push('│' + padRight(exp.exploit_type, 23) + '│' + padCenter(status, 9) + '│' + padCenter('0.0s', 6) + '│' + padCenter('N/A', 10) + '│');
+  }
+
+  lines.push(tableEnd);
+  lines.push('');
+  lines.push(`📊 SUMMARY: ${successfulCount}/${totalDeduplicated} exploits successful (${successRate}% success rate)`);
+
+  lines.push('');
+  lines.push('-'.repeat(80));
+  lines.push('MISSION STATISTICS');
+  lines.push('-'.repeat(80));
+  lines.push(`  Total Messages:          ${report.statistics.total_messages}`);
+  lines.push(`  Intelligence Reports:    ${report.statistics.intel_reports}`);
+  lines.push(`  Exploit Attempts:        ${report.exploitation_results.length}`);
+  lines.push(`  Successful Exploits:     ${report.kill_chain_progress.successful_exploits}`);
+  lines.push(`  High Confidence Findings: ${report.statistics.high_confidence_findings}`);
+  lines.push('');
 
   if (report.recommendations.length > 0) {
+    lines.push('='.repeat(80));
+    lines.push('PRIORITY REMEDIATION RECOMMENDATIONS');
+    lines.push('='.repeat(80));
     lines.push('');
-    lines.push('-'.repeat(60));
-    lines.push('RECOMMENDATIONS');
-    lines.push('-'.repeat(60));
     for (const rec of report.recommendations) {
-      lines.push(`  • ${rec}`);
-    }
-  }
-
-  if (report.errors.length > 0) {
-    lines.push('');
-    lines.push('-'.repeat(60));
-    lines.push('ERRORS');
-    lines.push('-'.repeat(60));
-    for (const err of report.errors) {
-      lines.push(`  • ${err}`);
+      lines.push(`  ${rec}`);
     }
   }
 
   lines.push('');
-  lines.push('='.repeat(60));
+  lines.push('╔' + '═'.repeat(79) + '╗');
+  lines.push('║' + padCenter(`© ${new Date().getFullYear()} VibeCheck Enterprise Security - All Rights Reserved`, 79) + '║');
+  lines.push('║' + padCenter('This report contains confidential security information.', 79) + '║');
+  lines.push('║' + padCenter('Distribution limited to authorized personnel only.', 79) + '║');
+  lines.push('╚' + '═'.repeat(79) + '╝');
+  lines.push('');
+  lines.push('Report Generated by VibeCheck Autonomous Red Team Platform');
+  lines.push('For inquiries: security@vibecheck.enterprise');
+  lines.push('');
+  lines.push('='.repeat(80));
+  lines.push('END OF REPORT');
+  lines.push('='.repeat(80));
 
   return lines.join('\n');
 }
@@ -104,9 +194,7 @@ async function saveReportToFile(report: Report, missionId: string): Promise<stri
 export async function report_generation_node(
   state: RedTeamState
 ): Promise<Partial<RedTeamState>> {
-  console.info('='.repeat(60));
-  console.info('MISSION COMPLETE - Generating Report');
-  console.info('='.repeat(60));
+  const timestamp = formatTimestamp();
 
   const successfulExploits = state.exploit_results.filter((e) => e.success);
   const highConfFindings = state.recon_results.filter((f) => f.confidence >= 0.8);
@@ -121,11 +209,14 @@ export async function report_generation_node(
     phasesCompleted.push('actions_on_objectives');
   }
 
+  const dedupedExploits = deduplicateExploits(state.exploit_results);
+  const successfulDeduplicated = dedupedExploits.filter((e) => e.success);
+
   const recommendations: string[] = [];
-  if (successfulExploits.length > 0) {
-    recommendations.push('CRITICAL: Successful exploits detected - immediate remediation required');
-    for (const exp of successfulExploits.slice(0, 5)) {
-      recommendations.push(`  - ${exp.exploit_type} on ${exp.target}`);
+  if (successfulDeduplicated.length > 0) {
+    recommendations.push('🚨 CRITICAL: Successful exploits detected - immediate remediation required');
+    for (const exp of successfulDeduplicated.slice(0, 20)) {
+      recommendations.push(`  • ${exp.exploit_type} on ${exp.target}`);
     }
   }
   if (highConfFindings.length > 0) {
@@ -186,9 +277,8 @@ export async function report_generation_node(
   let reportPath: string | null = null;
   try {
     reportPath = await saveReportToFile(report, state.mission_id);
-    console.info(`Report saved to: ${reportPath}`);
   } catch (error) {
-    console.error('Failed to save report:', error);
+    console.debug(`Failed to save report: ${error}`);
   }
 
   try {

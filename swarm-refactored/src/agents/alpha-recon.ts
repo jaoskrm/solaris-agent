@@ -12,6 +12,12 @@ import type {
 import { IntelligenceReportSchema } from './schemas.js';
 import { llmClient } from '../core/llm-client.js';
 
+function logWithTimestamp(message: string, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO'): void {
+  const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const prefix = level === 'ERROR' ? '❌' : level === 'WARN' ? '⚠️' : '✅';
+  console.info(`[${timestamp}] ${prefix} [alpha_recon] ${message}`);
+}
+
 const MAX_FINDINGS = 15;
 
 const SENSITIVE_FILES = [
@@ -137,6 +143,8 @@ Respond with a JSON array of findings:
 export async function alpha_recon(
   state: RedTeamState
 ): Promise<{ stateUpdate: Partial<RedTeamState>; messages: A2AMessage[] }> {
+  logWithTimestamp(`Executing recon for mission=${state.mission_id}`);
+
   if (state.fast_mode) {
     const minimalFinding: ReconResult = {
       source: 'alpha_recon',
@@ -146,6 +154,7 @@ export async function alpha_recon(
       finding: 'Target appears to be OWASP Juice Shop web application',
     };
 
+    logWithTimestamp('Using fast mode - minimal reconnaissance');
     return {
       stateUpdate: {
         recon_results: [...state.recon_results, minimalFinding],
@@ -156,6 +165,7 @@ export async function alpha_recon(
   }
 
   const mode = detect_target_type_sync(state.target);
+  logWithTimestamp(`Detected mode=${mode} for target=${state.target}`);
 
   if (mode === 'static') {
     return handleStaticMode(state);
@@ -170,6 +180,7 @@ async function handleLiveMode(
   const alphaTasks = state.current_tasks.filter((t) => t.agent === 'agent_alpha');
 
   if (alphaTasks.length === 0) {
+    logWithTimestamp('No alpha tasks assigned, skipping');
     return {
       stateUpdate: {},
       messages: [],
@@ -186,11 +197,13 @@ async function handleLiveMode(
   let rawFindings: IntelligenceReport[] = [];
 
   try {
+    logWithTimestamp('Calling LLM for reconnaissance');
     const response = await llmClient.chatForAgent('alpha', messages);
     const parsed = JSON.parse(response);
     rawFindings = Array.isArray(parsed) ? parsed : parsed.findings || [];
+    logWithTimestamp(`LLM returned ${rawFindings.length} raw findings`);
   } catch (error) {
-    console.error('Alpha recon LLM parsing failed:', error);
+    logWithTimestamp(`LLM parsing failed: ${error}`, 'ERROR');
     rawFindings = [];
   }
 
@@ -210,16 +223,16 @@ async function handleLiveMode(
       IntelligenceReportSchema.parse(finding);
       validatedFindings.push({
         source: 'alpha_recon',
-        title: finding.recommended_action || finding.finding,
-        confidence: finding.confidence,
-        evidence: finding.evidence,
+        title: finding.recommended_action || finding.finding || 'Discovered endpoint',
+        confidence: finding.confidence || 0.5,
+        evidence: finding.evidence || '',
         cve_hint: finding.cve_hint || null,
-        asset: finding.asset,
-        finding: finding.finding,
-        recommended_action: finding.recommended_action,
+        asset: finding.asset || state.target,
+        finding: finding.finding || 'Discovered endpoint',
+        recommended_action: finding.recommended_action || '',
       });
     } catch (error) {
-      console.warn('Invalid finding skipped:', error);
+      // Skip invalid findings silently
     }
   }
 
@@ -249,6 +262,8 @@ async function handleLiveMode(
     },
     timestamp: new Date().toISOString(),
   }));
+
+  logWithTimestamp(`${validatedFindings.length} new findings from LLM (skipped ${skippedBlueTeam} blue_team findings)`);
 
   return {
     stateUpdate: {
@@ -345,10 +360,10 @@ export async function alpha_recon_node(
 
     return {
       ...stateUpdate,
-      messages: [...state.messages, ...messages],
+      messages: messages,
     };
   } catch (error) {
-    console.error('Alpha recon failed:', error);
+    logWithTimestamp(`Alpha recon failed: ${error}`, 'ERROR');
     state.errors.push(`Alpha recon error: ${error}`);
     return {
       errors: state.errors,
