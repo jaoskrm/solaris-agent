@@ -253,28 +253,40 @@ ${exploit_results.slice(-5).map((r) => `- ${r.exploit_type}: ${r.success ? 'SUCC
 `;
   }
 
-  prompt += `Based on the mission objective and current intelligence, generate a CommanderPlan with:
-1. A 2-3 sentence attack strategy
-2. 3-5 specific task assignments for agents
-3. The next phase: 'recon', 'exploitation', or 'complete'
+  const validExploitTypes = [
+    'sqli', 'xss', 'idor', 'lfi', 'auth_bypass', 'info_disclosure',
+    'sensitive_data_exposure', 'xxe', 'client_side_bypass', 'authentication',
+    'broken_access_control', 'command_injection', 'vulnerability_scan', 'osint',
+    'cve', 'jwt', 'scrape', 'ffuf', 'nmap', 'nuclei', 'python', 'curl',
+    'ssrf', 'path_traversal', 'prototype_pollution', 'open_redirect',
+    'security_misconfiguration'
+  ].join(', ');
 
-Return your response as a JSON object with this schema:
-{
-  "strategy": "attack strategy description",
-  "next_phase": "recon" | "exploitation" | "complete",
-  "analysis": "brief analysis of current state",
-  "stealth_mode": boolean,
-  "tasks": [
-    {
-      "agent": "agent_alpha" | "agent_gamma",
-      "description": "specific task description",
-      "target": "full URL to target",
-      "tools_allowed": ["nmap", "curl", ...],
-      "priority": "HIGH" | "MEDIUM" | "LOW",
-      "exploit_type": "sqli" | "xss" | "idor" | ...
-    }
-  ]
-}`;
+  prompt += `Based on the mission objective and current intelligence, generate a CommanderPlan with:
+ 1. A 2-3 sentence attack strategy
+ 2. 3-5 specific task assignments for agents
+ 3. The next phase: 'recon', 'exploitation', or 'complete'
+
+ IMPORTANT: exploit_type MUST be one of these exact values:
+ ${validExploitTypes}
+
+ Return your response as a JSON object with this schema:
+ {
+   "strategy": "attack strategy description",
+   "next_phase": "recon" | "exploitation" | "complete",
+   "analysis": "brief analysis of current state",
+   "stealth_mode": boolean,
+   "tasks": [
+     {
+       "agent": "agent_alpha" | "agent_gamma",
+       "description": "specific task description",
+       "target": "full URL to target",
+       "tools_allowed": ["nmap", "curl", ...],
+       "priority": "HIGH" | "MEDIUM" | "LOW",
+       "exploit_type": "USE ONLY: sqli, xss, idor, lfi, auth_bypass, info_disclosure, sensitive_data_exposure, xxe, client_side_bypass, authentication, broken_access_control, command_injection, vulnerability_scan, osint, cve, jwt, scrape, ffuf, nmap, nuclei, python, curl, ssrf, path_traversal, prototype_pollution, open_redirect, security_misconfiguration"
+     }
+   ]
+ }`;
 
   return truncatePrompt(prompt, MAX_PROMPT_TOKENS);
 }
@@ -286,7 +298,12 @@ export async function commander_plan(
   const prompt = buildCommanderPrompt(state, defenseIntel);
 
   const messages = [
-    { role: 'system' as const, content: 'You are Commander, orchestrating red team operations. Always respond with valid JSON matching the schema. Do NOT include any markdown formatting or explanations - ONLY raw JSON.' },
+    { role: 'system' as const, content: `You are Commander, orchestrating red team operations. Always respond with valid JSON matching the schema. Do NOT include any markdown formatting or explanations - ONLY raw JSON.
+
+IMPORTANT: exploit_type MUST be one of these exact values:
+sqli, xss, idor, lfi, auth_bypass, info_disclosure, sensitive_data_exposure, xxe, client_side_bypass, authentication, broken_access_control, command_injection, vulnerability_scan, osint, cve, jwt, scrape, ffuf, nmap, nuclei, python, curl, ssrf, path_traversal, prototype_pollution, open_redirect, security_misconfiguration
+
+DO NOT use any other value for exploit_type.` },
     { role: 'user' as const, content: prompt },
   ];
 
@@ -298,8 +315,14 @@ export async function commander_plan(
     const parseResult = tryParseJSON(repaired);
     
     if (parseResult.success) {
-      plan = CommanderPlanSchema.parse(parseResult.data);
-      logWithTimestamp(`Commander: Planning successful - strategy: ${plan.strategy.substring(0, 60)}...`);
+      const safeParseResult = CommanderPlanSchema.safeParse(parseResult.data);
+      if (safeParseResult.success) {
+        plan = safeParseResult.data;
+        logWithTimestamp(`Commander: Planning successful - strategy: ${plan.strategy.substring(0, 60)}...`);
+      } else {
+        const issues = safeParseResult.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ');
+        throw new Error(`Validation failed: ${issues}`);
+      }
     } else {
       throw new Error(`JSON parse failed: ${parseResult.error}`);
     }
