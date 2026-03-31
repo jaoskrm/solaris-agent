@@ -6,6 +6,7 @@
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export { API_BASE };
 const API_KEY = import.meta.env.VITE_API_KEY || 'dev-api-key';
 
 // Log API configuration for debugging (only in development)
@@ -110,7 +111,9 @@ export interface SwarmFinding {
 export type SwarmFindingResponse = SwarmFinding[];
 
 export interface SwarmMission {
+  mission_id?: string;
   id: string;
+  scan_id?: string | null;
   target: string;
   objective?: string;
   mode?: string;
@@ -118,6 +121,7 @@ export interface SwarmMission {
   progress: number;
   current_phase?: string;
   iteration: number;
+  max_iterations?: number;
   findings?: Record<string, unknown>[];
   error_message?: string | null;
   started_at?: string | null;
@@ -125,9 +129,17 @@ export interface SwarmMission {
   created_at: string;
 }
 
+export type SwarmMissionResponse = {
+  success: boolean;
+  data: SwarmMission;
+};
+
 export interface SwarmMissionList {
-  missions: SwarmMission[];
-  total: number;
+  success: boolean;
+  data: {
+    missions: SwarmMission[];
+    total: number;
+  };
 }
 
 export interface SwarmEvent {
@@ -195,41 +207,47 @@ export async function triggerSwarmMission(request: StartMissionRequest): Promise
 }
 
 export async function getSwarmMission(missionId: string): Promise<SwarmMission> {
-  return fetchJson<SwarmMission>(`/v0/swarm/${missionId}`);
+  const response = await fetchJson<SwarmMissionResponse>(`/v0/swarm/${missionId}`);
+  return response.data;
 }
 
-export async function getSwarmMissions(limit: number = 20, offset: number = 0): Promise<SwarmMissionList> {
-  return fetchJson<SwarmMissionList>(`/v0/swarm/missions?limit=${limit}&offset=${offset}`);
+export async function getSwarmMissions(limit: number = 20, offset: number = 0, status?: string): Promise<SwarmMissionList> {
+  let url = `/v0/swarm/missions?limit=${limit}&offset=${offset}`;
+  if (status) {
+    url += `&status=${status}`;
+  }
+  const response = await fetchJson<SwarmMissionList>(url);
+  return response;
 }
 
 /**
  * Get the most recent swarm mission (convenience function)
  */
 export async function getLatestSwarmMission(): Promise<SwarmMission | null> {
-  const result = await fetchJson<{missions: SwarmMission[]}>('/v0/swarm/missions?limit=1&offset=0');
-  return result.missions.length > 0 ? result.missions[0] : null;
+  const result = await fetchJson<SwarmMissionList>('/v0/swarm/missions?limit=1&offset=0');
+  return result.data.missions.length > 0 ? result.data.missions[0] : null;
 }
 
 // ============================================================
 // Agent State Functions
 // ============================================================
 
-// Note: Backend returns array directly, not {agents: [...]} object
-export async function getSwarmAgentStates(missionId: string): Promise<AgentStateResponse | any[]> {
-  return fetchJson<AgentStateResponse | any[]>(`/v0/swarm/${missionId}/agents`);
+export async function getSwarmAgentStates(missionId: string): Promise<any[]> {
+  const response = await fetchJson<{ success: boolean; data: any[] }>(`/v0/swarm/${missionId}/agents`);
+  return response.data;
 }
 
 // ============================================================
 // Event Functions
 // ============================================================
 
-// Note: Backend returns array directly, not {events: [...]} object
-export async function getSwarmEvents(missionId: string, limit: number = 100, agentName?: string): Promise<SwarmEventsResponse | any[]> {
+export async function getSwarmEvents(missionId: string, limit: number = 100, agentName?: string): Promise<any[]> {
   let url = `/v0/swarm/${missionId}/events?limit=${limit}`;
   if (agentName) {
     url += `&agent=${encodeURIComponent(agentName)}`;
   }
-  return fetchJson<SwarmEventsResponse | any[]>(url);
+  const response = await fetchJson<{ success: boolean; data: any[] }>(url);
+  return response.data;
 }
 
 export interface SwarmTimelineEvent {
@@ -261,24 +279,26 @@ export async function getSwarmTimelineEvents(
   if (eventType) {
     url += `&event_type=${encodeURIComponent(eventType)}`;
   }
-  return fetchJson<SwarmTimelineEvent[]>(url);
+  const response = await fetchJson<{ success: boolean; data: SwarmTimelineEvent[] }>(url);
+  return response.data;
 }
 
 // ============================================================
 // Finding Functions
 // ============================================================
 
-// Note: Backend returns array directly
-export async function getSwarmFindings(missionId: string): Promise<SwarmFindingResponse> {
-  return fetchJson<SwarmFindingResponse>(`/v0/swarm/${missionId}/findings`);
+export async function getSwarmFindings(missionId: string): Promise<SwarmFinding[]> {
+  const response = await fetchJson<{ success: boolean; data: SwarmFinding[] }>(`/v0/swarm/${missionId}/findings`);
+  return response.data;
 }
 
 // ============================================================
 // Exploit Functions
 // ============================================================
 
-export async function getSwarmExploits(missionId: string, limit: number = 50): Promise<SwarmExploitsResponse> {
-  return fetchJson<SwarmExploitsResponse>(`/v0/swarm/${missionId}/exploit-attempts?limit=${limit}`);
+export async function getSwarmExploits(missionId: string, limit: number = 50): Promise<SwarmExploit[]> {
+  const response = await fetchJson<{ success: boolean; data: SwarmExploit[] }>(`/v0/swarm/${missionId}/exploit-attempts?limit=${limit}`);
+  return response.data;
 }
 
 // ============================================================
@@ -361,10 +381,11 @@ export interface TriggerScanResponse {
 }
 
 export async function triggerScan(request: TriggerScanRequest): Promise<TriggerScanResponse> {
-  return fetchJson<TriggerScanResponse>('/v0/scans/trigger', {
+  const response = await fetchJson<{ success: boolean; data: TriggerScanResponse }>('/v0/scans/trigger', {
     method: 'POST',
     body: JSON.stringify(request),
   });
+  return response.data;
 }
 
 // Get scan status
@@ -374,12 +395,12 @@ export interface ScanStatusResponse {
   progress: number;
   current_stage?: string;
   error_message?: string;
-  /** Source of data: 'supabase' for real data, 'mock' for sample data */
-  dataSource?: 'supabase' | 'mock';
+  data_source?: 'supabase' | 'mock';
 }
 
 export async function getScanStatus(scanId: string): Promise<ScanStatusResponse> {
-  return fetchJson<ScanStatusResponse>(`/v0/scans/${scanId}/status`);
+  const response = await fetchJson<{ success: boolean; data: ScanStatusResponse }>(`/v0/scans/${scanId}/status`);
+  return response.data;
 }
 
 // Get scan results
@@ -412,24 +433,31 @@ export interface ScanReportResponse {
 }
 
 export async function getScanResults(scanId: string): Promise<ScanReportResponse> {
-  return fetchJson<ScanReportResponse>(`/v0/scans/${scanId}/results`);
+  const response = await fetchJson<{ success: boolean; data: ScanReportResponse }>(`/v0/scans/${scanId}/results`);
+  return response.data;
 }
 
 // List scans
 export interface ScanListResponse {
-  scans: Array<{
-    scan_id: string;
-    repo_url: string;
-    status: string;
-    created_at: string;
-    /** Source of data: 'supabase' for real data, 'mock' for sample data */
-    dataSource?: 'supabase' | 'mock';
-  }>;
-  total: number;
+  success: boolean;
+  data: {
+    scans: Array<{
+      scan_id: string;
+      repo_url: string;
+      status: string;
+      created_at: string;
+      data_source?: 'supabase' | 'mock';
+    }>;
+    total: number;
+  };
 }
 
-export async function listScans(limit: number = 10, offset: number = 0): Promise<ScanListResponse> {
-  return fetchJson<ScanListResponse>(`/v0/scans/?limit=${limit}&offset=${offset}`);
+export async function listScans(limit: number = 10, offset: number = 0, status?: string): Promise<ScanListResponse> {
+  let url = `/v0/scans?limit=${limit}&offset=${offset}`;
+  if (status) {
+    url += `&status=${status}`;
+  }
+  return fetchJson<ScanListResponse>(url);
 }
 
 // ============================================================

@@ -12,7 +12,12 @@ import { qdrantClient } from "./db/clients/qdrant-client";
 
 const app = new Hono();
 
-app.use("*", cors({ origin: env.ALLOWED_ORIGINS, credentials: true }));
+app.use("*", cors({ 
+  origin: "*", 
+  credentials: true,
+  allowHeaders: ["Content-Type", "x-api-key"],
+  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+}));
 app.use("*", requestLogger);
 app.use("*", errorHandler);
 app.use("*", apiKeyAuth);
