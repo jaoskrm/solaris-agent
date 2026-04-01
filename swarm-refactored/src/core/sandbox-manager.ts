@@ -1,11 +1,37 @@
 import Docker from 'dockerode';
+import { execFile } from 'child_process';
 import os from 'os';
 import path from 'path';
+import fs from 'fs';
 import type { ToolCall } from '../types/index.js';
 
 const IS_WINDOWS = os.platform() === 'win32';
 const IS_MAC = os.platform() === 'darwin';
 const IS_LINUX = os.platform().startsWith('linux');
+
+const IN_DOCKER_CONTAINER = process.env.IN_DOCKER_CONTAINER === 'true' || fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
+
+function shouldUseSandboxUrlTranslation(): boolean {
+  if (IN_DOCKER_CONTAINER) {
+    return true;
+  }
+  if (IS_LINUX) {
+    return false;
+  }
+  if (!isDockerAvailable()) {
+    return false;
+  }
+  return process.env.FORCE_SANDBOX_URL_TRANSLATION === 'true' || true;
+}
+
+function isDockerAvailable(): boolean {
+  try {
+    new Docker({ socketPath: IS_WINDOWS ? '//./pipe/docker_engine' : '/var/run/docker.sock' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'vibecheck-sandbox:latest';
 const SHARED_CONTAINER_NAME = 'vibecheck-sandbox';
@@ -15,6 +41,12 @@ const SHARED_DIR_HOST = path.join(os.tmpdir(), 'vibecheck', 'shared');
 const SHARED_DIR_CONTAINER = '/tmp/vibecheck/shared';
 
 let DOCKER_NETWORK_MODE: string | null = null;
+
+let _sandboxHealthCache: { available: boolean; lastCheck: number } = {
+  available: false,
+  lastCheck: 0,
+};
+const SANDBOX_CHECK_COOLDOWN_MS = 30000; // 30 seconds cooldown before rechecking
 let DOCKER_TARGET_HOST: string;
 let SANDBOX_TARGET_PORT: string;
 
@@ -52,17 +84,22 @@ function log(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?:
 }
 
 export function getSandboxTarget(): { host: string; port: string } {
+  if (!shouldUseSandboxUrlTranslation()) {
+    return { host: 'localhost', port: LOCAL_TARGET_PORT };
+  }
   if (IS_LINUX) {
-    return { host: 'localhost', port: '3000' };
+    return { host: 'localhost', port: LOCAL_TARGET_PORT };
   }
   return { host: DOCKER_TARGET_HOST, port: SANDBOX_TARGET_PORT };
 }
 
 export function translateUrlForSandbox(url: string): string {
+  if (!shouldUseSandboxUrlTranslation()) {
+    return url;
+  }
+
   const host = _activeTarget.host || DOCKER_TARGET_HOST;
   const port = _activeTarget.port || SANDBOX_TARGET_PORT;
-
-  log('debug', `URL Translation: Input=${url}`, { host, port });
 
   const portMatch = url.match(/(localhost|127\.0\.0\.1):(\d+)/);
   if (portMatch) {
@@ -70,6 +107,10 @@ export function translateUrlForSandbox(url: string): string {
   }
 
   return url.replace(/(localhost|127\.0\.0\.1)([/:])/, `${host}$2`);
+}
+
+export function translateUrlForDirect(url: string): string {
+  return url;
 }
 
 export function setActiveTarget(url: string | null, host: string | null, port: string | null): void {
@@ -90,22 +131,40 @@ export class SharedSandboxManager {
   private _client: Docker | null = null;
   private _sharedContainer: Docker.Container | null = null;
   private _lock: boolean = false;
+  private _dockerUnavailable: boolean = false;
+  private _dockerUnavailableUntil: number = 0;
+  private _useDirectExecution: boolean = false;
+  private static _lastDockerCheck: number = 0;
+  private static _dockerAvailable: boolean = false;
+  private static readonly DOCKER_COOLDOWN_MS = 30000;
 
   private getClient(): Docker {
     if (!this._client) {
-      this._client = new Docker({ socketPath: IS_WINDOWS ? '//./pipe/docker_engine' : '/var/run/docker.sock' });
+      try {
+        this._client = new Docker({ socketPath: IS_WINDOWS ? '//./pipe/docker_engine' : '/var/run/docker.sock' });
+      } catch (err) {
+        this._markDockerUnavailable();
+        throw err;
+      }
     }
     return this._client;
   }
 
+  private _markDockerUnavailable(): void {
+    this._dockerUnavailable = true;
+    this._dockerUnavailableUntil = Date.now() + 30000;
+    log('warn', 'Docker marked unavailable for 30 seconds');
+  }
+
   async ensureImage(): Promise<void> {
-    const client = this.getClient();
     try {
+      const client = this.getClient();
       await client.getImage(SANDBOX_IMAGE).inspect();
       log('info', `Sandbox image '${SANDBOX_IMAGE}' exists`);
     } catch {
       log('info', `Building sandbox image '${SANDBOX_IMAGE}'...`);
       try {
+        const client = this.getClient();
         await new Promise<void>((resolve, reject) => {
           client.buildImage(
             {
@@ -123,6 +182,7 @@ export class SharedSandboxManager {
       } catch (buildErr) {
         log('warn', `Could not build image, will try to pull: ${buildErr}`);
         try {
+          const client = this.getClient();
           await new Promise<void>((resolve, reject) => {
             client.pull(SANDBOX_IMAGE, (err: Error | null) => {
               if (err) reject(err);
@@ -131,12 +191,20 @@ export class SharedSandboxManager {
           });
         } catch (pullErr) {
           log('error', `Failed to pull sandbox image: ${pullErr}`);
+          this._markDockerUnavailable();
+          throw new Error('Docker unavailable - image pull failed');
         }
       }
     }
   }
 
   async ensureSharedSandbox(): Promise<Docker.Container> {
+    const now = Date.now();
+    
+    if (this._dockerUnavailable && now < this._dockerUnavailableUntil) {
+      throw new Error('Docker unavailable (cooldown)');
+    }
+
     while (this._lock) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
@@ -210,6 +278,9 @@ export class SharedSandboxManager {
       this._sharedContainer = container;
       return container;
 
+    } catch (error) {
+      this._markDockerUnavailable();
+      throw error;
     } finally {
       this._lock = false;
     }
@@ -220,8 +291,98 @@ export class SharedSandboxManager {
     timeout: number = 60,
     workdir: string = '/tmp'
   ): Promise<ExecResult> {
-    const container = await this.ensureSharedSandbox();
+    if (this._useDirectExecution) {
+      return this._execDirect(command, timeout);
+    }
 
+    if (this._dockerUnavailable && Date.now() < this._dockerUnavailableUntil) {
+      log('warn', 'Docker unavailable, switching to direct execution');
+      this._useDirectExecution = true;
+      return this._execDirect(command, timeout);
+    }
+
+    try {
+      const container = await this.ensureSharedSandbox();
+      return await this._execInContainer(container, command, timeout, workdir);
+    } catch (error) {
+      log('warn', `Docker execution failed: ${error}, falling back to direct execution`);
+      this._useDirectExecution = true;
+      return this._execDirect(command, timeout);
+    }
+  }
+
+  private _execDirect(command: string, timeout: number): Promise<ExecResult> {
+    return new Promise((resolve) => {
+      log('debug', `Direct exec: ${command.substring(0, 80)}...`);
+
+      const isWindows = os.platform() === 'win32';
+      let shell: string;
+      let shellArgs: string[];
+
+      if (isWindows) {
+        shell = 'cmd.exe';
+        shellArgs = ['/c', command];
+      } else {
+        shell = '/bin/sh';
+        shellArgs = ['-c', command];
+      }
+
+      const proc = execFile(shell, shellArgs, {
+        timeout: timeout * 1000,
+        maxBuffer: 10 * 1024 * 1024,
+      }, (error, stdout, stderr) => {
+        if (error) {
+          if (error.killed || error.code === 'ETIMEDOUT') {
+            resolve({
+              exit_code: -1,
+              stdout: stdout || '',
+              stderr: `Command timed out after ${timeout}s`,
+              command,
+              timed_out: true,
+              success: false,
+            });
+          } else {
+            const code = typeof error.code === 'number' ? error.code : -1;
+            resolve({
+              exit_code: code,
+              stdout: stdout || '',
+              stderr: stderr || error.message,
+              command,
+              timed_out: false,
+              success: false,
+            });
+          }
+        } else {
+          resolve({
+            exit_code: 0,
+            stdout: stdout || '',
+            stderr: stderr || '',
+            command,
+            timed_out: false,
+            success: true,
+          });
+        }
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout?.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+    });
+  }
+
+  private async _execInContainer(
+    container: Docker.Container,
+    command: string,
+    timeout: number,
+    workdir: string
+  ): Promise<ExecResult> {
     log('debug', `Sandbox exec: ${command.substring(0, 80)}...`);
 
     try {
@@ -409,7 +570,8 @@ export class SharedSandboxManager {
       cmd += ` -X ${method}`;
     }
     
-    const translatedUrl = translateUrlForSandbox(url);
+    const translateFn = this._useDirectExecution ? translateUrlForDirect : translateUrlForSandbox;
+    const translatedUrl = translateFn(url);
     cmd += ` "${translatedUrl}"`;
     
     return this.execCommand(cmd, timeout);
@@ -629,21 +791,39 @@ export async function executeToolViaSandbox(
 }
 
 export function isSandboxAvailable(): boolean {
+  const now = Date.now();
+  
+  if (now - _sandboxHealthCache.lastCheck < SANDBOX_CHECK_COOLDOWN_MS) {
+    return _sandboxHealthCache.available;
+  }
+  
   try {
     new Docker({ socketPath: IS_WINDOWS ? '//./pipe/docker_engine' : '/var/run/docker.sock' });
+    _sandboxHealthCache = { available: true, lastCheck: now };
     return true;
   } catch {
+    _sandboxHealthCache = { available: false, lastCheck: now };
     return false;
   }
 }
 
 export async function checkSandboxHealth(): Promise<boolean> {
+  const now = Date.now();
+  
+  if (now - _sandboxHealthCache.lastCheck < SANDBOX_CHECK_COOLDOWN_MS && !_sandboxHealthCache.available) {
+    log('debug', `Sandbox health check cached (unavailable), next check in ${Math.ceil((SANDBOX_CHECK_COOLDOWN_MS - (now - _sandboxHealthCache.lastCheck)) / 1000)}s`);
+    return false;
+  }
+  
   try {
     const manager = new SharedSandboxManager();
     await manager.ensureSharedSandbox();
     const result = await manager.execCommand('echo "health_check"');
+    _sandboxHealthCache = { available: result.success, lastCheck: now };
     return result.success;
-  } catch {
+  } catch (error) {
+    log('warn', `Sandbox health check failed: ${error}`);
+    _sandboxHealthCache = { available: false, lastCheck: now };
     return false;
   }
 }

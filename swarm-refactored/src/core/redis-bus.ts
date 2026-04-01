@@ -33,15 +33,28 @@ export class RedisBus {
   }
 
   async connect(): Promise<void> {
-    this._client = new Redis(this.url, {
+    const url = process.env.REDIS_URL || this.url;
+    this._client = new Redis(url, {
       maxRetriesPerRequest: 3,
+      lazyConnect: true,
     });
 
-    this.subscriber = new Redis(this.url, {
+    this.subscriber = new Redis(url, {
       maxRetriesPerRequest: 3,
+      lazyConnect: true,
     });
 
-    await this._client.ping();
+    this._client.on('error', () => {});
+    this.subscriber.on('error', () => {});
+
+    try {
+      await this._client.connect();
+      await this._client.ping();
+    } catch {
+      this._client = null;
+      this.subscriber = null;
+      throw new Error('Redis connection failed');
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -56,7 +69,7 @@ export class RedisBus {
   }
 
   async publish(stream: string, message: Record<string, string>): Promise<void> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return;
     await this._client.xadd(stream, '*', ...this.flattenObject(message));
   }
 
@@ -66,7 +79,7 @@ export class RedisBus {
     consumer: string,
     count: number = 10
   ): Promise<Array<{ id: string; message: Record<string, string> }>> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return [];
 
     try {
       const result = await this._client.xreadgroup(
@@ -94,7 +107,7 @@ export class RedisBus {
   }
 
   async ack(stream: string, group: string, id: string): Promise<void> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return;
     await this._client.xack(stream, group, id);
   }
 
@@ -103,20 +116,20 @@ export class RedisBus {
     key: string,
     value: unknown
   ): Promise<void> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return;
     const fullKey = `${KEY_PREFIX}:blackboard:${missionId}`;
     await this._client.hset(fullKey, key, JSON.stringify(value));
   }
 
   async blackboard_read<T = unknown>(missionId: string, key: string): Promise<T | null> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return null;
     const fullKey = `${KEY_PREFIX}:blackboard:${missionId}`;
     const value = await this._client.hget(fullKey, key);
     return value ? JSON.parse(value) : null;
   }
 
   async blackboard_read_all(missionId: string): Promise<Record<string, unknown>> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return {};
     const fullKey = `${KEY_PREFIX}:blackboard:${missionId}`;
     const data = await this._client.hgetall(fullKey);
     const result: Record<string, unknown> = {};
@@ -127,7 +140,7 @@ export class RedisBus {
   }
 
   async blackboard_clear(missionId: string): Promise<void> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return;
     const fullKey = `${KEY_PREFIX}:blackboard:${missionId}`;
     await this._client.del(fullKey);
   }
@@ -137,7 +150,7 @@ export class RedisBus {
     consumer: string = 'swarm',
     count: number = 10
   ): Promise<Array<{ id: string; analytics: DefenseAnalytics }>> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return [];
 
     try {
       await this._client.xgroup(
@@ -182,7 +195,7 @@ export class RedisBus {
   async get_latest_defense_intel(
     missionId?: string
   ): Promise<DefenseAnalytics[]> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return [];
 
     const messages = await this.consume_defense_analytics();
 
@@ -199,7 +212,7 @@ export class RedisBus {
     key: string,
     value: string
   ): Promise<void> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return;
     const fullKey = `${KEY_PREFIX}:findings:${missionId}:${category}`;
     await this._client.hset(fullKey, key, value);
   }
@@ -209,7 +222,7 @@ export class RedisBus {
     category: string,
     key: string
   ): Promise<string | null> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return null;
     const fullKey = `${KEY_PREFIX}:findings:${missionId}:${category}`;
     return this._client.hget(fullKey, key);
   }
@@ -218,7 +231,7 @@ export class RedisBus {
     missionId: string,
     category: string
   ): Promise<Record<string, string>> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return {};
     const fullKey = `${KEY_PREFIX}:findings:${missionId}:${category}`;
     return this._client.hgetall(fullKey);
   }
@@ -227,7 +240,7 @@ export class RedisBus {
     missionId: string,
     payloadHash: string
   ): Promise<number> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return 0;
     const fullKey = `${KEY_PREFIX}:payload_attempts:${missionId}`;
     const count = await this._client.hget(fullKey, payloadHash);
     return count ? parseInt(count, 10) : 0;
@@ -237,7 +250,7 @@ export class RedisBus {
     missionId: string,
     payloadHash: string
   ): Promise<number> {
-    if (!this._client) throw new Error('Not connected');
+    if (!this._client) return 0;
     const fullKey = `${KEY_PREFIX}:payload_attempts:${missionId}`;
     return this._client.hincrby(fullKey, payloadHash, 1);
   }

@@ -34,7 +34,7 @@ const AGENT_MODEL_CONFIG = {
   gamma: {
     primary: process.env.EXPLOIT_MODEL || 'qwen2.5-coder:7b-instruct',
     fallback: process.env.EXPLOIT_MODEL_FALLBACK || 'qwen2.5-coder:7b-instruct',
-    temperature: 0.2,
+    temperature: 0.1,
   },
   critic: {
     primary: process.env.CRITIC_MODEL || 'qwen2.5-coder:7b-instruct',
@@ -219,6 +219,49 @@ class OllamaClient {
     temperature: number,
     schema?: object
   ): Promise<string> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: messages.map(m => ({
+            role: m.role,
+            content: m.content,
+          })),
+          temperature,
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Ollama /api/chat error: ${response.status}`);
+      }
+
+      const data = await response.json() as { message?: { content?: string } };
+      let text = data.message?.content || '';
+      
+      text = text.replace(/^```json\s*/i, '');
+      text = text.replace(/\s*```$/i, '');
+      text = text.trim();
+      
+      return text;
+    } catch (error) {
+      console.warn(`[Ollama] /api/chat failed: ${error}, falling back to /api/generate`);
+      return this.chatWithGenerate(model, messages, temperature, schema);
+    }
+  }
+
+  private async chatWithGenerate(
+    model: string,
+    messages: ChatMessage[],
+    temperature: number,
+    schema?: object
+  ): Promise<string> {
+    console.warn(`[Ollama] Using /api/generate fallback for model: ${model}`);
+    
     const response = await fetch(`${this.baseUrl}/api/generate`, {
       method: 'POST',
       headers: {
@@ -236,7 +279,7 @@ class OllamaClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
+      throw new Error(`Ollama /api/generate error: ${response.status}`);
     }
 
     const data = await response.json() as { response?: string };

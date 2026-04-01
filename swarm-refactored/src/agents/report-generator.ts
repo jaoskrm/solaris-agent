@@ -1,9 +1,82 @@
-import type { RedTeamState, Report, KillChainPhase, Phase } from '../types/index.js';
+import type { RedTeamState, Report, KillChainPhase, Phase, ExploitResult } from '../types/index.js';
 import { supabaseClient } from '../core/supabase-client.js';
 import { redisBus } from '../core/redis-bus.js';
 
 function padRight(str: string, len: number): string {
   return str.length >= len ? str.slice(0, len) : str + ' '.repeat(len - str.length);
+}
+
+function extractEndpoint(target: string): string {
+  try {
+    const url = new URL(target);
+    return url.pathname || '/';
+  } catch {
+    const match = target.match(/^https?:\/\/[^/]+(\/.*)?$/);
+    return match?.[1] || '/';
+  }
+}
+
+async function logExploitResultsToSupabase(
+  missionId: string,
+  exploitResults: ExploitResult[],
+  iteration: number
+): Promise<void> {
+  const findings: Array<{
+    missionId: string;
+    title: string;
+    severity: 'critical' | 'high' | 'medium' | 'low';
+    description: string;
+    findingType: string;
+    target: string;
+    endpoint: string;
+    confirmed: boolean;
+    agentName: string;
+    evidence: unknown;
+    agentIteration: number;
+    confidenceScore: number;
+  }> = [];
+
+  for (const exploit of exploitResults) {
+    try {
+      await supabaseClient.logExploitAttempt({
+        missionId,
+        exploitType: exploit.exploit_type,
+        targetUrl: exploit.target,
+        success: exploit.success,
+        payload: exploit.payload_used,
+        responseCode: exploit.response_code,
+        evidence: { output: exploit.evidence },
+        executionTimeMs: exploit.execution_time,
+      });
+
+      if (exploit.success) {
+        findings.push({
+          missionId,
+          title: `${exploit.exploit_type.toUpperCase()} on ${extractEndpoint(exploit.target)}`,
+          severity: (exploit.severity as 'critical' | 'high' | 'medium' | 'low') || 'high',
+          description: exploit.impact || `Successful ${exploit.exploit_type} exploitation`,
+          findingType: exploit.exploit_type,
+          target: exploit.target,
+          endpoint: extractEndpoint(exploit.target),
+          confirmed: exploit.deterministic || false,
+          agentName: 'gamma',
+          evidence: { output: exploit.evidence, payload: exploit.payload_used },
+          agentIteration: iteration,
+          confidenceScore: exploit.deterministic ? 1.0 : 0.7,
+        });
+      }
+    } catch (error) {
+      console.debug(`Failed to log exploit attempt: ${error}`);
+    }
+  }
+
+  for (const finding of findings) {
+    try {
+      await supabaseClient.logSwarmFinding(finding);
+    } catch (error) {
+      console.debug(`Failed to log finding: ${error}`);
+    }
+  }
 }
 
 function padCenter(str: string, len: number): string {
@@ -30,7 +103,7 @@ function deduplicateExploits(exploits: { exploit_type: string; target: string; s
       seen.set(key, exp);
     }
   }
-  return Array.from(seen.values());
+  return Array.from(seen.values()).slice(0, 50);
 }
 
 function formatReportText(report: Report): string {
@@ -197,7 +270,8 @@ export async function report_generation_node(
   const timestamp = formatTimestamp();
 
   const successfulExploits = state.exploit_results.filter((e) => e.success);
-  const highConfFindings = state.recon_results.filter((f) => f.confidence >= 0.8);
+  const dedupedExploits = deduplicateExploits(state.exploit_results);
+  const successfulDeduplicated = dedupedExploits.filter((e) => e.success);
 
   const phasesCompleted: KillChainPhase[] = [];
   if (state.recon_results.length > 0) phasesCompleted.push('reconnaissance');
@@ -209,18 +283,15 @@ export async function report_generation_node(
     phasesCompleted.push('actions_on_objectives');
   }
 
-  const dedupedExploits = deduplicateExploits(state.exploit_results);
-  const successfulDeduplicated = dedupedExploits.filter((e) => e.success);
-
   const recommendations: string[] = [];
   if (successfulDeduplicated.length > 0) {
-    recommendations.push('🚨 CRITICAL: Successful exploits detected - immediate remediation required');
+    recommendations.push(`🚨 CRITICAL: ${successfulDeduplicated.length} unique vulnerabilities confirmed - immediate remediation required`);
     for (const exp of successfulDeduplicated.slice(0, 20)) {
       recommendations.push(`  • ${exp.exploit_type} on ${exp.target}`);
     }
-  }
-  if (highConfFindings.length > 0) {
-    recommendations.push(`Review ${highConfFindings.length} high-confidence reconnaissance findings`);
+    if (successfulDeduplicated.length > 20) {
+      recommendations.push(`  ... and ${successfulDeduplicated.length - 20} more vulnerabilities (see full report)`);
+    }
   }
   if (recommendations.length === 0) {
     recommendations.push('Continue monitoring and periodic security assessments');
@@ -263,7 +334,7 @@ export async function report_generation_node(
       intel_reports: state.messages.filter((m) => m.type === 'INTELLIGENCE_REPORT').length,
       exploit_attempts: state.exploit_results.length,
       successful_exploits: successfulExploits.length,
-      high_confidence_findings: highConfFindings.length,
+      high_confidence_findings: successfulDeduplicated.length,
       reflection_count: state.reflection_count,
       errors_count: state.errors.length,
     },
@@ -302,6 +373,8 @@ export async function report_generation_node(
       stage: 'reporting',
       iteration: state.iteration,
     });
+
+    await logExploitResultsToSupabase(state.mission_id, state.exploit_results, state.iteration);
   } catch (error) {
     console.debug(`Failed to update final mission status: ${error}`);
   }

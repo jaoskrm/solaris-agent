@@ -1,3 +1,12 @@
+import { config } from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+config({ path: path.resolve(__dirname, '..', '.env') });
+
 export * from './types/index.js';
 
 export * from './agents/schemas.js';
@@ -29,19 +38,30 @@ export { toolRegistry, ToolRegistry } from './core/tool-registry.js';
 
 export {
   runMission,
-  SwarmState,
   shouldContinue,
 } from './graph/langgraph.js';
 
 import { runMission } from './graph/langgraph.js';
+import { toolRegistry } from './core/tool-registry.js';
 
 async function main() {
   console.log('Swarm Refactored - Red Team Agent System (LangGraph)');
   console.log('====================================================\n');
 
+  console.log('════════════════════════════════════════════════════════════');
+  console.log('TOOL REGISTRY');
+  console.log('════════════════════════════════════════════════════════════');
+  await toolRegistry.initialize();
+  const tools = toolRegistry.listTools();
+  console.log(`Total Tools: ${tools.length}\n`);
+  for (const tool of tools) {
+    console.log(`  • ${tool.name}${tool.aliases?.length ? ` (${tool.aliases.join(', ')})` : ''}`);
+  }
+  console.log('════════════════════════════════════════════════════════════\n');
+
   const missionId = crypto.randomUUID();
   const objective = 'Penetration test of OWASP Juice Shop';
-  const target = process.env.TARGET_URL || 'http://localhost:3000';
+  const target = process.env.TARGET_URL || 'http://localhost:8080';
 
   console.log(`Mission ID: ${missionId}`);
   console.log(`Target: ${target}`);
@@ -49,7 +69,7 @@ async function main() {
 
   try {
     const finalState = await runMission(missionId, objective, target, {
-      maxIterations: 5,
+      maxIterations: 3,
       fastMode: process.env.FAST_MODE === 'true',
     });
 

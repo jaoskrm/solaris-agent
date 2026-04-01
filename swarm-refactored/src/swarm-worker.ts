@@ -442,6 +442,7 @@ async function runMission(
       forbidden_until_iteration: 0,
       last_analysis: '',
       current_strategy: '',
+      use_hardcoded_exploits: false,
     },
     recon_results: [],
     exploit_results: [],
@@ -549,7 +550,7 @@ async function runMission(
 async function main() {
   const missionId = crypto.randomUUID();
   const objective = process.env.MISSION_OBJECTIVE || 'Penetration test of OWASP Juice Shop';
-  const target = process.env.TARGET_URL || 'http://localhost:3000';
+  const target = process.env.TARGET_URL || 'http://localhost:8080';
   const maxIterations = parseInt(process.env.MAX_ITERATIONS || '3', 10);
   
   try {

@@ -431,8 +431,8 @@ describe('TestEnumSchemas', () => {
       });
     });
 
-    it('should reject command_injection (not in enum)', () => {
-      expect(ExploitTypeSchema.safeParse('command_injection').success).toBe(false);
+    it('should reject network_scanning (not in enum)', () => {
+      expect(ExploitTypeSchema.safeParse('network_scanning').success).toBe(false);
     });
   });
 });

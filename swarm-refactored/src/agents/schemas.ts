@@ -42,6 +42,22 @@ export const ExploitTypeSchema = z.enum([
   'client_side_bypass',
   'authentication',
   'broken_access_control',
+  'command_injection',
+  'vulnerability_scan',
+  'osint',
+  'cve',
+  'jwt',
+  'scrape',
+  'ffuf',
+  'nmap',
+  'nuclei',
+  'python',
+  'curl',
+  'ssrf',
+  'path_traversal',
+  'prototype_pollution',
+  'open_redirect',
+  'security_misconfiguration',
 ]);
 
 export const TaskAssignmentSchema = z.object({
@@ -77,7 +93,7 @@ export const ExploitResultSchema = z.object({
 });
 
 export const IntelligenceReportSchema = z.object({
-  source: z.string(),
+  source: z.string().optional(),
   asset: z.string(),
   finding: z.string(),
   confidence: z.number().min(0).max(1),

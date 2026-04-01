@@ -166,6 +166,31 @@ const SUCCESS_CRITERIA: Record<ExploitType, string[]> = {
     'Headers captured',
     'Data exfiltrated',
   ],
+  ssrf: [
+    'SSRF vulnerability detected',
+    'Internal resources accessed',
+    'Metadata endpoint reached',
+  ],
+  path_traversal: [
+    'Path traversal successful',
+    '/etc/passwd retrieved',
+    'File contents exposed',
+  ],
+  prototype_pollution: [
+    'Prototype pollution confirmed',
+    'Object augmentation possible',
+    'Property overwrite successful',
+  ],
+  open_redirect: [
+    'Open redirect detected',
+    'Redirect to external domain',
+    'Unvalidated redirect',
+  ],
+  security_misconfiguration: [
+    'Security misconfiguration found',
+    'Insecure default detected',
+    'Missing security headers',
+  ],
 };
 
 const JUICE_SHOP_PATTERNS = {

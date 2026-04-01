@@ -64,7 +64,12 @@ export type ExploitType =
   | 'nmap'
   | 'nuclei'
   | 'python'
-  | 'curl';
+  | 'curl'
+  | 'ssrf'
+  | 'path_traversal'
+  | 'prototype_pollution'
+  | 'open_redirect'
+  | 'security_misconfiguration';
 
 export interface A2AMessage {
   msg_id: string;
@@ -307,6 +312,7 @@ export interface Blackboard {
   last_analysis: string;
   current_strategy: string;
   repo_path?: string;
+  use_hardcoded_exploits: boolean;
   [key: string]: unknown;
 }
 

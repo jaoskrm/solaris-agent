@@ -68,6 +68,7 @@ function createInitialBlackboard(): Blackboard {
     forbidden_until_iteration: 0,
     last_analysis: '',
     current_strategy: '',
+    use_hardcoded_exploits: false,
   };
 }
 
