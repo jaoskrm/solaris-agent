@@ -18,11 +18,13 @@ describe('FalkorDBClient', () => {
     
     // Clean up any existing test nodes
     await client.raw().call('GRAPH.QUERY', 'solaris', 'MATCH (n:TestNode) DETACH DELETE n');
+    await client.raw().call('GRAPH.QUERY', 'solaris', 'MATCH (m:Mission) DETACH DELETE m');
   });
   
   afterAll(async () => {
     // Clean up
     await client.raw().call('GRAPH.QUERY', 'solaris', 'MATCH (n:TestNode) DETACH DELETE n');
+    await client.raw().call('GRAPH.QUERY', 'solaris', 'MATCH (m:Mission) DETACH DELETE m');
     await client.close();
   });
 

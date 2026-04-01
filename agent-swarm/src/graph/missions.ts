@@ -1,5 +1,5 @@
 import { FalkorDBClient } from '../infra/falkordb.js';
-import { MissionNodeSchema, type MissionNode } from './schema.js';
+import type { MissionNode } from './schema.js';
 
 export async function queueMission(
   graph: FalkorDBClient,

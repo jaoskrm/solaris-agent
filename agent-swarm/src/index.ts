@@ -8,6 +8,19 @@ import { getConfig } from './config/index.js';
 import { getFalkorDB } from './infra/falkordb.js';
 import { EventBus } from './events/bus.js';
 
+export { getConfig } from './config/index.js';
+export { getFalkorDB, FalkorDBClient } from './infra/falkordb.js';
+export { EventBus } from './events/bus.js';
+export * from './events/types.js';
+export * from './events/subscriptions.js';
+export * from './events/cleanup.js';
+export * from './graph/schema.js';
+export * from './graph/edges.js';
+export * from './graph/missions.js';
+export * from './utils/id.js';
+export * from './agents/index.js';
+export { getSupabase } from './infra/supabase.js';
+
 async function main() {
   console.log('╔════════════════════════════════════════════════════════╗');
   console.log('║       Solaris-Agent Graph Network Infrastructure      ║');
@@ -19,7 +32,6 @@ async function main() {
   console.log(`Log Level: ${config.LOG_LEVEL}`);
   console.log();
 
-  // Initialize FalkorDB
   console.log('Connecting to FalkorDB...');
   const graph = getFalkorDB();
   
@@ -37,9 +49,8 @@ async function main() {
     console.error('  Or run `docker-compose up -d` for local development');
   }
 
-  // Initialize Event Bus
   console.log('Initializing SQLite Event Bus...');
-  const eventBus = new EventBus(config.SQLITE_EVENTS_PATH);
+  new EventBus(config.SQLITE_EVENTS_PATH);
   console.log(`✓ Event Bus ready (${config.SQLITE_EVENTS_PATH})`);
 
   console.log();

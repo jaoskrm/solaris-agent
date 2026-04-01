@@ -126,7 +126,17 @@ export class EventBus {
       consumed: false,
     }));
   }
-  
+
+  async cleanupByType(eventType: SwarmEventType, cutoff: number): Promise<number> {
+    const stmt = this.db.prepare(`
+      DELETE FROM events 
+      WHERE type = ? AND created_at < ?
+    `);
+    
+    const result = stmt.run(eventType, cutoff);
+    return result.changes;
+  }
+
   close(): void {
     this.db.close();
   }
