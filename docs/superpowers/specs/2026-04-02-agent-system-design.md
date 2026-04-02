@@ -699,41 +699,46 @@ POST-SWARM
 
 ```
 Tier 1 (Nano, 2GB VRAM):
-  nemotron-3-nano (Ollama)
+  phi-3-mini-128k-instruct-q4_K_M (Ollama)
   → Verifier, Critic
-  Fallback: phi-3-mini
+  Fallback: meta-llama/llama-3.1-8b-instruct (Groq 14,400 RPD)
 
 Tier 2 (Mid, 4-5GB VRAM):
   llama3-groq-tool-use:8b-q4_K_M (Ollama) — Groq's tool-calling optimized Llama3
   → Gamma, MCP Agent, Specialist
-  Fallback: qwen2.5-coder:7b-q4_K_M (coding/security expert)
+  Fallback: gpt-oss-120b (Cerebras 14,400 RPD)
 
   qwen2.5-coder:7b-q4_K_M (Ollama)
   → Alpha Recon, Post-Exploit
-  Fallback: llama3-groq-tool-use:8b-q4_K_M
+  Fallback: meta-llama/llama-3.1-8b-instruct (Groq 14,400 RPD)
 
-Tier 3 (Reasoning, Cloud - Groq, 30 RPM free):
-  llama3-groq-tool-use:70b (Groq)
+Tier 3 (Reasoning, Cloud - Groq):
+  moonshotai/kimi-k2-instruct (Groq, 1K RPD, 10K TPM)
   → Commander
-  Fallback: llama-3.3-70b-versatile
+  Fallback: meta-llama/llama-3.3-70b-instruct (Groq 1K RPD)
 
-Tier 4 (Planning, Cloud - OpenRouter/Cerebras, free):
-  nvidia/nemotron-3-super:free (OpenRouter)
-  → Mission Planner
-  Fallback: deepseek-v3:free
+Tier 4 (Planning, Cloud - Cerebras primary, 14,400 RPD + 1M tokens/day!):
+  gpt-oss-120b (Cerebras)
+  → Mission Planner, Chain Planner
+  Fallback: google/gemma-3-27b-it (Google AI Studio 14,400 RPD)
 
-  deepseek-r1:free (OpenRouter)
-  → Chain Planner
-  Fallback: qwen3-32b:free
-
-  llama3.3-70b (Cerebras, 1M tokens/day free!)
+  meta-llama/llama-3.1-8b-instruct (Cerebras 14,400 RPD)
   → OSINT
-  Fallback: qwen3-32b
+  Fallback: google/gemma-3-27b-it
 
-Tier 5 (Output, Cloud - OpenRouter, 20 RPM free):
-  gpt-oss-120b:free (OpenRouter)
+Tier 5 (Output, Cloud - Cerebras):
+  gpt-oss-120b (Cerebras, 1M tokens/day)
   → Report Agent
-  Fallback: gemma-3-27b:free
+  Fallback: openai/gpt-oss-120b:free (OpenRouter 50 RPD - last resort)
+```
+
+### Provider Priority
+
+```
+#1 CEREBRAS — 14,400 RPD + 1M tokens/day FREE (swarm backbone)
+#2 GROQ — 14,400 RPD (Llama 8B) / 1K RPD (70B+)  
+#3 GOOGLE — 14,400 RPD (Gemma 27B) from AI Studio
+#4 OPENROUTER — 50 RPD only (last resort, needs $10 topup)
 ```
 
 ### LLM Router
@@ -744,18 +749,17 @@ LLMRouter module (shared Bun module):
   - Queues/retries on 429 (base 1s, max 30s)
   - Automatic fallback routing: Primary → Cascade → Any available
   - All agents call LLMRouter.complete() — no direct provider API calls
-  - Rate limits: Ollama (60/min), Groq (30/min), Cerebras (20/min), OpenRouter (20/min)
+  - Rate limits: Ollama (60/min), Groq (14,400/day Llama 8B, 1K/day 70B+), Cerebras (14,400/day), Google (14,400/day), OpenRouter (50/day)
 ```
 
 ### Always-On Budget (RTX 4080)
 
 ```
-Verifier/Critic (nemotron-3-nano):  ~2GB
+Verifier/Critic (phi-3-mini):  ~2GB
 Gamma/MCP/Specialist (llama3-groq-tool-use:8b):  ~4GB
 Alpha/Post-Exploit (qwen2.5-coder:7b):  ~4.5GB
 Total:                                  ~10.5GB / 16GB → 5.5GB headroom
-Overflow: Gamma pool capped at 1 during heavy scanning
-         Cloud fallback only for Tier 3-5 agents (light usage)
+Cloud: Cerebras/Groq only for heavy agents (planners, report)
 ```
 
 ---
