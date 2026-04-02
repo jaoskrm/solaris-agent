@@ -122,7 +122,7 @@ If scope check fails → FAIL
 ## 4. TOOLS
 
 ```
-http_request:  Single HTTP probe for liveness check
+curl:          Single HTTP probe for liveness check
 graph_query:   Query existing missions/endpoints from graph
 ```
 

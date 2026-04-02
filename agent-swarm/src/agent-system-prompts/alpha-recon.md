@@ -129,10 +129,13 @@ codebase_memory/trace_call_path({function_name: "query|exec|eval"})
 nmap:          nmap {target} -p{ports} -sV -O
 masscan:       masscan {target} -p{ports} --rate=10000
 netcat:        nc -v {target} {port}
+rustscan:      rustscan -b {batch_size} -t {timeout} {target}
 gobuster:      gobuster dir -u {url} -w {wordlist} -t {threads}
 ffuf:          ffuf -u {url}/FUZZ -w {wordlist} -mc {status_codes}
+dirsearch:     dirsearch -u {url} -e {extensions} -w {wordlist}
 nikto:         nikto -h {url}
 nuclei:        nuclei -u {url} -t {templates}
+whatweb:       whatweb {url}
 curl:          curl -s -I {url} (headers), curl -s {url} (content)
 
 codebase_tools:

