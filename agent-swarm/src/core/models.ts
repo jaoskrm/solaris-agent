@@ -24,7 +24,7 @@ export const AGENT_MODEL_CONFIG: Record<string, AgentModelConfig> = {
     provider: 'ollama',
   },
 
-  // Tier 2: Heavy exploit — Ollama primary + Groq/Cerebras cloud fallback
+  // Tier 2: Heavy exploit — Ollama primary + Groq cloud fallback
   // Note: Requires ollama pull llama3-groq-tool-use:8b-q4_K_M, qwen2.5-coder:7b-q4_K_M
   gamma: {
     primary: process.env.GAMMA_MODEL || 'llama3-groq-tool-use:8b-q4_K_M',
@@ -62,45 +62,45 @@ export const AGENT_MODEL_CONFIG: Record<string, AgentModelConfig> = {
     provider: 'ollama',
   },
 
-  // Tier 3: Reasoning — Groq with verified working models
+  // Tier 3: Reasoning — Groq primary + OpenRouter fallback
   commander: {
     primary: process.env.COMMANDER_MODEL || 'llama-3.3-70b-versatile',
-    fallback: process.env.COMMANDER_MODEL_FALLBACK || 'qwen/qwen3-32b',
+    fallback: process.env.COMMANDER_MODEL_FALLBACK || 'nvidia/nemotron-3-super-120b-a12b:free',
     temperature: 0.5,
     maxTokens: 16384,
     provider: 'groq',
   },
 
-  // Tier 4: Planning — Cerebras (llama-3.1-8b, qwen-3-235b-a22b verified)
+  // Tier 4: Planning — Cerebras primary + OpenRouter/Google fallback
   mission_planner: {
     primary: process.env.PLANNER_MODEL || 'qwen-3-235b-a22b-instruct-2507',
-    fallback: process.env.PLANNER_MODEL_FALLBACK || 'llama-3.1-8b',
+    fallback: process.env.PLANNER_MODEL_FALLBACK || 'nvidia/nemotron-3-super-120b-a12b:free',
     temperature: 0.85,
     maxTokens: 16384,
     provider: 'cerebras',
   },
   chain_planner: {
     primary: process.env.CHAIN_MODEL || 'qwen-3-235b-a22b-instruct-2507',
-    fallback: process.env.CHAIN_MODEL_FALLBACK || 'llama-3.1-8b',
+    fallback: process.env.CHAIN_MODEL_FALLBACK || 'nvidia/nemotron-3-super-120b-a12b:free',
     temperature: 0.85,
     maxTokens: 16384,
     provider: 'cerebras',
   },
   osint: {
     primary: process.env.OSINT_MODEL || 'llama-3.1-8b',
-    fallback: process.env.OSINT_MODEL_FALLBACK || 'qwen-3-235b-a22b-instruct-2507',
+    fallback: process.env.OSINT_MODEL_FALLBACK || 'google/gemma-3-27b-it',
     temperature: 0.65,
     maxTokens: 16384,
     provider: 'cerebras',
   },
 
-  // Tier 5: Output — Cerebras or Groq (large context)
+  // Tier 5: Output — OpenRouter free (120B model!) with Cerebras fallback
   report_agent: {
-    primary: process.env.REPORT_MODEL || 'qwen-3-235b-a22b-instruct-2507',
-    fallback: process.env.REPORT_MODEL_FALLBACK || 'openai/gpt-oss-120b',
+    primary: process.env.REPORT_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free',
+    fallback: process.env.REPORT_MODEL_FALLBACK || 'qwen-3-235b-a22b-instruct-2507',
     temperature: 0.3,
     maxTokens: 65536,
-    provider: 'cerebras',
+    provider: 'openrouter',
   },
 } as const;
 
