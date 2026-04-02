@@ -65,6 +65,15 @@ Exploit Brief (if available):
 {exploit_brief}
 ```
 
+### Dynamic Overlay Loading
+
+When a mission arrives with `exploit_type`, call `loadOverlay({exploit_type})` to retrieve
+the exploit-specific overlay (payloads, bypasses, database-specific notes). Append the overlay
+content to your context before selecting a payload. If no overlay exists for the exploit type,
+proceed with your built-in expertise and standard payloads for that category.
+
+Available overlays: sqli, xss, jwt, idor, auth_bypass, ssrf, path_traversal, csrf, oauth, graphql, websocket, file_upload, rce, open_redirect
+
 ---
 
 ## 3. TASK

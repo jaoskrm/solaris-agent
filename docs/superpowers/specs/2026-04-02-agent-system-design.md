@@ -772,6 +772,26 @@ Overflow: Gamma pool capped at 1 during Tier 2 execution
 - [ ] Implement agent poll loops with correct intervals per agent
 - [ ] Implement PM2 `ecosystem.config.js` with all agent declarations
 
+### Phase 1b: Dynamic Prompt Overlays ✅ COMPLETE
+
+- [x] Create `agent-swarm/src/prompt-overlays/` directory
+- [x] Write `xss.md` — XSS payloads by escalation level
+- [x] Write `sqli.md` — SQL injection payloads, database-specific notes
+- [x] Write `jwt.md` — JWT bypass techniques
+- [x] Write `idor.md` — IDOR horizontal/vertical payloads
+- [x] Write `auth_bypass.md` — Authentication bypass techniques
+- [x] Write `ssrf.md` — SSRF payload sets
+- [x] Write `path_traversal.md` — Path traversal payloads
+- [x] Write `csrf.md` — CSRF token bypass
+- [x] Write `oauth.md` — OAuth 2.0 vulnerabilities
+- [x] Write `graphql.md` — GraphQL injection techniques
+- [x] Write `websocket.md` — WebSocket exploitation
+- [x] Write `file_upload.md` — File upload bypass techniques
+- [x] Write `rce.md` — Remote code execution payloads
+- [x] Write `open_redirect.md` — Open redirect payloads
+- [x] Implement `agent-swarm/src/utils/prompt-overlay.ts` — `loadOverlay()` utility with caching
+- [x] Update `gamma.md` to call `loadOverlay()` when building mission context
+
 ### Phase 3: Agent Implementations
 
 - [ ] Implement `BaseAgent` class with state machine transitions
@@ -882,6 +902,7 @@ agent-swarm/src/agent-system-prompts/
 |------|--------|
 | 2026-04-02 | Initial spec and all 12 agent prompts created |
 | 2026-04-02 | Phase 1 complete — all prompt files written |
+| 2026-04-02 | Phase 1b complete — dynamic prompt overlays (14 files) + prompt-overlay.ts utility |
 
 ---
 
