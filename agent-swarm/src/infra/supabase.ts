@@ -19,7 +19,8 @@ export function getSupabase(): SupabaseClient {
 export async function testSupabaseConnection(): Promise<boolean> {
   try {
     const client = getSupabase();
-    const { error } = await client.from('pg_tables').select('count').limit(1);
+    // Query one of our actual tables to verify connection
+    const { error } = await client.from('cross_engagement_lessons').select('id').limit(1);
     return !error;
   } catch {
     return false;

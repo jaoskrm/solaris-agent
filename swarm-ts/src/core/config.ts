@@ -4,6 +4,13 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   
+  // FalkorDB (Graph Database)
+  FALKORDB_HOST: z.string().default('localhost'),
+  FALKORDB_PORT: z.string().default('6379'),
+  FALKORDB_USERNAME: z.string().default('falkordb'),
+  FALKORDB_PASSWORD: z.string().optional(),
+  FALKORDB_DATABASE: z.string().default('0'),
+  
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
   
@@ -17,8 +24,12 @@ const envSchema = z.object({
   SUPABASE_URL: z.string(),
   SUPABASE_ANON_KEY: z.string(),
   
+  // SQLite Event Bus
+  SQLITE_EVENTS_PATH: z.string().default('./solaris-events.db'),
+  
   OLLAMA_BASE_URL: z.string().default('http://localhost:11434'),
   OLLAMA_MODEL: z.string().default('qwen2.5-coder:14b'),
+  OLLAMA_ENABLED: z.enum(['true', 'false']).default('false'),
   
   AUTHORIZATION_HMAC_SECRET: z.string().optional(),
   CREDENTIAL_VAULT_KEY: z.string().optional(),

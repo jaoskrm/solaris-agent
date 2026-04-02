@@ -188,7 +188,9 @@ export class FalkorDBClient {
     edgeTypes: string[],
     depth: number = 3
   ): Promise<string[]> {
-    const edgePattern = edgeTypes.map(e => `:${e}`).join('|');
+    // edgeTypes already include the type names, just join them
+    // The [:type*1..N] syntax requires just the type name
+    const edgePattern = edgeTypes.join('|');
     const cypher = `MATCH path = (start)-[:${edgePattern}*1..${depth}]->(end) WHERE start.id = ${this.escapeValue(startId)} WITH nodes(path) as ns UNWIND ns as n RETURN DISTINCT n.id as id`;
 
     const result = await this.graphQuery(cypher);
@@ -289,10 +291,10 @@ export class FalkorDBClient {
         if (item[0] === 'properties') {
           // item[1] = [[prop, val], ...]
           for (const prop of item[1]) {
-            obj[prop[0]] = prop[1];
+            obj[prop[0]] = this.coerceValue(prop[1]);
           }
         } else if (item[0] === 'id') {
-          obj.id = item[1];
+          obj.id = this.coerceValue(item[1]);
         }
         // Skip labels
       }
@@ -301,6 +303,33 @@ export class FalkorDBClient {
     } catch {
       return {};
     }
+  }
+
+  /**
+   * Coerce string values back to their proper types
+   */
+  private coerceValue(value: unknown): unknown {
+    if (typeof value === 'string') {
+      // Try to parse as number
+      if (value === '') return value;
+      const num = Number(value);
+      if (!isNaN(num) && value.trim() !== '') {
+        return num;
+      }
+      // Boolean strings
+      if (value === 'true') return true;
+      if (value === 'false') return false;
+      // Array/object from JSON string
+      if (value.startsWith('[') || value.startsWith('{')) {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return value;
+        }
+      }
+      return value;
+    }
+    return value;
   }
 
   private parseNodeResults(result: any[]): Record<string, unknown>[] {

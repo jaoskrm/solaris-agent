@@ -298,6 +298,10 @@ export function Swarm() {
   const [missionHistory, setMissionHistory] = useState<SwarmMission[]>([]);
   const [showMissionHistory, setShowMissionHistory] = useState(false);
   const [loadingMissionHistory, setLoadingMissionHistory] = useState(false);
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<string>('all');
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [hasMoreMissions, setHasMoreMissions] = useState(true);
+  const [loadingMoreMissions, setLoadingMoreMissions] = useState(false);
 
   // Expanded item state
   const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null);
@@ -314,16 +318,46 @@ export function Swarm() {
   };
 
   // Load mission history
-  const loadMissionHistory = async () => {
-    setLoadingMissionHistory(true);
+  const loadMissionHistory = async (loadMore = false) => {
+    if (loadMore) {
+      setLoadingMoreMissions(true);
+    } else {
+      setLoadingMissionHistory(true);
+      setHistoryOffset(0);
+    }
+    
     try {
-      const response = await getSwarmMissions(20, 0);
-      setMissionHistory(response.missions || []);
+      const currentOffset = loadMore ? historyOffset : 0;
+      const response = await getSwarmMissions(20, currentOffset);
+      const missions = response.missions || [];
+      
+      // Apply status filter
+      const filteredMissions = historyStatusFilter === 'all' 
+        ? missions 
+        : missions.filter(m => m.status === historyStatusFilter);
+      
+      if (loadMore) {
+        setMissionHistory(prev => [...prev, ...filteredMissions]);
+      } else {
+        setMissionHistory(filteredMissions);
+      }
+      
+      setHasMoreMissions(missions.length === 20);
+      setHistoryOffset(currentOffset + missions.length);
     } catch (err) {
       console.error('[Swarm] Failed to load mission history:', err);
     } finally {
       setLoadingMissionHistory(false);
+      setLoadingMoreMissions(false);
     }
+  };
+  
+  // Handle status filter change
+  const handleHistoryFilterChange = (filter: string) => {
+    setHistoryStatusFilter(filter);
+    setHistoryOffset(0);
+    setHasMoreMissions(true);
+    loadMissionHistory(false);
   };
 
   // View a mission from history
@@ -1626,7 +1660,13 @@ export function Swarm() {
               ELAPSED <span className="text-[#c8a96e]">{formatTime(elapsed)}</span>
             </div>
             <button
-              onClick={() => { setShowMissionHistory(true); loadMissionHistory(); }}
+              onClick={() => { 
+                setHistoryStatusFilter('all');
+                setHistoryOffset(0);
+                setHasMoreMissions(true);
+                setShowMissionHistory(true); 
+                loadMissionHistory(); 
+              }}
               className="ml-4 px-4 py-2 text-[8px] tracking-[0.14em] bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.1)] hover:bg-[rgba(255,255,255,0.1)] hover:border-[rgba(255,255,255,0.2)] transition-all duration-200 text-[rgba(255,255,255,0.6)] rounded-sm"
               title="View Mission History"
             >
@@ -2698,12 +2738,30 @@ export function Swarm() {
           >
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-[rgba(255,255,255,0.08)]">
-              <h2 
-                className="text-[14px] tracking-[0.15em]"
-                style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(255,255,255,0.9)' }}
-              >
-                Mission History
-              </h2>
+              <div className="flex items-center gap-4">
+                <h2 
+                  className="text-[14px] tracking-[0.15em]"
+                  style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", color: 'rgba(255,255,255,0.9)' }}
+                >
+                  Mission History
+                </h2>
+                {/* Status Filters */}
+                <div className="flex gap-1">
+                  {['all', 'running', 'completed', 'failed'].map((filter) => (
+                    <button
+                      key={filter}
+                      onClick={() => handleHistoryFilterChange(filter)}
+                      className={`px-2 py-1 text-[8px] tracking-wider rounded transition-all ${
+                        historyStatusFilter === filter 
+                          ? 'bg-[rgba(200,169,110,0.2)] text-[#c8a96e] border border-[rgba(200,169,110,0.4)]'
+                          : 'bg-[rgba(255,255,255,0.05)] text-[rgba(255,255,255,0.4)] border border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.1)]'
+                      }`}
+                    >
+                      {filter.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <button
                 onClick={() => setShowMissionHistory(false)}
                 className="text-[rgba(255,255,255,0.4)] hover:text-[rgba(255,255,255,0.7)] transition-colors text-lg"
@@ -2785,6 +2843,19 @@ export function Swarm() {
                       </div>
                     </div>
                   ))}
+                  
+                  {/* Load More Button */}
+                  {hasMoreMissions && missionHistory.length > 0 && (
+                    <div className="flex justify-center pt-4">
+                      <button
+                        onClick={() => loadMissionHistory(true)}
+                        disabled={loadingMoreMissions}
+                        className="px-4 py-2 text-[10px] tracking-wider bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.1)] hover:bg-[rgba(255,255,255,0.1)] hover:border-[rgba(255,255,255,0.2)] text-[rgba(255,255,255,0.6)] rounded transition-all disabled:opacity-50"
+                      >
+                        {loadingMoreMissions ? 'LOADING...' : 'LOAD MORE'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -68,8 +68,10 @@ describe('FalkorDB + EventBus Integration', () => {
     await client.connect();
     
     bus = new EventBus(':memory:');
-    
-    // Clean up
+  });
+
+  beforeEach(async () => {
+    // Clean up before each test to ensure isolation
     await client.raw().call('GRAPH.QUERY', 'solaris', 'MATCH (n:TestNode) DETACH DELETE n');
     await client.raw().call('GRAPH.QUERY', 'solaris', 'MATCH (m:Mission) DETACH DELETE m');
   });
