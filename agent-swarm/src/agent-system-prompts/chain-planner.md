@@ -145,7 +145,7 @@ event_emit:        Write events
           "target_endpoint": "{endpoint}",
           "depends_on": ["mission_id"] | [],
           "priority": "high | medium",
-          "credential_to_use": "{artifact_id}",
+          "credential_nodes": ["{artifact_id}"],  // matches MissionNode schema
           "reasoning": "why this is unlocked by the artifact"
         }
       ]
@@ -210,7 +210,7 @@ Graph scan reveals these admin endpoints:
           "target_endpoint": "/api/admin/users",
           "depends_on": [],
           "priority": "high",
-          "credential_to_use": "recon/credential:jwt-admin-001",
+          "credential_nodes": ["recon/credential:jwt-admin-001"],
           "reasoning": "Admin JWT grants direct access to user management"
         },
         {
@@ -219,7 +219,7 @@ Graph scan reveals these admin endpoints:
           "target_endpoint": "/api/admin/backup",
           "depends_on": [],
           "priority": "high",
-          "credential_to_use": "recon/credential:jwt-admin-001",
+          "credential_nodes": ["recon/credential:jwt-admin-001"],
           "reasoning": "Admin access may expose database backups"
         },
         {
@@ -228,7 +228,7 @@ Graph scan reveals these admin endpoints:
           "target_endpoint": "/api/admin/products",
           "depends_on": [],
           "priority": "medium",
-          "credential_to_use": "recon/credential:jwt-admin-001",
+          "credential_nodes": ["recon/credential:jwt-admin-001"],
           "reasoning": "DELETE endpoint — potential for product tampering"
         }
       ]

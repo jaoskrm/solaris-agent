@@ -59,7 +59,7 @@ interface TargetConfig {
 |-------|-------|-------|------|
 | **Commander** | STANDBY (always warm) | Nemotron-3-super (NVIDIA API) | Strategic authority. Validates findings, authorizes missions, promotes credentials, deduplicates, manages escalation levels, emits swarm_complete |
 | **Mission Planner** | DORMANT → ACTIVE on finding batch | Gemini 2.0 Flash (Google) | Consumes validated finding batches, generates prioritized MissionNode queue, understands exploit prerequisites and dependency chains |
-| **Verifier** | STANDBY (always warm) | nemotron-3-nano (Ollama) | 5 pre-flight checks on every mission before authorization. Nano model, no reasoning — pure structural filter |
+| **Verifier** | STANDBY (always warm) | nemotron-3-nano (Ollama) | 6 pre-flight checks on every mission before authorization. Nano model, no reasoning — pure structural filter |
 
 ### Recon Team
 
@@ -179,7 +179,8 @@ Gamma pool scaling:
   gamma-2 spawned when: 2nd mission queued AND gamma-1 is ACTIVE.
   gamma-3 spawned when: 3rd mission queued AND gamma-2 is ACTIVE.
   Pool cap: 3 (enforced by event loop, not PM2).
-  Cerebras rate limits (not VRAM) are the practical pool ceiling.
+  Ollama concurrency limits are the practical pool ceiling for local models.
+  Cloud fallback: if Ollama is overloaded, Gamma can fall back to cloud Tier 3/4 models.
 
 VRAM Management (RTX 4080, 16GB):
   Always loaded: Verifier (nemotron-3-nano, ~4GB) + Gamma/Alpha/MCP (qwen2.5:14b, ~10GB)
@@ -290,6 +291,15 @@ All tools registered in a central `ToolRegistry` class. Agents access tools via 
 | `smbclient` | SMB share access and file operations | gamma |
 | `ldapsearch` | LDAP query tool | gamma, post_exploit |
 
+#### SAST / Codebase Tools (Alpha Recon only)
+
+| Tool | Description | Agent |
+|------|-------------|-------|
+| `codebase_memory/index_repository` | Index local codebase for SAST intelligence | alpha |
+| `codebase_memory/get_architecture` | Extract languages, packages, entry points, routes | alpha |
+| `codebase_memory/search_graph` | Structural search: functions, routes, hotspots by regex | alpha |
+| `codebase_memory/trace_call_path` | Call graph traversal: find if vulnerable functions are reachable | alpha |
+
 #### MCP Agent Tools (Browser/DOM)
 
 | Tool | Description | Agent |
@@ -308,7 +318,9 @@ All tools registered in a central `ToolRegistry` class. Agents access tools via 
 commander:     (no tool access — strategic only)
 verifier:      http_request (liveness probe only)
 
-alpha:         nmap, masscan, netcat, gobuster, ffuf, nikto, nuclei, curl
+alpha:         nmap, masscan, netcat, gobuster, ffuf, nikto, nuclei, curl,
+               codebase_memory/index_repository, codebase_memory/get_architecture,
+               codebase_memory/search_graph, codebase_memory/trace_call_path
 
 gamma:         curl, wget, gobuster, ffuf, nikto, nuclei, john, hashcat,
                hydra, searchsploit, msfconsole, netcat, nmap, masscan,
@@ -367,6 +379,8 @@ type SwarmEventType =
   | "specialist_activated" // Commander → specialist Gamma variant wakes
   | "specialist_complete"  // specialist Gamma → Commander wakes
   | "belief_updated"      // Commander → Mission Planner wake
+  | "validation_probe_requested"  // Gamma/MCP → MCP Agent (bridge artifact validation)
+  | "validation_probe_complete"   // MCP Agent → Commander (probe result ready)
 ```
 
 ### Commander Responsibilities
@@ -385,9 +399,15 @@ type SwarmEventType =
    - Sets authorized: true on MissionNode
 
 3. Credential Promotion:
-   - MCP Agent probes bridge/ artifacts
-   - HTTP 200/2xx: promote to recon/ as confirmed credential
-   - HTTP 401/403/timeout: mark validation_status: "expired"
+   On `credential_found` event (from Gamma/MCP):
+   - Reads artifact from bridge/ section
+   - Emits `validation_probe_requested` → MCP Agent wakes
+
+   On `validation_probe_complete` event (from MCP Agent):
+   - MCP Agent wrote probe result to bridge node (HTTP status)
+   - HTTP 200/2xx: promote to recon/ as confirmed credential, emit `credential_promoted`
+   - HTTP 401/403/timeout: mark bridge node `validation_status: "expired"`
+   - If HTTP 5xx: mark `probe_error`, retry once after 30s
 
 4. Escalation Level Management:
    - baseline:    Standard payload set, no WAF signals
@@ -570,7 +590,9 @@ interface MissionNode {
   type:             "mission";
   executor:         "gamma" | "mcp";
   exploit_type:     string;         // "sqli", "xss", "idor", "auth_bypass", etc.
-  escalation_level: "baseline" | "aggressive" | "evasive";
+  escalation_level: "baseline" | "aggressive" | "evasive" | "post_exploit";
+  // Note: "post_exploit" is set by Post-Exploit Agent only. It is a context marker,
+  // not an escalation signal — it passes through Verifier and is set by Commander authorization.
   priority:         "critical" | "high" | "medium" | "low";
   target_endpoint:   string;         // node ID of the endpoint being targeted
   context_nodes:    string[];       // graph node IDs providing mission context
@@ -610,12 +632,12 @@ At-Least-Once Delivery Guarantee:
 ### Event Type Subscriptions
 
 ```
-Commander:       finding_written, mission_verified, exploit_completed, exploit_failed,
-                 swarm_complete
+Commander:       finding_written, credential_found, mission_verified, exploit_completed,
+                 exploit_failed, swarm_complete
 Verifier:        mission_queued
 Mission Planner: finding_validated
 Gamma:           mission_authorized, brief_ready, waf_duel_started, handoff_requested
-MCP Agent:       mission_authorized
+MCP Agent:       mission_authorized, validation_probe_requested
 Alpha Recon:     (scheduled intervals, no event subscription primary)
 OSINT:           mission_queued, enrichment_requested, exploit_failed, waf_duel_started
 Chain Planner:   credential_found, credential_promoted, exploit_completed
@@ -695,7 +717,7 @@ Tier 4 (Planning, Cloud):
 Tier 5 (Output, Cloud):
   Claude Sonnet (Anthropic, paid)
   → Post-Exploit
-  Gemini 1.5 Pro (Google, free tier, 2M context)
+  Gemini 1.5 Pro (Google, free tier, 2M context) — required for full graph traversal in Report Agent
   → Report Agent
 ```
 

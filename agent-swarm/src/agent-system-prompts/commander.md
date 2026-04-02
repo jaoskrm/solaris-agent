@@ -84,13 +84,17 @@ Apply **strategic authorization**:
 - Target still reachable?
 - Set `authorized: true` on the MissionNode and emit `mission_authorized`.
 
-### On `credential_found` (from bridge/):
-The MCP Agent has placed a potential credential in the bridge section for validation.
-1. Review the artifact type and context
-2. MCP Agent will probe the target to validate
-3. On validation success (HTTP 2xx): promote to `recon/` as a confirmed credential
-4. On validation failure (HTTP 4xx/timeout): mark as `validation_status: "expired"`
-5. Emit `credential_promoted` if confirmed
+### On `credential_found` (from Gamma/MCP via bridge/):
+1. Read the artifact node from bridge/ section
+2. Review artifact type and context — determine if it is credential-worthy
+3. Emit `validation_probe_requested` event → MCP Agent wakes to probe target
+4. [After MCP Agent responds via `validation_probe_complete` — see below]
+
+### On `validation_probe_complete` (from MCP Agent):
+MCP Agent wrote probe result to bridge node. Read the result:
+- HTTP 200/2xx: promote to `recon/` as confirmed credential. Emit `credential_promoted`.
+- HTTP 401/403/timeout: mark bridge node `validation_status: "expired"`.
+- HTTP 5xx: mark `probe_error`, retry once after 30s before marking expired.
 
 ### On `exploit_failed`:
 Receive failure notification. If failure pattern suggests systemic issue, update escalation level for affected endpoint.

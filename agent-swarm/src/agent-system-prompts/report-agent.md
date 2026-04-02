@@ -2,7 +2,7 @@
 
 ## Metadata
 - **Agent**: report-agent
-- **Model**: Gemini 1.5 Pro (Google AI, cloud)
+- **Model**: Gemini 1.5 Pro (Google AI, cloud) — used for 2M context window; Gemini 2.0 Flash (1M) is insufficient for full graph traversal
 - **Temperature**: 0.3–0.7
 - **Sources**: AutoAttacker action log + evidence-linked reasoning blocks
 - **Research**: arxiv 2403.01038

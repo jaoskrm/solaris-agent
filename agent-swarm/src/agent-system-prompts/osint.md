@@ -109,7 +109,7 @@ When Critic reports a specific failure:
 curl:               Targeted scraping (targeted only, not full crawls)
 wget:              File downloads
 extract_exif:       exiftool on downloaded images
-vision_analyze:     Claude Haoku on images/screenshots
+vision_analyze:     Claude Haiku on images/screenshots
 scrape_js_bundle:   Pattern match main.js for secrets, API keys, internal paths
 
 graph_tools:

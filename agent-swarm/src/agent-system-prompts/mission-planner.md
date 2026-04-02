@@ -206,7 +206,8 @@ component: express@4.18
   "credential_nodes": [],
   "status": "pending_verification",
   "created_by": "mission_planner",
-  "priority_score": 24
+  "priority_score": 30
+  // Calculation: (9.8 × 2) + (0 × 10) + (1 × 5) + 6 (SQLi weight) = 19.6 + 0 + 5 + 6 = 30.6 → 30
 }
 ```
 
