@@ -698,27 +698,42 @@ POST-SWARM
 ### Tier Map
 
 ```
-Tier 1 (Nano, 4GB VRAM):
+Tier 1 (Nano, 2GB VRAM):
   nemotron-3-nano (Ollama)
   → Verifier, Critic
+  Fallback: phi-3-mini
 
-Tier 2 (Mid, 10GB VRAM):
-  qwen2.5:14b-instruct (Ollama)
-  → Gamma, Alpha Recon, MCP Agent, Specialist
+Tier 2 (Mid, 4-5GB VRAM):
+  llama3-groq-tool-use:8b-q4_K_M (Ollama) — Groq's tool-calling optimized Llama3
+  → Gamma, MCP Agent, Specialist
+  Fallback: qwen2.5-coder:7b-q4_K_M (coding/security expert)
 
-Tier 3 (Reasoning, Cloud):
-  Nemotron-3-super (NVIDIA API)
+  qwen2.5-coder:7b-q4_K_M (Ollama)
+  → Alpha Recon, Post-Exploit
+  Fallback: llama3-groq-tool-use:8b-q4_K_M
+
+Tier 3 (Reasoning, Cloud - Groq, 30 RPM free):
+  llama3-groq-tool-use:70b (Groq)
   → Commander
+  Fallback: llama-3.3-70b-versatile
 
-Tier 4 (Planning, Cloud):
-  Gemini 2.0 Flash (Google, free tier, 1M context)
-  → Mission Planner, Chain Planner, OSINT
+Tier 4 (Planning, Cloud - OpenRouter/Cerebras, free):
+  nvidia/nemotron-3-super:free (OpenRouter)
+  → Mission Planner
+  Fallback: deepseek-v3:free
 
-Tier 5 (Output, Cloud):
-  Claude Sonnet (Anthropic, paid)
-  → Post-Exploit
-  Gemini 1.5 Pro (Google, free tier, 2M context) — required for full graph traversal in Report Agent
+  deepseek-r1:free (OpenRouter)
+  → Chain Planner
+  Fallback: qwen3-32b:free
+
+  llama3.3-70b (Cerebras, 1M tokens/day free!)
+  → OSINT
+  Fallback: qwen3-32b
+
+Tier 5 (Output, Cloud - OpenRouter, 20 RPM free):
+  gpt-oss-120b:free (OpenRouter)
   → Report Agent
+  Fallback: gemma-3-27b:free
 ```
 
 ### LLM Router
@@ -727,18 +742,20 @@ Tier 5 (Output, Cloud):
 LLMRouter module (shared Bun module):
   - Tracks requests-per-minute per provider
   - Queues/retries on 429 (base 1s, max 30s)
-  - Automatic fallback routing: Groq/Cerebras 429 → OpenRouter paid → Anthropic API
+  - Automatic fallback routing: Primary → Cascade → Any available
   - All agents call LLMRouter.complete() — no direct provider API calls
+  - Rate limits: Ollama (60/min), Groq (30/min), Cerebras (20/min), OpenRouter (20/min)
 ```
 
 ### Always-On Budget (RTX 4080)
 
 ```
-Verifier (nemotron-3-nano):  ~4GB
-Gamma/Alpha/MCP (qwen2.5):  ~10GB
-Total:                        ~14GB / 16GB → 2GB headroom
-Overflow: Gamma pool capped at 1 during Tier 2 execution
-         Cloud fallback for Report Agent (2M context)
+Verifier/Critic (nemotron-3-nano):  ~2GB
+Gamma/MCP/Specialist (llama3-groq-tool-use:8b):  ~4GB
+Alpha/Post-Exploit (qwen2.5-coder:7b):  ~4.5GB
+Total:                                  ~10.5GB / 16GB → 5.5GB headroom
+Overflow: Gamma pool capped at 1 during heavy scanning
+         Cloud fallback only for Tier 3-5 agents (light usage)
 ```
 
 ---
@@ -766,8 +783,8 @@ Overflow: Gamma pool capped at 1 during Tier 2 execution
 ### Phase 2: Core Infrastructure
 
 - [x] Implement `EventBus` with SQLite append-only storage — ✅ Built: `agent-swarm/src/events/bus.ts`
-- [ ] Implement `ToolRegistry` class with unified `Tool` interface + `buildCommand()` thin CLI shims
-- [ ] Implement all 24 tool shims (thin CLI wrappers):
+- [x] Implement `ToolRegistry` class with unified `Tool` interface + `buildCommand()` thin CLI shims
+- [x] Implement all 24 tool shims (thin CLI wrappers):
   - Network Recon: nmap, masscan, netcat, rustscan
   - Web Discovery: gobuster, ffuf, dirsearch, nikto, nuclei, whatweb
   - HTTP/Exploit: curl, wget, sqlmap
@@ -775,10 +792,10 @@ Overflow: Gamma pool capped at 1 during Tier 2 execution
   - Frameworks: searchsploit, msfconsole
   - Post-Exploitation: linpeas, winpeas, enum4linux, smbclient, ldapsearch
 - [ ] Implement MCP agent browser tools: browser_navigate, browser_execute_js, browser_intercept, http_request_raw, upload_file, download_artifact
-- [ ] Implement `LLMRouter` with tier cascade (Ollama → Groq → Cerebras → OpenRouter → Anthropic) + `AGENT_MODEL_CONFIG`
+- [x] Implement `LLMRouter` with tier cascade (Ollama → Groq → Cerebras → OpenRouter → Anthropic) + `AGENT_MODEL_CONFIG`
 - [ ] Implement agent poll loops with correct intervals per agent
 - [ ] Implement PM2 `ecosystem.config.js` with all agent declarations + gamma pool scaling via `pm2.startDynamic()`
-- [ ] Implement `prompt-loader.ts` for system prompt extraction from `.md` files
+- [x] Implement `prompt-loader.ts` for system prompt extraction from `.md` files
 
 ### Phase 1b: Dynamic Prompt Overlays ✅ COMPLETE
 
