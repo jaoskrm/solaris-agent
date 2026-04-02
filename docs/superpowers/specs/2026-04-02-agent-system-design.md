@@ -1,8 +1,8 @@
 # Solaris-Agent: Complete System Design
 
-**Version:** 1.0  
-**Date:** 2026-04-02  
-**Status:** Approved — Implementation Pending
+**Version:** 1.1  
+**Date:** 2026-04-02 (updated 2026-04-03)  
+**Status:** Approved — Phase 1/1b Complete, Phase 2 In Progress
 
 ---
 
@@ -765,12 +765,20 @@ Overflow: Gamma pool capped at 1 during Tier 2 execution
 
 ### Phase 2: Core Infrastructure
 
-- [ ] Implement `ToolRegistry` class with unified `Tool` interface
-- [ ] Implement all tool shims: nmap, masscan, netcat, gobuster, ffuf, nikto, nuclei, curl, wget, john, hashcat, hydra, searchsploit, msfconsole, linPEAS, winPEAS, enum4linux, smbclient, ldapsearch
+- [x] Implement `EventBus` with SQLite append-only storage — ✅ Built: `agent-swarm/src/events/bus.ts`
+- [ ] Implement `ToolRegistry` class with unified `Tool` interface + `buildCommand()` thin CLI shims
+- [ ] Implement all 24 tool shims (thin CLI wrappers):
+  - Network Recon: nmap, masscan, netcat, rustscan
+  - Web Discovery: gobuster, ffuf, dirsearch, nikto, nuclei, whatweb
+  - HTTP/Exploit: curl, wget, sqlmap
+  - Credential Attacks: john, hashcat, hydra
+  - Frameworks: searchsploit, msfconsole
+  - Post-Exploitation: linpeas, winpeas, enum4linux, smbclient, ldapsearch
 - [ ] Implement MCP agent browser tools: browser_navigate, browser_execute_js, browser_intercept, http_request_raw, upload_file, download_artifact
-- [ ] Implement `EventBus` with SQLite append-only storage
+- [ ] Implement `LLMRouter` with tier cascade (Ollama → Groq → Cerebras → OpenRouter → Anthropic) + `AGENT_MODEL_CONFIG`
 - [ ] Implement agent poll loops with correct intervals per agent
-- [ ] Implement PM2 `ecosystem.config.js` with all agent declarations
+- [ ] Implement PM2 `ecosystem.config.js` with all agent declarations + gamma pool scaling via `pm2.startDynamic()`
+- [ ] Implement `prompt-loader.ts` for system prompt extraction from `.md` files
 
 ### Phase 1b: Dynamic Prompt Overlays ✅ COMPLETE
 
@@ -819,7 +827,6 @@ Overflow: Gamma pool capped at 1 during Tier 2 execution
 
 ### Phase 5: Integration & Testing
 
-- [ ] Implement LLM Router with fallback chain
 - [ ] Implement prompt loading from `agent-swarm/src/agent-system-prompts/` at startup
 - [ ] End-to-end test with JuiceShop target
 - [ ] Gamma pool scaling test (1 → 2 → 3 instances)
@@ -878,20 +885,44 @@ Each agent prompt file follows this structure:
 ## Prompt File Location
 
 ```
-agent-swarm/src/agent-system-prompts/
-├── README.md              # Registry and index
-├── commander.md
-├── gamma.md
-├── critic.md
-├── verifier.md
-├── alpha-recon.md
-├── osint.md
-├── chain-planner.md
-├── mission-planner.md
-├── post-exploit.md
-├── report-agent.md
-├── mcp-agent.md
-└── specialist.md
+agent-swarm/src/
+├── agent-system-prompts/       # 12 base agent prompts + README
+│   ├── README.md
+│   ├── commander.md
+│   ├── gamma.md
+│   ├── critic.md
+│   ├── verifier.md
+│   ├── alpha-recon.md
+│   ├── osint.md
+│   ├── chain-planner.md
+│   ├── mission-planner.md
+│   ├── post-exploit.md
+│   ├── report-agent.md
+│   ├── mcp-agent.md
+│   └── specialist.md
+├── prompt-overlays/           # 14 exploit-specific dynamic overlays
+│   ├── xss.md
+│   ├── sqli.md
+│   ├── jwt.md
+│   ├── idor.md
+│   ├── auth_bypass.md
+│   ├── ssrf.md
+│   ├── path_traversal.md
+│   ├── csrf.md
+│   ├── oauth.md
+│   ├── graphql.md
+│   ├── websocket.md
+│   ├── file_upload.md
+│   ├── rce.md
+│   └── open_redirect.md
+└── core/                     # Phase 2: core infrastructure (planned/building)
+    ├── tools/
+    │   ├── types.ts
+    │   ├── exec-tool.ts
+    │   ├── registry.ts
+    │   └── shims/          # 24 thin CLI shims
+    ├── llm-router.ts
+    └── models.ts
 ```
 
 ---
@@ -903,7 +934,9 @@ agent-swarm/src/agent-system-prompts/
 | 2026-04-02 | Initial spec and all 12 agent prompts created |
 | 2026-04-02 | Phase 1 complete — all prompt files written |
 | 2026-04-02 | Phase 1b complete — dynamic prompt overlays (14 files) + prompt-overlay.ts utility |
+| 2026-04-02 | Prompt tool lists aligned with 24-tool registry across all agent prompts |
+| 2026-04-03 | Phase 2 in progress — EventBus built, tool infra + LLM router planned; PM2 ecosystem + agent state machine planned |
 
 ---
 
-*Last updated: 2026-04-02*
+*Last updated: 2026-04-03*
