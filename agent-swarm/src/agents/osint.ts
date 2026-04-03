@@ -193,37 +193,48 @@ private async generateExploitBrief(
         },
       };
 
-      const messages: LLMMessage[] = [
-        {
-          role: 'system',
-          content: `You are an expert penetration tester specializing in exploit research. 
+      const MAX_RETRIES = 2;
+
+      let parsedBrief: Record<string, unknown> | null = null;
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (attempt > 0) {
+          console.log(`[${this.agentId}] JSON parse retry ${attempt}/${MAX_RETRIES}`);
+        }
+
+        try {
+          const messages: LLMMessage[] = [
+            {
+              role: 'system',
+              content: `You are an expert penetration tester specializing in exploit research. 
 Generate an ExploitBrief for a mission. Use the provided research to create a structured brief.
-Always respond with valid JSON matching the schema provided.`,
-        },
-        {
-          role: 'user',
-          content: `Generate an ExploitBrief for:
+ALWAYS respond with ONLY valid JSON matching the schema provided. No markdown, no explanation, just JSON.`,
+            },
+            {
+              role: 'user',
+              content: `Generate an ExploitBrief for:
 - Exploit Type: ${exploitType}
 - Target: ${targetEndpoint}
 
 Research Results:
 ${researchContext}
 
-Respond with JSON matching this schema:
+Respond with ONLY valid JSON matching this schema:
 ${JSON.stringify(briefSchema, null, 2)}`,
-        },
-      ];
+            },
+          ];
 
-      const llmResponse = await this.llmRouter.complete('osint', messages, { schema: briefSchema });
+          const llmResponse = await this.llmRouter.complete('osint', messages, { schema: briefSchema });
 
-      let parsedBrief;
-      try {
-        const jsonMatch = llmResponse.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsedBrief = JSON.parse(jsonMatch[0]);
+          const jsonMatch = llmResponse.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            parsedBrief = JSON.parse(jsonMatch[0]);
+            console.log(`[${this.agentId}] JSON parsed successfully on attempt ${attempt + 1}`);
+            break;
+          }
+        } catch (parseError) {
+          console.warn(`[${this.agentId}] Attempt ${attempt + 1} failed:`, parseError instanceof Error ? parseError.message : String(parseError));
         }
-      } catch {
-        console.warn(`[${this.agentId}] Failed to parse LLM response as JSON, using fallback`);
       }
 
       const brief: ExploitBrief = {
@@ -233,16 +244,16 @@ ${JSON.stringify(briefSchema, null, 2)}`,
         mission_id: missionId,
         exploit_type: exploitType,
         target_component: targetEndpoint,
-        technique_summary: parsedBrief?.technique_summary || searchResults.answer || `Exploitation techniques for ${exploitType}`,
-        working_examples: parsedBrief?.working_examples || searchResults.results.slice(0, 3).map(r => ({
+        technique_summary: parsedBrief?.technique_summary as string || searchResults.answer || `Exploitation techniques for ${exploitType}`,
+        working_examples: (parsedBrief?.working_examples as ExploitBrief['working_examples']) || searchResults.results.slice(0, 3).map(r => ({
           source: r.title,
           payload: r.content.slice(0, 200),
           context: `Source: ${r.url}`,
         })),
-        known_waf_bypasses: parsedBrief?.known_waf_bypasses || [],
-        common_failures: parsedBrief?.common_failures || [],
+        known_waf_bypasses: (parsedBrief?.known_waf_bypasses as string[]) || [],
+        common_failures: (parsedBrief?.common_failures as string[]) || [],
         lesson_refs: [],
-        osint_confidence: parsedBrief?.osint_confidence || (searchResults.answer ? 'high' : 'medium'),
+        osint_confidence: (parsedBrief?.osint_confidence as 'high' | 'medium' | 'low') || (searchResults.answer ? 'high' : 'medium'),
         created_at: Date.now(),
       };
 
