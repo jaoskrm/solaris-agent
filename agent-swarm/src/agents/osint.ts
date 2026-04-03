@@ -2,6 +2,8 @@ import { BaseAgent, type AgentConfig } from './base-agent.js';
 import type { SwarmEvent } from '../events/types.js';
 import { tavilySearch, nvdCveFetch, searchCisaKev } from '../utils/osint/index.js';
 import { sectionNodeId } from '../infra/falkordb.js';
+import { LLMRouter } from '../core/llm-router.js';
+import type { LLMMessage } from '../core/providers/ollama.js';
 
 export interface OsintConfig extends AgentConfig {
   agentType: 'osint';
@@ -42,9 +44,11 @@ export interface IntelNode {
 export class OsintAgent extends BaseAgent {
   private generatedBriefs = new Set<string>();
   private feedState: Record<string, number> = {};
+  private llmRouter: LLMRouter;
 
   constructor(config: OsintConfig) {
     super(config);
+    this.llmRouter = new LLMRouter();
   }
 
   async processEvent(event: SwarmEvent): Promise<void> {
@@ -152,7 +156,7 @@ export class OsintAgent extends BaseAgent {
     }
   }
 
-  private async generateExploitBrief(
+private async generateExploitBrief(
     missionId: string,
     exploitType: string,
     targetEndpoint: string
@@ -160,30 +164,66 @@ export class OsintAgent extends BaseAgent {
     console.log(`[${this.agentId}] Researching exploit for ${exploitType} targeting ${targetEndpoint}`);
 
     try {
-      const searchQuery = `${exploitType} exploit payload bypass techniques ${targetEndpoint}`;
       const searchResults = await tavilySearch({
-        query: searchQuery,
+        query: `${exploitType} exploit payload bypass techniques ${targetEndpoint}`,
         searchDepth: 'advanced',
         maxResults: 5,
       });
 
-      const workingExamples: ExploitBrief['working_examples'] = [];
-      const knownWafBypasses: string[] = [];
-      const commonFailures: string[] = [];
+      const researchContext = this.buildResearchContext(searchResults);
 
-      for (const result of searchResults.results.slice(0, 3)) {
-        workingExamples.push({
-          source: result.title,
-          payload: result.content.slice(0, 200),
-          context: `Source: ${result.url}`,
-        });
-      }
+      const briefSchema = {
+        type: 'object',
+        properties: {
+          technique_summary: { type: 'string' },
+          working_examples: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string' },
+                payload: { type: 'string' },
+                context: { type: 'string' },
+              },
+            },
+          },
+          known_waf_bypasses: { type: 'array', items: { type: 'string' } },
+          common_failures: { type: 'array', items: { type: 'string' } },
+          osint_confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+        },
+      };
 
-      if (searchResults.answer) {
-        const wafMatch = searchResults.answer.match(/waf[:\s]+([^\.]+)/gi);
-        if (wafMatch) {
-          knownWafBypasses.push(...wafMatch.map(w => w.replace(/^waf[:\s]+/i, '').trim()));
+      const messages: LLMMessage[] = [
+        {
+          role: 'system',
+          content: `You are an expert penetration tester specializing in exploit research. 
+Generate an ExploitBrief for a mission. Use the provided research to create a structured brief.
+Always respond with valid JSON matching the schema provided.`,
+        },
+        {
+          role: 'user',
+          content: `Generate an ExploitBrief for:
+- Exploit Type: ${exploitType}
+- Target: ${targetEndpoint}
+
+Research Results:
+${researchContext}
+
+Respond with JSON matching this schema:
+${JSON.stringify(briefSchema, null, 2)}`,
+        },
+      ];
+
+      const llmResponse = await this.llmRouter.complete('osint', messages, { schema: briefSchema });
+
+      let parsedBrief;
+      try {
+        const jsonMatch = llmResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsedBrief = JSON.parse(jsonMatch[0]);
         }
+      } catch {
+        console.warn(`[${this.agentId}] Failed to parse LLM response as JSON, using fallback`);
       }
 
       const brief: ExploitBrief = {
@@ -193,12 +233,16 @@ export class OsintAgent extends BaseAgent {
         mission_id: missionId,
         exploit_type: exploitType,
         target_component: targetEndpoint,
-        technique_summary: searchResults.answer || `Exploitation techniques for ${exploitType}`,
-        working_examples: workingExamples,
-        known_waf_bypasses: [...new Set(knownWafBypasses)].slice(0, 5),
-        common_failures: commonFailures.slice(0, 5),
+        technique_summary: parsedBrief?.technique_summary || searchResults.answer || `Exploitation techniques for ${exploitType}`,
+        working_examples: parsedBrief?.working_examples || searchResults.results.slice(0, 3).map(r => ({
+          source: r.title,
+          payload: r.content.slice(0, 200),
+          context: `Source: ${r.url}`,
+        })),
+        known_waf_bypasses: parsedBrief?.known_waf_bypasses || [],
+        common_failures: parsedBrief?.common_failures || [],
         lesson_refs: [],
-        osint_confidence: searchResults.answer ? 'high' : 'medium',
+        osint_confidence: parsedBrief?.osint_confidence || (searchResults.answer ? 'high' : 'medium'),
         created_at: Date.now(),
       };
 
@@ -207,6 +251,21 @@ export class OsintAgent extends BaseAgent {
       console.error(`[${this.agentId}] Brief generation failed:`, error);
       return null;
     }
+  }
+
+  private buildResearchContext(searchResults: Awaited<ReturnType<typeof tavilySearch>>): string {
+    const parts: string[] = [];
+
+    if (searchResults.answer) {
+      parts.push(`AI Summary:\n${searchResults.answer}\n`);
+    }
+
+    parts.push('Web Sources:');
+    for (const result of searchResults.results.slice(0, 5)) {
+      parts.push(`- [${result.title}](${result.url}): ${result.content.slice(0, 300)}...`);
+    }
+
+    return parts.join('\n');
   }
 
   private async writeBriefToGraph(brief: ExploitBrief): Promise<void> {
@@ -309,25 +368,74 @@ export class OsintAgent extends BaseAgent {
       maxResults: 5,
     });
 
-    const nodeId = sectionNodeId('intel', `technique:${technique.replace(/\s+/g, '_')}`);
-    
-    const nodeData = {
-      id: nodeId,
-      type: 'intel',
-      subtype: 'technique_doc',
-      name: technique,
-      data: JSON.stringify({
-        summary: searchResults.answer,
-        sources: searchResults.sources,
-        relatedTechniques: searchResults.results.slice(0, 3).map(r => r.title),
-      }),
-      source: 'OSINT',
-      created_at: Date.now(),
-      updated_at: Date.now(),
+    const researchContext = this.buildResearchContext(searchResults);
+
+    const techniqueSchema = {
+      type: 'object',
+      properties: {
+        description: { type: 'string' },
+        mitigation: { type: 'string' },
+        detection: { type: 'string' },
+        references: { type: 'array', items: { type: 'string' } },
+      },
     };
 
-    await this.graph.upsertNode(nodeData);
-    return 1;
+    try {
+      const messages: LLMMessage[] = [
+        {
+          role: 'system',
+          content: `You are a security expert. Research and document a attack/defense technique.
+Always respond with valid JSON matching the schema.`,
+        },
+        {
+          role: 'user',
+          content: `Document the technique: ${technique}
+
+Research:
+${researchContext}
+
+Schema:
+${JSON.stringify(techniqueSchema, null, 2)}`,
+        },
+      ];
+
+      const llmResponse = await this.llmRouter.complete('osint', messages, { schema: techniqueSchema });
+
+      let parsedTechnique;
+      try {
+        const jsonMatch = llmResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsedTechnique = JSON.parse(jsonMatch[0]);
+        }
+      } catch {
+        console.warn(`[${this.agentId}] Failed to parse technique JSON`);
+      }
+
+      const nodeId = sectionNodeId('intel', `technique:${technique.replace(/\s+/g, '_')}`);
+      
+      const nodeData = {
+        id: nodeId,
+        type: 'intel',
+        subtype: 'technique_doc',
+        name: technique,
+        data: JSON.stringify({
+          summary: parsedTechnique?.description || searchResults.answer,
+          mitigation: parsedTechnique?.mitigation,
+          detection: parsedTechnique?.detection,
+          sources: searchResults.sources,
+          relatedTechniques: searchResults.results.slice(0, 3).map(r => r.title),
+        }),
+        source: 'OSINT',
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+
+      await this.graph.upsertNode(nodeData);
+      return 1;
+    } catch (error) {
+      console.error(`[${this.agentId}] Technique enrichment failed:`, error);
+      return 0;
+    }
   }
 
   private async enrichWithExploitDB(query: string): Promise<number> {
