@@ -8,19 +8,40 @@
 -- Written by: Commander (on swarm_complete)
 -- Read by: All agents (on start)
 
+-- Create table if not exists, then add missing columns safely
 CREATE TABLE IF NOT EXISTS engagements (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
-  target_url TEXT NOT NULL,
-  scope TEXT[] NOT NULL,
-  out_of_scope TEXT[] DEFAULT '{}',
-  tech_stack TEXT[] DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'complete', 'cancelled')),
   started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Add columns that might not exist (for existing tables)
+DO $$ BEGIN
+  ALTER TABLE engagements ADD COLUMN IF NOT EXISTS target_url TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE engagements ADD COLUMN IF NOT EXISTS scope TEXT[] NOT NULL DEFAULT '{}';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE engagements ADD COLUMN IF NOT EXISTS out_of_scope TEXT[] NOT NULL DEFAULT '{}';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE engagements ADD COLUMN IF NOT EXISTS tech_stack TEXT[] NOT NULL DEFAULT '{}';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+-- Backfill target_url from target_config if they differ
+UPDATE engagements SET target_url = COALESCE(target_url, '') WHERE target_url = '';
 
 CREATE INDEX IF NOT EXISTS idx_engagements_status ON engagements(status);
 CREATE INDEX IF NOT EXISTS idx_engagements_target ON engagements(target_url);
@@ -82,36 +103,41 @@ CREATE INDEX IF NOT EXISTS idx_lessons_engagement ON cross_engagement_lessons(en
 CREATE TABLE IF NOT EXISTS run_reports (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   engagement_id UUID REFERENCES engagements(id) ON DELETE CASCADE,
-  
-  -- Report content
-  summary JSONB NOT NULL,
-  /*
-    Example:
-    {
-      "mission_count": 50,
-      "success_count": 12,
-      "failure_count": 8,
-      "duration_ms": 3600000,
-      "total_findings": 45,
-      "critical_findings": 3,
-      "high_findings": 10
-    }
-  */
-  
-  findings JSONB DEFAULT '[]',
-  credentials_discovered JSONB DEFAULT '[]',
-  attack_chains_completed JSONB DEFAULT '[]',
-  
-  -- Report metadata
-  format TEXT NOT NULL DEFAULT 'json' CHECK (format IN ('json', 'md', 'html')),
-  version TEXT NOT NULL DEFAULT '1.0',
-  
-  -- Status
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'review', 'final')),
-  
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Add columns safely for existing tables
+DO $$ BEGIN
+  ALTER TABLE run_reports ADD COLUMN IF NOT EXISTS summary JSONB NOT NULL DEFAULT '{"mission_count": 0}';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE run_reports ADD COLUMN IF NOT EXISTS findings JSONB NOT NULL DEFAULT '[]';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE run_reports ADD COLUMN IF NOT EXISTS credentials_discovered JSONB NOT NULL DEFAULT '[]';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE run_reports ADD COLUMN IF NOT EXISTS attack_chains_completed JSONB NOT NULL DEFAULT '[]';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE run_reports ADD COLUMN IF NOT EXISTS format TEXT NOT NULL DEFAULT 'json';
+EXCEPTION WHEN others THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE run_reports ADD COLUMN IF NOT EXISTS version TEXT NOT NULL DEFAULT '1.0';
+EXCEPTION WHEN others THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_reports_engagement ON run_reports(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_reports_status ON run_reports(status);
