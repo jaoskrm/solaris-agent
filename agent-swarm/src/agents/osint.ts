@@ -4,6 +4,8 @@ import { tavilySearch, nvdCveFetch, searchCisaKev } from '../utils/osint/index.j
 import { sectionNodeId } from '../infra/falkordb.js';
 import { LLMRouter } from '../core/llm-router.js';
 import type { LLMMessage } from '../core/providers/ollama.js';
+import { loadAgentPrompt } from '../utils/prompt-loader.js';
+import { loadOverlay } from '../utils/prompt-overlay.js';
 
 export interface OsintConfig extends AgentConfig {
   agentType: 'osint';
@@ -171,6 +173,8 @@ private async generateExploitBrief(
       });
 
       const researchContext = this.buildResearchContext(searchResults);
+      const systemPrompt = this.getSystemPrompt(exploitType);
+      const overlay = loadOverlay(exploitType);
 
       const briefSchema = {
         type: 'object',
@@ -203,24 +207,22 @@ private async generateExploitBrief(
         }
 
         try {
+          const userContent = this.buildBriefUserMessage(
+            exploitType,
+            targetEndpoint,
+            researchContext,
+            overlay,
+            briefSchema
+          );
+
           const messages: LLMMessage[] = [
             {
               role: 'system',
-              content: `You are an expert penetration tester specializing in exploit research. 
-Generate an ExploitBrief for a mission. Use the provided research to create a structured brief.
-ALWAYS respond with ONLY valid JSON matching the schema provided. No markdown, no explanation, just JSON.`,
+              content: systemPrompt || `You are OSINT, the intelligence gathering engine. Generate an ExploitBrief for a mission. Always respond with valid JSON.`,
             },
             {
               role: 'user',
-              content: `Generate an ExploitBrief for:
-- Exploit Type: ${exploitType}
-- Target: ${targetEndpoint}
-
-Research Results:
-${researchContext}
-
-Respond with ONLY valid JSON matching this schema:
-${JSON.stringify(briefSchema, null, 2)}`,
+              content: userContent,
             },
           ];
 
@@ -262,6 +264,35 @@ ${JSON.stringify(briefSchema, null, 2)}`,
       console.error(`[${this.agentId}] Brief generation failed:`, error);
       return null;
     }
+  }
+
+  private buildBriefUserMessage(
+    exploitType: string,
+    targetEndpoint: string,
+    researchContext: string,
+    overlay: string,
+    schema: object
+  ): string {
+    const parts: string[] = [];
+
+    parts.push(`Generate an ExploitBrief for:
+- Exploit Type: ${exploitType}
+- Target: ${targetEndpoint}
+
+Research Results (from live OSINT):
+${researchContext}`);
+
+    if (overlay) {
+      parts.push(`
+Known Payloads & Techniques (from payload library):
+${overlay}`);
+    }
+
+    parts.push(`
+Respond with ONLY valid JSON matching this schema:
+${JSON.stringify(schema, null, 2)}`);
+
+    return parts.join('\n');
   }
 
   private buildResearchContext(searchResults: Awaited<ReturnType<typeof tavilySearch>>): string {
@@ -380,6 +411,8 @@ ${JSON.stringify(briefSchema, null, 2)}`,
     });
 
     const researchContext = this.buildResearchContext(searchResults);
+    const systemPrompt = this.getSystemPrompt(technique);
+    const overlay = loadOverlay(technique);
 
     const techniqueSchema = {
       type: 'object',
@@ -392,21 +425,31 @@ ${JSON.stringify(briefSchema, null, 2)}`,
     };
 
     try {
+      let userContent = `Document the technique: ${technique}
+
+Research (from live OSINT):
+${researchContext}`;
+
+      if (overlay) {
+        userContent += `
+
+Payload Library Data:
+${overlay}`;
+      }
+
+      userContent += `
+
+Schema:
+${JSON.stringify(techniqueSchema, null, 2)}`;
+
       const messages: LLMMessage[] = [
         {
           role: 'system',
-          content: `You are a security expert. Research and document a attack/defense technique.
-Always respond with valid JSON matching the schema.`,
+          content: systemPrompt || `You are OSINT, the intelligence gathering engine. Document attack/defense techniques using the provided research and payload library. Always respond with valid JSON matching the schema.`,
         },
         {
           role: 'user',
-          content: `Document the technique: ${technique}
-
-Research:
-${researchContext}
-
-Schema:
-${JSON.stringify(techniqueSchema, null, 2)}`,
+          content: userContent,
         },
       ];
 

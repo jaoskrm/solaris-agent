@@ -37,16 +37,36 @@ export function loadOverlay(
     return overlayCache.get(cacheKey)!;
   }
 
-  const overlayPath = join(OVERLAYS_DIR, `${normalized}.md`);
+  const nameVariants: string[] = [normalized];
 
-  if (!existsSync(overlayPath)) {
-    console.warn(`[prompt-overlay] No overlay found for exploit type: ${exploitType}`);
-    return '';
+  if (normalized.includes('sql') || normalized.includes('injection')) {
+    nameVariants.push(
+      normalized.replace(/_injection$/, 'i'),
+      normalized.replace(/_injection$/, ''),
+      'sqli',
+      'sql_injection'
+    );
   }
 
-  const content = readFileSync(overlayPath, 'utf-8');
-  overlayCache.set(cacheKey, content);
-  return content;
+  if (normalized.includes('auth') && normalized.includes('bypass')) {
+    nameVariants.push('auth_bypass');
+  }
+
+  if (normalized.includes('open') && normalized.includes('redirect')) {
+    nameVariants.push('open_redirect');
+  }
+
+  for (const variant of nameVariants) {
+    const overlayPath = join(OVERLAYS_DIR, `${variant}.md`);
+    if (existsSync(overlayPath)) {
+      const content = readFileSync(overlayPath, 'utf-8');
+      overlayCache.set(cacheKey, content);
+      return content;
+    }
+  }
+
+  console.warn(`[prompt-overlay] No overlay found for exploit type: ${exploitType}`);
+  return '';
 }
 
 export function parseOverlayPayloads(
