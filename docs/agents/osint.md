@@ -2,9 +2,9 @@
 
 **Agent:** OSINT Agent
 **Type:** `osint`
-**Tier:** Tier 4 (Cloud)
-**Model:** `gemma-3-27b-it` (Google primary) → `qwen-3-235b-a22b` (Cerebras fallback)
-**Temperature:** 0.5–0.8
+**Tier:** Tier 5 (Cloud)
+**Model:** `llama-3.1-8b` (Cerebras primary) → `qwen-3-235b-a22b-instruct-2507` (Cerebras fallback)
+**Temperature:** 0.65
 **Poll Interval:** 2000ms
 
 ---
@@ -462,3 +462,12 @@ Write failure:
 ---
 
 *OSINT spec version 1.0 — 2026-04-03*
+
+---
+
+## See Also
+
+- [MODEL_GUIDE.md](./MODEL_GUIDE.md) — Locked-in model configuration, benchmark results, provider recommendations
+- [Gamma §3](./gamma.md#3-event-contract) — Brief ready flow (OSINT → Gamma for ExploitBrief delivery)
+- [Critic §3](./critic.md#3-event-contract) — Failure enrichment flow (Critic → OSINT for supplementary briefs)
+- [SPEC-DESIGN.md](./SPEC-DESIGN.md) — Spec template and cross-cutting concerns

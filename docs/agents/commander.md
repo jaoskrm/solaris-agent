@@ -3,8 +3,8 @@
 **Agent:** Commander
 **Type:** `commander`
 **Tier:** Tier 3 (Cloud)
-**Model:** `nemotron-3-70b-versatile` (Groq primary) → `qwen-3-235b-a22b` (Cerebras fallback)
-**Temperature:** 0.3–0.7
+**Model:** `llama-3.3-70b-versatile` (Groq primary) → `moonshotai/kimi-k2-instruct` (Groq fallback)
+**Temperature:** 0.5
 **Poll Interval:** 500ms
 
 ---
@@ -433,3 +433,13 @@ Commander does not execute missions — these are Gamma/MCP targets. Commander's
 ---
 
 *Commander spec version 1.0 — 2026-04-03*
+
+---
+
+## See Also
+
+- [MODEL_GUIDE.md](./MODEL_GUIDE.md) — Locked-in model configuration, benchmark results, provider recommendations
+- [Verifier §5](./verifier.md#5-tool-usage) — Tool usage constraints (Commander has no tool access)
+- [Gamma §3](./gamma.md#3-event-contract) — Mission authorization flow (Commander authorizes Gamma missions)
+- [OSINT §3](./osint.md#3-event-contract) — Enrichment request flow
+- [SPEC-DESIGN.md](./SPEC-DESIGN.md) — Spec template and cross-cutting concerns

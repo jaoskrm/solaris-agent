@@ -3,9 +3,9 @@
 **Agent:** Gamma Exploit
 **Type:** `gamma`
 **Pool:** `gamma-1`, `gamma-2`, `gamma-3` (pool size 1–3, PM2 managed)
-**Tier:** Tier 2 (Local Ollama)
-**Model:** `qwen2.5-coder:14b-instruct-q4_K_M` (Ollama primary) → `llama-3.3-70b-versatile` (Groq fallback)
-**Temperature:** 0.7–1.0
+**Tier:** Tier 2 (Local Ollama + Cloud fallback)
+**Model:** `llama3-groq-tool-use:8b-q4_K_M` (Ollama primary) → `moonshotai/kimi-k2-instruct` (Groq fallback)
+**Temperature:** 0.85
 **Poll Interval:** 2000ms
 
 ---
@@ -512,3 +512,12 @@ Write failure after successful exploit:
 ---
 
 *Gamma spec version 1.0 — 2026-04-03*
+
+---
+
+## See Also
+
+- [MODEL_GUIDE.md](./MODEL_GUIDE.md) — Locked-in model configuration, benchmark results, provider recommendations
+- [Critic §3](./critic.md#3-event-contract) — Failure loop (Gamma emits exploit_failed → Critic analyzes)
+- [Alpha §5](./alpha.md#5-tool-usage) — Tool exclusions (Gamma vs Alpha tool sets differ)
+- [SPEC-DESIGN.md](./SPEC-DESIGN.md) — Spec template and cross-cutting concerns

@@ -2,9 +2,9 @@
 
 **Agent:** Alpha Recon
 **Type:** `alpha`
-**Tier:** Tier 2 (Local Ollama)
-**Model:** `qwen2.5-coder:14b-instruct-q4_K_M` (Ollama primary) → `llama-3.3-70b-versatile` (Groq fallback)
-**Temperature:** 0.7–1.0
+**Tier:** Tier 2 (Local Ollama + Cloud fallback)
+**Model:** `qwen2.5-coder:7b-instruct-q4_K_M` (Ollama primary) → `moonshotai/kimi-k2-instruct` (Groq fallback)
+**Temperature:** 0.65
 **Poll Interval:** 5000ms
 
 ---
@@ -506,3 +506,12 @@ Write failure:
 ---
 
 *Alpha spec version 1.0 — 2026-04-03*
+
+---
+
+## See Also
+
+- [MODEL_GUIDE.md](./MODEL_GUIDE.md) — Locked-in model configuration, benchmark results, provider recommendations
+- [Gamma §5](./gamma.md#5-tool-usage) — Tool exclusions (Alpha vs Gamma tool sets differ)
+- [OSINT §3](./osint.md#3-event-contract) — Component detection flow (Alpha → OSINT for specialist spawning)
+- [SPEC-DESIGN.md](./SPEC-DESIGN.md) — Spec template and cross-cutting concerns

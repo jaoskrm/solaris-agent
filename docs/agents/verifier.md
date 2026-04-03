@@ -3,8 +3,8 @@
 **Agent:** Verifier
 **Type:** `verifier`
 **Tier:** Tier 1 (Local Ollama)
-**Model:** `phi3:3.8b-mini-128k-instruct-q4_K_M` (Ollama primary) → `nemotron-3-nano-30b-a3b` (OpenRouter fallback)
-**Temperature:** 0.0–0.2
+**Model:** `phi3:3.8b-mini-128k-instruct-q4_K_M` (Ollama primary) → `llama3.1:8b-instruct-q4_K_M` (Ollama fallback)
+**Temperature:** 0.0
 **Poll Interval:** 500ms
 
 ---
@@ -428,3 +428,11 @@ Write failure (verified=true):
 ---
 
 *Verifier spec version 1.0 — 2026-04-03*
+
+---
+
+## See Also
+
+- [MODEL_GUIDE.md](./MODEL_GUIDE.md) — Locked-in model configuration, benchmark results, provider recommendations
+- [Commander §3](./commander.md#3-event-contract) — Mission authorization flow (Verifier → Commander after structural checks)
+- [SPEC-DESIGN.md](./SPEC-DESIGN.md) — Spec template and cross-cutting concerns

@@ -3,8 +3,8 @@
 **Agent:** Critic
 **Type:** `critic`
 **Tier:** Tier 1 (Local Ollama)
-**Model:** `phi3:3.8b-mini-128k-instruct-q4_K_M` (Ollama primary) → `nemotron-3-nano-30b-a3b` (OpenRouter fallback)
-**Temperature:** 0.0–0.3
+**Model:** `phi3:3.8b-mini-128k-instruct-q4_K_M` (Ollama primary) → `llama3.1:8b-instruct-q4_K_M` (Ollama fallback)
+**Temperature:** 0.15
 **Poll Interval:** 1000ms
 
 ---
@@ -505,3 +505,12 @@ LessonNode write failure:
 ---
 
 *Critic spec version 1.0 — 2026-04-03*
+
+---
+
+## See Also
+
+- [MODEL_GUIDE.md](./MODEL_GUIDE.md) — Locked-in model configuration, benchmark results, provider recommendations
+- [Gamma §3](./gamma.md#3-event-contract) — Failure loop (Gamma emits exploit_failed → Critic analyzes)
+- [OSINT §3](./osint.md#3-event-contract) — Enrichment request flow (Critic → OSINT for failure research)
+- [SPEC-DESIGN.md](./SPEC-DESIGN.md) — Spec template and cross-cutting concerns
