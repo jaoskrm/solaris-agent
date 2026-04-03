@@ -130,7 +130,7 @@ export class EventBus {
   async cleanupByType(eventType: SwarmEventType, cutoff: number): Promise<number> {
     const stmt = this.db.prepare(`
       DELETE FROM events 
-      WHERE type = ? AND created_at < ?
+      WHERE type = ? AND consumed = 1 AND consumed_at < ?
     `);
     
     const result = stmt.run(eventType, cutoff);

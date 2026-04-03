@@ -3,6 +3,11 @@ import { getSubscriptions } from '../events/subscriptions.js';
 import { getFalkorDB, type FalkorDBClient } from '../infra/falkordb.js';
 import type { SwarmEvent, SwarmEventType } from '../events/types.js';
 import { AgentState, AGENT_INITIAL_STATES, canTransition } from './state.js';
+import { toolRegistry } from '../core/tools/registry.js';
+import { loadAgentPrompt, type AgentPromptId } from '../utils/prompt-loader.js';
+import { loadOverlay } from '../utils/prompt-overlay.js';
+import type { ToolArgs, ExecResult } from '../core/tools/types.js';
+import type { AgentRole } from '../core/tools/types.js';
 
 export interface AgentConfig {
   agentId: string;
@@ -237,5 +242,43 @@ export abstract class BaseAgent {
 
   protected async emit(type: SwarmEventType, payload: Record<string, unknown>): Promise<string> {
     return this.eventBus.emit(type, payload, this.agentId);
+  }
+
+  protected async executeTool(name: string, args: ToolArgs): Promise<ExecResult> {
+    const role = this.agentType as AgentRole;
+    return toolRegistry.executeForRole(role, name, args);
+  }
+
+  protected getSystemPrompt(exploitType?: string): string {
+    const promptId = this.getPromptId();
+    let prompt = loadAgentPrompt(promptId);
+    
+    if (exploitType) {
+      const overlay = loadOverlay(exploitType);
+      if (overlay) {
+        prompt += '\n\n---\n\n## Exploit-Specific Context\n\n' + overlay;
+      }
+    }
+    
+    return prompt;
+  }
+
+  protected getPromptId(): AgentPromptId {
+    const mapping: Record<string, AgentPromptId> = {
+      commander: 'commander',
+      gamma: 'gamma',
+      alpha: 'alpha-recon',
+      osint: 'osint',
+      verifier: 'verifier',
+      critic: 'critic',
+      mission_planner: 'mission-planner',
+      chain_planner: 'chain-planner',
+      mcp: 'mcp-agent',
+      post_exploit: 'post-exploit',
+      report_agent: 'report-agent',
+      specialist: 'specialist',
+    };
+    
+    return mapping[this.agentType] ?? 'commander';
   }
 }
