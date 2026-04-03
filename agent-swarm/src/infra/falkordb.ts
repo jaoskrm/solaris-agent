@@ -10,6 +10,32 @@ export interface FalkorDBConfig {
 
 const GRAPH_NAME = 'solaris';
 
+export type GraphSection = 'recon' | 'gamma' | 'bridge' | 'intel' | 'lessons';
+
+export const SECTION_PREFIXES: Record<GraphSection, string> = {
+  recon: 'recon/',
+  gamma: 'gamma/',
+  bridge: 'bridge/',
+  intel: 'intel/',
+  lessons: 'lessons/',
+};
+
+export function sectionNodeId(section: GraphSection, nodeId: string): string {
+  return `${SECTION_PREFIXES[section]}${nodeId}`;
+}
+
+export function parseSectionNodeId(fullId: string): { section: GraphSection; nodeId: string } | null {
+  for (const [section, prefix] of Object.entries(SECTION_PREFIXES)) {
+    if (fullId.startsWith(prefix)) {
+      return {
+        section: section as GraphSection,
+        nodeId: fullId.slice(prefix.length),
+      };
+    }
+  }
+  return null;
+}
+
 export class FalkorDBClient {
   private redis: Redis;
   private graphName: string;
@@ -206,6 +232,59 @@ export class FalkorDBClient {
   }
 
   // ===========================================
+  // Vector Index Operations (Light RAG)
+  // ===========================================
+
+  async createVectorIndex(
+    indexName: string,
+    label: string,
+    property: string,
+    dimensions: number = 1024,
+    algorithm: 'COS' | 'IP' | 'L2' = 'COS'
+  ): Promise<void> {
+    const cypher = `CALL db.idx.vector.createNodeIndex('${indexName}', '${label}', '${property}', ${dimensions}, '${algorithm}')`;
+    await this.graphQuery(cypher);
+  }
+
+  async dropIndex(indexName: string): Promise<void> {
+    const cypher = `CALL db.idx.vector.drop('${indexName}')`;
+    await this.graphQuery(cypher);
+  }
+
+  async listIndexes(): Promise<string[]> {
+    const cypher = 'CALL db.indexes()';
+    const result = await this.graphQuery(cypher);
+    if (!result[1]) return [];
+    return result[1].map((row: any) => row[0]);
+  }
+
+  async queryVectorIndex(
+    indexName: string,
+    embedding: number[],
+    limit: number = 10,
+    options?: { where?: string; yield?: string }
+  ): Promise<Array<{ node: Record<string, unknown>; score?: number }>> {
+    const embeddingStr = JSON.stringify(embedding);
+    const yieldClause = options?.yield ? `YIELD ${options.yield}` : '';
+    const whereClause = options?.where ? `WHERE ${options.where}` : '';
+
+    const cypher = `
+      CALL db.idx.vector.queryNodes('${indexName}', ${limit}, '${embeddingStr}')
+      ${yieldClause}
+      ${yieldClause ? whereClause : 'WHERE true'}
+      RETURN node, score
+    `.trim();
+
+    const result = await this.graphQuery(cypher);
+    if (!result[1]) return [];
+
+    return result[1].map((row: any) => ({
+      node: row[0] || {},
+      score: row[1],
+    }));
+  }
+
+  // ===========================================
   // Mission Queue (Atomic Claim with Redis Lock)
   // ===========================================
 
@@ -339,6 +418,10 @@ export class FalkorDBClient {
 
   raw(): Redis {
     return this.redis;
+  }
+
+  async rawQuery(cypher: string): Promise<any[]> {
+    return this.graphQuery(cypher);
   }
 }
 
