@@ -12,6 +12,7 @@ export type SwarmEventType =
   | "exploit_completed"
   | "exploit_failed"
   | "enrichment_requested"
+  | "enrichment_complete"
   | "rce_confirmed"
   | "swarm_complete"
   | "brief_ready"
@@ -62,6 +63,7 @@ export const EventTTL: Record<SwarmEventType, number | null> = {
   mission_ready: 600000,
   mission_rejected: 600000,
   enrichment_requested: 600000,
+  enrichment_complete: 600000,
   rce_confirmed: 600000,
   waf_duel_started: 600000,
   waf_duel_complete: 600000,

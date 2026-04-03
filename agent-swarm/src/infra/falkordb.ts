@@ -116,6 +116,16 @@ export class FalkorDBClient {
     return this.parseNodeResult(result);
   }
 
+  async upsertNode(nodeData: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    const { id, type, ...properties } = nodeData;
+    if (!id || !type) {
+      throw new Error('upsertNode requires id and type properties');
+    }
+
+    const label = type === 'intel' ? 'IntelNode' : `${type}Node`;
+    return this.createNode(label, id as string, properties);
+  }
+
   async deleteNode(id: string): Promise<boolean> {
     const cypher = `MATCH (n) WHERE n.id = ${this.escapeValue(id)} DETACH DELETE n RETURN count(n) as deleted`;
     const result = await this.graphQuery(cypher);
