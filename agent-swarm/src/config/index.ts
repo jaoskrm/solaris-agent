@@ -23,6 +23,10 @@ const envSchema = z.object({
   OLLAMA_MODEL: z.string().default('qwen2.5-coder:14b'),
   OLLAMA_ENABLED: z.enum(['true', 'false']).default('false'),
   
+  // OSINT APIs
+  TAVILY_API_KEY: z.string().optional(),
+  NVD_API_KEY: z.string().optional(),
+  
   // PM2 / Agent Pool
   GAMMA_POOL_MAX: z.coerce.number().default(3),
   GAMMA_MEMORY_LIMIT: z.string().default('2G'),

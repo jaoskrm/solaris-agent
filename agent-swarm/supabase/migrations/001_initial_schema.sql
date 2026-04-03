@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS engagements (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_engagements_status ON engagements(status);
-CREATE INDEX idx_engagements_target ON engagements(target_url);
+CREATE INDEX IF NOT EXISTS idx_engagements_status ON engagements(status);
+CREATE INDEX IF NOT EXISTS idx_engagements_target ON engagements(target_url);
 
 -- ===========================================
 -- CROSS_ENGAGEMENT_LESSONS TABLE
@@ -67,10 +67,10 @@ CREATE TABLE IF NOT EXISTS cross_engagement_lessons (
   use_count INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_lessons_fingerprint ON cross_engagement_lessons USING GIN(stack_fingerprint);
-CREATE INDEX idx_lessons_target_class ON cross_engagement_lessons(target_class);
-CREATE INDEX idx_lessons_tags ON cross_engagement_lessons USING GIN(tags);
-CREATE INDEX idx_lessons_engagement ON cross_engagement_lessons(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_lessons_fingerprint ON cross_engagement_lessons USING GIN(stack_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_lessons_target_class ON cross_engagement_lessons(target_class);
+CREATE INDEX IF NOT EXISTS idx_lessons_tags ON cross_engagement_lessons USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_lessons_engagement ON cross_engagement_lessons(engagement_id);
 
 -- ===========================================
 -- RUN_REPORTS TABLE
@@ -113,8 +113,8 @@ CREATE TABLE IF NOT EXISTS run_reports (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_reports_engagement ON run_reports(engagement_id);
-CREATE INDEX idx_reports_status ON run_reports(status);
+CREATE INDEX IF NOT EXISTS idx_reports_engagement ON run_reports(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON run_reports(status);
 
 -- ===========================================
 -- TARGET_CONFIGS TABLE
@@ -157,9 +157,9 @@ CREATE TABLE IF NOT EXISTS target_configs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_target_configs_engagement ON target_configs(engagement_id);
-CREATE INDEX idx_target_configs_target ON target_configs(target_url);
-CREATE INDEX idx_target_configs_active ON target_configs(is_active);
+CREATE INDEX IF NOT EXISTS idx_target_configs_engagement ON target_configs(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_target_configs_target ON target_configs(target_url);
+CREATE INDEX IF NOT EXISTS idx_target_configs_active ON target_configs(is_active);
 
 -- ===========================================
 -- HELPER FUNCTIONS
