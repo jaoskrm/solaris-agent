@@ -5,7 +5,7 @@ import { sectionNodeId } from '../infra/falkordb.js';
 import { LLMRouter } from '../core/llm-router.js';
 import type { LLMMessage } from '../core/providers/ollama.js';
 import { loadAgentPrompt } from '../utils/prompt-loader.js';
-import { loadOverlay } from '../utils/prompt-overlay.js';
+import { loadOverlay, parseOverlayPayloads } from '../utils/prompt-overlay.js';
 
 export interface OsintConfig extends AgentConfig {
   agentType: 'osint';
@@ -174,7 +174,6 @@ private async generateExploitBrief(
 
       const researchContext = this.buildResearchContext(searchResults);
       const systemPrompt = this.getSystemPrompt(exploitType);
-      const overlay = loadOverlay(exploitType);
 
       const briefSchema = {
         type: 'object',
@@ -211,7 +210,6 @@ private async generateExploitBrief(
             exploitType,
             targetEndpoint,
             researchContext,
-            overlay,
             briefSchema
           );
 
@@ -239,6 +237,10 @@ private async generateExploitBrief(
         }
       }
 
+      const normalizedType = exploitType.toLowerCase().replace(/\s+/g, '_');
+      const payloadLibNodeId = await this.storePayloadLibrary(normalizedType);
+      const lessonRefs = payloadLibNodeId ? [payloadLibNodeId] : [];
+
       const brief: ExploitBrief = {
         id: sectionNodeId('intel', `brief:mission:${missionId}`),
         type: 'intel',
@@ -247,14 +249,10 @@ private async generateExploitBrief(
         exploit_type: exploitType,
         target_component: targetEndpoint,
         technique_summary: parsedBrief?.technique_summary as string || searchResults.answer || `Exploitation techniques for ${exploitType}`,
-        working_examples: (parsedBrief?.working_examples as ExploitBrief['working_examples']) || searchResults.results.slice(0, 3).map(r => ({
-          source: r.title,
-          payload: r.content.slice(0, 200),
-          context: `Source: ${r.url}`,
-        })),
+        working_examples: (parsedBrief?.working_examples as ExploitBrief['working_examples']) || [],
         known_waf_bypasses: (parsedBrief?.known_waf_bypasses as string[]) || [],
         common_failures: (parsedBrief?.common_failures as string[]) || [],
-        lesson_refs: [],
+        lesson_refs: lessonRefs,
         osint_confidence: (parsedBrief?.osint_confidence as 'high' | 'medium' | 'low') || (searchResults.answer ? 'high' : 'medium'),
         created_at: Date.now(),
       };
@@ -270,7 +268,7 @@ private async generateExploitBrief(
     exploitType: string,
     targetEndpoint: string,
     researchContext: string,
-    overlay: string,
+    _overlay: string,
     schema: object
   ): string {
     const parts: string[] = [];
@@ -280,15 +278,10 @@ private async generateExploitBrief(
 - Target: ${targetEndpoint}
 
 Research Results (from live OSINT):
-${researchContext}`);
+${researchContext}
 
-    if (overlay) {
-      parts.push(`
-Known Payloads & Techniques (from payload library):
-${overlay}`);
-    }
+IMPORTANT: Do NOT include actual payloads in your response. Payloads are stored separately in the graph and will be retrieved at execution time.
 
-    parts.push(`
 Respond with ONLY valid JSON matching this schema:
 ${JSON.stringify(schema, null, 2)}`);
 
@@ -412,7 +405,7 @@ ${JSON.stringify(schema, null, 2)}`);
 
     const researchContext = this.buildResearchContext(searchResults);
     const systemPrompt = this.getSystemPrompt(technique);
-    const overlay = loadOverlay(technique);
+    const normalizedType = technique.toLowerCase().replace(/\s+/g, '_');
 
     const techniqueSchema = {
       type: 'object',
@@ -420,36 +413,26 @@ ${JSON.stringify(schema, null, 2)}`);
         description: { type: 'string' },
         mitigation: { type: 'string' },
         detection: { type: 'string' },
-        references: { type: 'array', items: { type: 'string' } },
       },
     };
 
     try {
-      let userContent = `Document the technique: ${technique}
-
-Research (from live OSINT):
-${researchContext}`;
-
-      if (overlay) {
-        userContent += `
-
-Payload Library Data:
-${overlay}`;
-      }
-
-      userContent += `
-
-Schema:
-${JSON.stringify(techniqueSchema, null, 2)}`;
-
       const messages: LLMMessage[] = [
         {
           role: 'system',
-          content: systemPrompt || `You are OSINT, the intelligence gathering engine. Document attack/defense techniques using the provided research and payload library. Always respond with valid JSON matching the schema.`,
+          content: systemPrompt || `You are OSINT, the intelligence gathering engine. Document attack/defense techniques. Always respond with valid JSON matching the schema. Do NOT include actual payloads in your response.`,
         },
         {
           role: 'user',
-          content: userContent,
+          content: `Document the technique: ${technique}
+
+Research (from live OSINT):
+${researchContext}
+
+IMPORTANT: Do NOT include actual payloads in your response. Only provide description, mitigation, and detection guidance.
+
+Schema:
+${JSON.stringify(techniqueSchema, null, 2)}`,
         },
       ];
 
@@ -465,7 +448,9 @@ ${JSON.stringify(techniqueSchema, null, 2)}`;
         console.warn(`[${this.agentId}] Failed to parse technique JSON`);
       }
 
-      const nodeId = sectionNodeId('intel', `technique:${technique.replace(/\s+/g, '_')}`);
+      const payloadLibNodeId = await this.storePayloadLibrary(normalizedType);
+
+      const nodeId = sectionNodeId('intel', `technique:${normalizedType}`);
       
       const nodeData = {
         id: nodeId,
@@ -478,6 +463,7 @@ ${JSON.stringify(techniqueSchema, null, 2)}`;
           detection: parsedTechnique?.detection,
           sources: searchResults.sources,
           relatedTechniques: searchResults.results.slice(0, 3).map(r => r.title),
+          payload_library_id: payloadLibNodeId,
         }),
         source: 'OSINT',
         created_at: Date.now(),
@@ -489,6 +475,41 @@ ${JSON.stringify(techniqueSchema, null, 2)}`;
     } catch (error) {
       console.error(`[${this.agentId}] Technique enrichment failed:`, error);
       return 0;
+    }
+  }
+
+  private async storePayloadLibrary(exploitType: string): Promise<string | null> {
+    const overlayPayloads = parseOverlayPayloads(exploitType);
+    
+    if (overlayPayloads.length === 0) {
+      console.log(`[${this.agentId}] No payload library found for ${exploitType}`);
+      return null;
+    }
+
+    const nodeId = sectionNodeId('intel', `payloads:${exploitType}`);
+    
+    const nodeData = {
+      id: nodeId,
+      type: 'intel',
+      subtype: 'payload_library',
+      name: `${exploitType} payloads`,
+      data: JSON.stringify({
+        exploit_type: exploitType,
+        payloads: overlayPayloads,
+        stored_at: Date.now(),
+      }),
+      source: 'payload_overlay',
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+
+    try {
+      await this.graph.upsertNode(nodeData);
+      console.log(`[${this.agentId}] Stored payload library: ${nodeId} (${overlayPayloads.length} categories)`);
+      return nodeId;
+    } catch (error) {
+      console.error(`[${this.agentId}] Failed to store payload library:`, error);
+      return null;
     }
   }
 

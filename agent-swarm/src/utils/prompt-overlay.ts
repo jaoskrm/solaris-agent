@@ -3,9 +3,11 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const OVERLAYS_DIR = join(__dirname, '..', 'prompt-overlays');
+const OVERLAYS_DIR = join(__dirname, '..', '..', 'prompt-overlays');
+const GENERATED_DIR = join(__dirname, '..', '..', 'prompt-overlays-generated');
 
 const overlayCache = new Map<string, string>();
+const generatedCache = new Map<string, object>();
 
 export interface OverlayPayload {
   category: string;
@@ -24,6 +26,46 @@ export interface OverlayContent {
   bypasses: string[];
   constraints: string[];
   databaseSpecific?: Record<string, string[]>;
+}
+
+export function loadGeneratedPayload(exploitType: string): object | null {
+  const normalized = exploitType.toLowerCase().replace(/\s+/g, '_');
+  
+  if (generatedCache.has(normalized)) {
+    return generatedCache.get(normalized)!;
+  }
+  
+  const aliases: string[] = [normalized];
+  
+  if (normalized === 'jwt') aliases.push('json_web_token', 'jsonwebtoken');
+  if (normalized === 'sqli') aliases.push('sql_injection', 'nosql');
+  if (normalized === 'ssrf') aliases.push('server_side_request_forgery');
+  if (normalized === 'ssti') aliases.push('server_side_template_injection', 'template_injection');
+  if (normalized === 'xxe') aliases.push('xml_external_entity');
+  if (normalized === 'idor') aliases.push('insecure_direct_object_references');
+  
+  for (const variant of aliases) {
+    const jsonPath = join(GENERATED_DIR, `${variant}.json`);
+    if (existsSync(jsonPath)) {
+      try {
+        const content = readFileSync(jsonPath, 'utf-8');
+        const parsed = JSON.parse(content);
+        generatedCache.set(normalized, parsed);
+        return parsed;
+      } catch (e) {
+        console.warn(`[prompt-overlay] Failed to parse generated overlay ${variant}:`, e.message);
+      }
+    }
+  }
+  
+  return null;
+}
+
+export function listGeneratedPayloads(): string[] {
+  if (!existsSync(GENERATED_DIR)) return [];
+  return readdirSync(GENERATED_DIR)
+    .filter(f => f.endsWith('.json'))
+    .map(f => f.replace(/\.json$/, ''));
 }
 
 export function loadOverlay(
@@ -72,13 +114,18 @@ export function loadOverlay(
 export function parseOverlayPayloads(
   exploitType: string
 ): OverlayPayload[] {
+  const generated = loadGeneratedPayload(exploitType);
+  if (generated && (generated as any).payloads) {
+    return (generated as any).payloads as OverlayPayload[];
+  }
+  
   const content = loadOverlay(exploitType);
   if (!content) return [];
 
   const payloads: OverlayPayload[] = [];
   const lines = content.split('\n');
   let currentCategory = '';
-  let currentEscalation = 'baseline';
+  let currentEscalation: 'baseline' = 'baseline';
   let currentLines: string[] = [];
 
   for (const line of lines) {

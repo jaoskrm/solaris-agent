@@ -1,0 +1,138 @@
+{
+  "generated_at": "2026-04-03T08:44:10.455Z",
+  "total_wordlists": 18,
+  "stages": {
+    "recon": {
+      "raft-large-directories": {
+        "path": "recon/directories/raft-large-directories.txt",
+        "lines": 62282,
+        "size": 541998,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "raft-medium-directories": {
+        "path": "recon/directories/raft-medium-directories.txt",
+        "lines": 30000,
+        "size": 250427,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "raft-small-directories": {
+        "path": "recon/directories/raft-small-directories.txt",
+        "lines": 20116,
+        "size": 163210,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "raft-large-files": {
+        "path": "recon/files/raft-large-files.txt",
+        "lines": 37051,
+        "size": 493618,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "raft-medium-files": {
+        "path": "recon/files/raft-medium-files.txt",
+        "lines": 17130,
+        "size": 224381,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "top1mil": {
+        "path": "recon/subdomains/top1mil.txt",
+        "lines": 653921,
+        "size": 8285473,
+        "source": "SecLists",
+        "type": "text"
+      }
+    },
+    "exploit": {
+      "commix": {
+        "path": "exploit/command_injection/commix.txt",
+        "lines": 8263,
+        "size": 940100,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "Auth_Bypass": {
+        "path": "exploit/sql_injection/Auth_Bypass.txt",
+        "lines": 79,
+        "size": 1202,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      },
+      "Auth_Bypass2": {
+        "path": "exploit/sql_injection/Auth_Bypass2.txt",
+        "lines": 122,
+        "size": 1873,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      },
+      "FUZZDB_MSSQL": {
+        "path": "exploit/sql_injection/FUZZDB_MSSQL.txt",
+        "lines": 18,
+        "size": 1059,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      },
+      "1 - XSS Filter Bypass": {
+        "path": "exploit/xss/1 - XSS Filter Bypass.md",
+        "lines": 579,
+        "size": 17767,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      },
+      "2 - XSS Polyglot": {
+        "path": "exploit/xss/2 - XSS Polyglot.md",
+        "lines": 87,
+        "size": 4970,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      },
+      "3 - XSS Common WAF Bypass": {
+        "path": "exploit/xss/3 - XSS Common WAF Bypass.md",
+        "lines": 121,
+        "size": 3139,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      },
+      "4 - CSP Bypass": {
+        "path": "exploit/xss/4 - CSP Bypass.md",
+        "lines": 180,
+        "size": 7001,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      },
+      "5 - XSS in Angular": {
+        "path": "exploit/xss/5 - XSS in Angular.md",
+        "lines": 344,
+        "size": 11346,
+        "source": "PayloadsAllTheThings",
+        "type": "text"
+      }
+    },
+    "fuzzing": {
+      "alphanum": {
+        "path": "fuzzing/alphanum.txt",
+        "lines": 63,
+        "size": 124,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "char": {
+        "path": "fuzzing/char.txt",
+        "lines": 27,
+        "size": 52,
+        "source": "SecLists",
+        "type": "text"
+      },
+      "naughty_strings": {
+        "path": "fuzzing/naughty_strings.txt",
+        "lines": 699,
+        "size": 28056,
+        "source": "SecLists",
+        "type": "text"
+      }
+    }
+  }
+}

@@ -36,3 +36,7 @@ coverage/
 # Misc
 *.tgz
 .cache/
+
+# Raw payload repos (cloned separately - see README for setup)
+payloads/PayloadsAllTheThings/
+payloads/SecLists/
