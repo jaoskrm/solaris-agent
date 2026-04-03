@@ -1,11 +1,14 @@
-// Ollama models (verified - benchmark tested):
-// ollama pull llama3-groq-tool-use:8b-q4_K_M  (already installed)
-// ollama pull qwen2.5-coder:7b-instruct-q4_K_M  (already installed)
-// ollama pull llama3.1:8b-instruct-q4_K_M  (already installed)
-// ollama pull phi3:3.8b-mini-128k-instruct-q4_K_M  (already installed)
-//
-// Note: Ollama models scored poorly on JSON generation (0-17% valid)
-// Use Groq/Cerebras for JSON-heavy tasks
+/**
+ * Solaris Agent Model Configuration
+ * 
+ * Benchmark Results Summary:
+ * ========================
+ * FASTEST:  llama-3.3-70b-versatile (Groq) @ 367ms - 100% valid JSON
+ * PLANNING: qwen-3-235b-a22b-instruct-2507 (Cerebras) @ 471ms - 100% valid JSON
+ * FREE:     nvidia/nemotron-3-nano-30b-a3b:free (OpenRouter) @ 3.7s - 100% valid JSON
+ * 
+ * Ollama models scored poorly (0-17% valid JSON) - only use for non-JSON tasks
+ */
 
 export interface AgentModelConfig {
   primary: string;
@@ -16,8 +19,12 @@ export interface AgentModelConfig {
 }
 
 export const AGENT_MODEL_CONFIG: Record<string, AgentModelConfig> = {
-  // Tier 1: Nano — Ollama (unlimited, local)
-  // Benchmark: 0-17% valid JSON (poor at JSON generation)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 1: NANO AGENTS - Simple validation/critique (Ollama - local, fast)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Note: Ollama models are fast but poor at JSON (0-17%). These agents
+  // primarily do simple text comparisons, not JSON generation.
+  
   verifier: {
     primary: process.env.VERIFIER_MODEL || 'phi3:3.8b-mini-128k-instruct-q4_K_M',
     fallback: process.env.VERIFIER_MODEL_FALLBACK || 'llama3.1:8b-instruct-q4_K_M',
@@ -33,8 +40,12 @@ export const AGENT_MODEL_CONFIG: Record<string, AgentModelConfig> = {
     provider: 'ollama',
   },
 
-  // Tier 2: Heavy exploit — Ollama primary + Groq cloud fallback
-  // Note: ollama pull llama3-groq-tool-use:8b-q4_K_M, qwen2.5-coder:7b-instruct-q4_K_M
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 2: EXPLOIT AGENTS - Command/JSON generation (Ollama + Groq fallback)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Note: Ollama is fast but unreliable for JSON. Use Groq kimi-k2-instruct
+  // as fallback for reliable JSON generation.
+  
   gamma: {
     primary: process.env.GAMMA_MODEL || 'llama3-groq-tool-use:8b-q4_K_M',
     fallback: process.env.GAMMA_MODEL_FALLBACK || 'moonshotai/kimi-k2-instruct',
@@ -71,39 +82,53 @@ export const AGENT_MODEL_CONFIG: Record<string, AgentModelConfig> = {
     provider: 'ollama',
   },
 
-  // Tier 3: Reasoning — Groq (100% JSON valid @ 367ms)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 3: COMMANDER - High-level reasoning (Groq - FASTEST @ 367ms)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
   commander: {
     primary: process.env.COMMANDER_MODEL || 'llama-3.3-70b-versatile',
-    fallback: process.env.COMMANDER_MODEL_FALLBACK || 'nvidia/nemotron-3-nano-30b-a3b:free',
+    fallback: process.env.COMMANDER_MODEL_FALLBACK || 'moonshotai/kimi-k2-instruct',
     temperature: 0.5,
     maxTokens: 16384,
     provider: 'groq',
   },
 
-  // Tier 4: Planning — Cerebras (100% JSON valid @ 471ms)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 4: PLANNING AGENTS - Mission/chain planning (Cerebras @ 471ms)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
   mission_planner: {
     primary: process.env.PLANNER_MODEL || 'qwen-3-235b-a22b-instruct-2507',
-    fallback: process.env.PLANNER_MODEL_FALLBACK || 'nvidia/nemotron-3-nano-30b-a3b:free',
+    fallback: process.env.PLANNER_MODEL_FALLBACK || 'moonshotai/kimi-k2-instruct',
     temperature: 0.85,
     maxTokens: 16384,
     provider: 'cerebras',
   },
   chain_planner: {
     primary: process.env.CHAIN_MODEL || 'qwen-3-235b-a22b-instruct-2507',
-    fallback: process.env.CHAIN_MODEL_FALLBACK || 'nvidia/nemotron-3-nano-30b-a3b:free',
+    fallback: process.env.CHAIN_MODEL_FALLBACK || 'moonshotai/kimi-k2-instruct',
     temperature: 0.85,
     maxTokens: 16384,
     provider: 'cerebras',
   },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 5: OSINT - Intelligence gathering (Cerebras)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
   osint: {
     primary: process.env.OSINT_MODEL || 'llama-3.1-8b',
-    fallback: process.env.OSINT_MODEL_FALLBACK || 'google/gemma-3-27b-it',
+    fallback: process.env.OSINT_MODEL_FALLBACK || 'qwen-3-235b-a22b-instruct-2507',
     temperature: 0.65,
     maxTokens: 16384,
     provider: 'cerebras',
   },
 
-  // Tier 5: Output — OpenRouter free (100% JSON valid, 3.7s)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 6: REPORT AGENT - Report generation (OpenRouter free @ 3.7s)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
   report_agent: {
     primary: process.env.REPORT_MODEL || 'nvidia/nemotron-3-nano-30b-a3b:free',
     fallback: process.env.REPORT_MODEL_FALLBACK || 'qwen-3-235b-a22b-instruct-2507',
