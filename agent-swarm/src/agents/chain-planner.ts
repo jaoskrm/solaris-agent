@@ -43,7 +43,7 @@ export class ChainPlannerAgent extends BaseAgent {
     }
   }
 
-  private async planCredentialChain(credentialId: string, targetId: string): Promise<string[]> {
+  private async planCredentialChain(credentialId: string, _targetId: string): Promise<string[]> {
     console.log(`[${this.agentId}] Planning credential chain for ${credentialId}`);
     return [];
   }
@@ -81,7 +81,7 @@ export class ChainPlannerAgent extends BaseAgent {
     }
   }
 
-  private async extractCredentials(missionId: string, result: unknown): Promise<Array<{
+  private async extractCredentials(missionId: string, _result: unknown): Promise<Array<{
     credentialId: string;
     targetId: string;
     credentialType: string;

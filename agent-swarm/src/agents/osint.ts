@@ -69,7 +69,7 @@ export class OsintAgent extends BaseAgent {
   }
 
   private async handleExploitFailed(event: SwarmEvent): Promise<void> {
-    const { missionId, error, target } = event.payload as {
+    const { error, target } = event.payload as {
       missionId: string;
       error: string;
       target: string;

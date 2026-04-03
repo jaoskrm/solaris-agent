@@ -42,8 +42,8 @@ export class MissionPlannerAgent extends BaseAgent {
 
   private async createMissionFromFinding(
     findingId: string,
-    targetId: string,
-    findingType: string
+    _targetId: string,
+    _findingType: string
   ): Promise<{ id: string } | null> {
     console.log(`[${this.agentId}] Creating mission from finding: ${findingId}`);
     const missionId = `mission_${Date.now()}`;

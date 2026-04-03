@@ -64,7 +64,7 @@ export class ReportAgent extends BaseAgent {
   }
 
   private async handleFindingWritten(event: SwarmEvent): Promise<void> {
-    const { targetId, type, data } = event.payload as {
+    const { targetId, type } = event.payload as {
       targetId: string;
       type: string;
       data: unknown;

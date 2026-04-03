@@ -45,7 +45,7 @@ export class CriticAgent extends BaseAgent {
 
   private async analyzeFailure(
     missionId: string,
-    target: string,
+    _target: string,
     error: string
   ): Promise<{ shouldRetry: boolean; reason?: string; alternative?: string }> {
     console.log(`[${this.agentId}] Analyzing failure for ${missionId}: ${error}`);
@@ -68,8 +68,8 @@ export class CriticAgent extends BaseAgent {
 
   private async reviewFinding(
     findingId: string,
-    targetId: string,
-    findingType: string
+    _targetId: string,
+    _findingType: string
   ): Promise<{ approved: boolean; reason?: string }> {
     console.log(`[${this.agentId}] Reviewing finding: ${findingId}`);
     return { approved: true };

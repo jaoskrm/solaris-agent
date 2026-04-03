@@ -7,11 +7,8 @@ export interface SpecialistConfig extends AgentConfig {
 }
 
 export class SpecialistAgent extends BaseAgent {
-  private specialty: string;
-
   constructor(config: SpecialistConfig) {
     super(config);
-    this.specialty = config.specialty || 'general';
   }
 
   async processEvent(event: SwarmEvent): Promise<void> {
@@ -62,17 +59,17 @@ export class SpecialistAgent extends BaseAgent {
     }
   }
 
-  private async bypassWaf(targetId: string, context: unknown): Promise<Record<string, unknown>> {
+  private async bypassWaf(targetId: string, _context: unknown): Promise<Record<string, unknown>> {
     console.log(`[${this.agentId}] Bypassing WAF for: ${targetId}`);
     return { targetId, technique: 'bypass_attempted', success: false };
   }
 
-  private async crackCredentials(targetId: string, context: unknown): Promise<Record<string, unknown>> {
+  private async crackCredentials(targetId: string, _context: unknown): Promise<Record<string, unknown>> {
     console.log(`[${this.agentId}] Cracking credentials for: ${targetId}`);
     return { targetId, credentials_cracked: 0 };
   }
 
-  private async pivotNetwork(targetId: string, context: unknown): Promise<Record<string, unknown>> {
+  private async pivotNetwork(targetId: string, _context: unknown): Promise<Record<string, unknown>> {
     console.log(`[${this.agentId}] Pivoting network from: ${targetId}`);
     return { targetId, pivoted: false, hosts_accessible: [] };
   }
