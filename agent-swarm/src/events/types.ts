@@ -1,11 +1,14 @@
 export type SwarmEventType =
   | "finding_written"
   | "finding_validated"
+  | "finding_rejected"
   | "credential_found"
   | "credential_promoted"
   | "mission_queued"
   | "mission_verified"
   | "mission_authorized"
+  | "mission_ready"
+  | "mission_rejected"
   | "exploit_completed"
   | "exploit_failed"
   | "enrichment_requested"
@@ -19,7 +22,18 @@ export type SwarmEventType =
   | "specialist_complete"
   | "belief_updated"
   | "validation_probe_requested"
-  | "validation_probe_complete";
+  | "validation_probe_complete"
+  | "recon_complete"
+  | "scan_initiated"
+  | "port_discovered"
+  | "service_identified"
+  | "chain_planned"
+  | "chain_extended"
+  | "failure_analysis_complete"
+  | "retry_recommended"
+  | "abandon_recommended"
+  | "post_exploit_candidate"
+  | "report_generated";
 
 export interface SwarmEvent {
   id: string;
@@ -40,10 +54,13 @@ export const EventTTL: Record<SwarmEventType, number | null> = {
   exploit_failed: 86400000,
   brief_ready: 1800000,
   finding_written: 600000,
+  finding_rejected: 600000,
   credential_found: 600000,
   credential_promoted: 600000,
   mission_queued: 600000,
   mission_verified: 600000,
+  mission_ready: 600000,
+  mission_rejected: 600000,
   enrichment_requested: 600000,
   rce_confirmed: 600000,
   waf_duel_started: 600000,
@@ -54,4 +71,15 @@ export const EventTTL: Record<SwarmEventType, number | null> = {
   belief_updated: 600000,
   validation_probe_requested: 600000,
   validation_probe_complete: 600000,
+  recon_complete: 600000,
+  scan_initiated: 600000,
+  port_discovered: 600000,
+  service_identified: 600000,
+  chain_planned: 600000,
+  chain_extended: 600000,
+  failure_analysis_complete: 600000,
+  retry_recommended: 600000,
+  abandon_recommended: 600000,
+  post_exploit_candidate: 600000,
+  report_generated: 600000,
 };

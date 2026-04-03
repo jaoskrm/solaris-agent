@@ -17,7 +17,7 @@ export class AlphaAgent extends BaseAgent {
       case 'recon_complete':
         await this.handleReconComplete(event);
         break;
-      case 'scanInitiated':
+      case 'scan_initiated':
         await this.handleScanInitiated(event);
         break;
       case 'port_discovered':

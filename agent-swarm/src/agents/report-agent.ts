@@ -47,8 +47,8 @@ export class ReportAgent extends BaseAgent {
   ): Promise<Record<string, unknown>> {
     console.log(`[${this.agentId}] Generating report for swarm: ${swarmId}`);
 
-    const findings = await this.graph.findNodesByType('finding');
-    const credentials = await this.graph.findNodesByType('credential');
+    const findings = await this.graph.findNodesByLabel('finding');
+    const credentials = await this.graph.findNodesByLabel('credential');
 
     return {
       swarmId,
