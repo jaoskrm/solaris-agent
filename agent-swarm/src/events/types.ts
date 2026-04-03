@@ -17,7 +17,9 @@ export type SwarmEventType =
   | "handoff_requested"
   | "specialist_activated"
   | "specialist_complete"
-  | "belief_updated";
+  | "belief_updated"
+  | "validation_probe_requested"
+  | "validation_probe_complete";
 
 export interface SwarmEvent {
   id: string;
@@ -50,4 +52,6 @@ export const EventTTL: Record<SwarmEventType, number | null> = {
   specialist_activated: 600000,
   specialist_complete: 600000,
   belief_updated: 600000,
+  validation_probe_requested: 600000,
+  validation_probe_complete: 600000,
 };

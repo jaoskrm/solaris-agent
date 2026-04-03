@@ -7,28 +7,54 @@ export interface AgentSubscription {
 }
 
 export const AGENT_SUBSCRIPTIONS: Record<string, SwarmEventType[]> = {
-  'commander': [
-    'mission_queued',
-    'mission_verified',
-    'mission_authorized',
-    'exploit_completed',
-    'exploit_failed',
-    'swarm_complete',
-    'brief_ready',
-  ],
-  'verifier': [
+  commander: [
     'finding_written',
     'credential_found',
     'mission_verified',
-    'enrichment_requested',
-  ],
-  'gamma': [
-    'mission_queued',
     'exploit_completed',
     'exploit_failed',
+    'swarm_complete',
+    'validation_probe_complete',
+  ],
+  verifier: [
+    'mission_queued',
+  ],
+  mission_planner: [
+    'finding_validated',
+  ],
+  gamma: [
+    'mission_authorized',
+    'brief_ready',
     'waf_duel_started',
-    'waf_duel_complete',
     'handoff_requested',
+  ],
+  mcp: [
+    'mission_authorized',
+    'validation_probe_requested',
+  ],
+  alpha: [],
+  osint: [
+    'mission_queued',
+    'enrichment_requested',
+    'exploit_failed',
+    'waf_duel_started',
+  ],
+  chain_planner: [
+    'credential_found',
+    'credential_promoted',
+    'exploit_completed',
+  ],
+  critic: [
+    'exploit_failed',
+  ],
+  post_exploit: [
+    'rce_confirmed',
+  ],
+  report_agent: [
+    'swarm_complete',
+  ],
+  specialist: [
+    'specialist_activated',
   ],
 };
 
