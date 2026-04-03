@@ -25,6 +25,12 @@ export abstract class BaseAgent {
 
   protected readonly COOLDOWN_MS = 2000;
   protected readonly ERROR_BACKOFF_MS = 30000;
+  protected readonly MAX_RATE_LIMIT_RETRIES = 5;
+  protected readonly INITIAL_RETRY_DELAY_MS = 2000;
+  protected readonly MAX_RETRY_DELAY_MS = 60000;
+
+  private rateLimitRetries = 0;
+  private retryTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: AgentConfig) {
     this.agentId = config.agentId;
@@ -67,7 +73,63 @@ export abstract class BaseAgent {
     return this.state === 'ERROR';
   }
 
+  protected isRateLimitError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      message.includes('429') ||
+      message.includes('rate limit') ||
+      message.includes('Rate limit') ||
+      message.includes('rate_limit') ||
+      message.includes('free-models-per-day') ||
+      message.includes('TPM') ||
+      message.includes('rate limit reached') ||
+      message.includes('too many requests')
+    );
+  }
+
+  protected async handleRateLimitError(error: unknown, event?: SwarmEvent): Promise<void> {
+    this.rateLimitRetries++;
+    const delay = Math.min(
+      this.INITIAL_RETRY_DELAY_MS * Math.pow(2, this.rateLimitRetries - 1),
+      this.MAX_RETRY_DELAY_MS
+    );
+
+    console.warn(`[${this.agentId}] Rate limit hit (retry ${this.rateLimitRetries}/${this.MAX_RATE_LIMIT_RETRIES}), waiting ${delay}ms`);
+
+    if (this.rateLimitRetries >= this.MAX_RATE_LIMIT_RETRIES) {
+      console.error(`[${this.agentId}] Max rate limit retries exceeded, giving up`);
+      this.rateLimitRetries = 0;
+      this.handleError(error);
+      return;
+    }
+
+    this.retryTimeout = setTimeout(async () => {
+      if (event) {
+        try {
+          console.log(`[${this.agentId}] Retrying event ${event.id} (attempt ${this.rateLimitRetries + 1})`);
+          await this.processEvent(event);
+          this.rateLimitRetries = 0;
+          console.log(`[${this.agentId}] Rate limit retry succeeded`);
+        } catch (retryError) {
+          if (this.isRateLimitError(retryError)) {
+            await this.handleRateLimitError(retryError, event);
+          } else {
+            this.rateLimitRetries = 0;
+            this.handleError(retryError);
+          }
+        }
+      } else {
+        this.rateLimitRetries = 0;
+      }
+    }, delay);
+  }
+
   protected handleError(error: unknown): void {
+    if (this.retryTimeout) {
+      clearTimeout(this.retryTimeout);
+      this.retryTimeout = null;
+    }
+
     this.errorMessage = error instanceof Error ? error.message : String(error);
     if (this.state !== 'ERROR') {
       this.transitionTo('ERROR', this.errorMessage);
@@ -106,6 +168,11 @@ export abstract class BaseAgent {
       this.pollingTimer = null;
     }
 
+    if (this.retryTimeout) {
+      clearTimeout(this.retryTimeout);
+      this.retryTimeout = null;
+    }
+
     await this.graph.close();
     this.eventBus.close();
 
@@ -132,7 +199,11 @@ export abstract class BaseAgent {
           await this.processEvent(event);
         } catch (error) {
           console.error(`[${this.agentId}] Error processing event ${event.id}:`, error);
-          this.handleError(error);
+          if (this.isRateLimitError(error)) {
+            await this.handleRateLimitError(error, event);
+          } else {
+            this.handleError(error);
+          }
         }
       }
 
@@ -144,7 +215,11 @@ export abstract class BaseAgent {
       }
     } catch (error) {
       console.error(`[${this.agentId}] Poll error:`, error);
-      this.handleError(error);
+      if (this.isRateLimitError(error)) {
+        await this.handleRateLimitError(error);
+      } else {
+        this.handleError(error);
+      }
     }
   }
 
