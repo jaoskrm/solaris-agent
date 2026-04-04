@@ -233,7 +233,7 @@ export class AlphaAgent extends BaseAgent {
         }
 
         // STRICT TOOL WHITELIST - block hallucinated tools
-        const VALID_TOOLS = new Set(['nmap', 'ffuf', 'curl', 'whatweb', 'nuclei']);
+        const VALID_TOOLS = new Set(['nmap', 'ffuf', 'curl', 'whatweb', 'nuclei', 'httpx', 'katana', 'gau']);
         if (!VALID_TOOLS.has(parsed.tool)) {
           console.log(`[${this.agentId}] BLOCKED invalid tool: ${parsed.tool}`);
           conversationHistory.push({ role: 'assistant', content: response });
@@ -295,6 +295,9 @@ export class AlphaAgent extends BaseAgent {
         
         // Expand ~ to home directory (shell doesn't expand ~ in quoted strings)
         fullCommand = fullCommand.replace(/^~/, '/home/peburu');
+        
+        // Strip duplicate tool prefix: "ffuf ffuf -u" → "ffuf -u"
+        fullCommand = fullCommand.replace(/^(\w+)\s+\1\s*/, '$1 ');
         
         // For ffuf, ensure gentle flags to avoid crashing Juice Shop
         if (parsed.tool === 'ffuf' && state.targetConfig.isJuiceShop) {
@@ -447,10 +450,41 @@ export class AlphaAgent extends BaseAgent {
           discoverySummary += `\nDISCOVERED COMPONENTS: ${Array.from(state.discoveredComponents).join(', ')}`;
         }
         
-        // For ffuf, explicitly tell LLM about parsed endpoints
+        // For ffuf, explicitly tell LLM about parsed endpoints AND suggest chaining
         if (parsed.tool === 'ffuf' && endpointsFound.length > 0) {
           discoverySummary += `\nFFUF FOUND ${endpointsFound.length} ENDPOINTS: ${endpointsFound.slice(0, 20).join(', ')}${endpointsFound.length > 20 ? '...' : ''}`;
+          
+          const chainHints: string[] = [];
+          for (const ep of endpointsFound) {
+            const normalizedEp = ep.toLowerCase();
+            if (normalizedEp === '/api') {
+              chainHints.push('CHAIN /api → ffuf /api/FUZZ OR katana -u {url}/api -jc -silent');
+            } else if (normalizedEp === '/ftp') {
+              chainHints.push('CHAIN /ftp → curl {url}/ftp/ OR nuclei -u {url}/ftp -silent');
+            } else if (normalizedEp === '/metrics') {
+              chainHints.push('CHAIN /metrics → curl {url}/metrics OR nuclei -u {url}/metrics -silent');
+            } else if (normalizedEp === '/rest') {
+              chainHints.push('CHAIN /rest → ffuf /rest/FUZZ OR katana -u {url}/rest -jc -silent');
+            } else if (normalizedEp === '/login') {
+              chainHints.push('CHAIN /login → ffuf /login/FUZZ');
+            } else if (normalizedEp === '/admin') {
+              chainHints.push('CHAIN /admin → ffuf /admin/FUZZ OR curl {url}/admin/');
+            } else if (normalizedEp === '/media') {
+              chainHints.push('CHAIN /media → curl {url}/media/');
+            }
+          }
+          
+          if (chainHints.length > 0) {
+            discoverySummary += `\n\nCHAINING OPPORTUNITIES:\n${chainHints.join('\n')}`;
+          }
+          
+          discoverySummary += `\n\nNEXT ACTION: Chain follow-up tools. For API/REST: katana -jc -silent. For live check: httpx -title -tech-detect. For CVEs: nuclei -silent.`;
         }
+        
+        // For katana/httpx/gau, add specific chaining hints
+        if ((parsed.tool === 'katana' || parsed.tool === 'httpx' || parsed.tool === 'gau') && endpointsFound.length > 0) {
+          discoverySummary += `\n${parsed.tool.toUpperCase()} FOUND ${endpointsFound.length} ENDPOINTS: ${endpointsFound.slice(0, 15).join(', ')}${endpointsFound.length > 15 ? '...' : ''}`;
+          discoverySummary += `\nNEXT ACTION: Use nuclei -silent on promising paths, or ffuf for deeper enumeration.`;
         
         // Feed tool output back to LLM for analysis
         conversationHistory.push({ 
@@ -611,6 +645,65 @@ Analyze the output. What was discovered? What should we do next?`
             detail: `Detected ${tech.trim()}`,
             evidence: tech,
           });
+        }
+      }
+    } else if (tool === 'katana') {
+      const lines = output.split('\n')
+        .map(l => l.trim())
+        .filter(l => l.startsWith('http://') || l.startsWith('https://'));
+      console.log(`[${this.agentId}] katana parsed ${lines.length} URLs`);
+      
+      for (const line of lines.slice(0, 50)) {
+        const match = line.match(/^https?:\/\/[^\/]+(\/\S*)/);
+        if (match && match[1]) {
+          const path = match[1].split('?')[0].split('#')[0];
+          if (path && path !== '/') {
+            findings.push({
+              type: 'endpoint',
+              detail: `Found endpoint ${path}`,
+              evidence: path,
+            });
+          }
+        }
+      }
+    } else if (tool === 'httpx') {
+      const lines = output.split('\n')
+        .map(l => l.trim())
+        .filter(l => l.startsWith('http://') || l.startsWith('https://'));
+      console.log(`[${this.agentId}] httpx parsed ${lines.length} live endpoints`);
+      
+      for (const line of lines.slice(0, 50)) {
+        const statusMatch = line.match(/\[(\d+)\]/);
+        const pathMatch = line.match(/^https?:\/\/[^\/]+(\/\S*)/);
+        if (pathMatch && pathMatch[1]) {
+          const path = pathMatch[1].split('?')[0].split('#')[0];
+          const status = statusMatch ? statusMatch[1] : 'unknown';
+          if (path && path !== '/' && status !== '0') {
+            findings.push({
+              type: 'endpoint',
+              detail: `Found endpoint ${path} [${status}]`,
+              evidence: path,
+            });
+          }
+        }
+      }
+    } else if (tool === 'gau') {
+      const lines = output.split('\n')
+        .map(l => l.trim())
+        .filter(l => l.startsWith('http://') || l.startsWith('https://'));
+      console.log(`[${this.agentId}] gau parsed ${lines.length} historical endpoints`);
+      
+      for (const line of lines.slice(0, 50)) {
+        const match = line.match(/^https?:\/\/[^\/]+(\/\S*)/);
+        if (match && match[1]) {
+          const path = match[1].split('?')[0].split('#')[0];
+          if (path && path !== '/') {
+            findings.push({
+              type: 'endpoint',
+              detail: `Found historical endpoint ${path}`,
+              evidence: path,
+            });
+          }
         }
       }
     }
