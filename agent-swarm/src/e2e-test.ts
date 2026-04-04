@@ -6,6 +6,18 @@ import { generateMissionId } from './utils/id.js';
 
 const config = getConfig();
 
+interface ReconNode {
+  label: string;
+  target?: string;
+  port?: number;
+  protocol?: string;
+  path?: string;
+  discovered_by?: string;
+  name?: string;
+  version?: string;
+  evidence?: string;
+}
+
 async function main() {
   console.log('=== Alpha Agent E2E Test (Direct Scan) ===\n');
 
@@ -45,27 +57,27 @@ async function main() {
 
   console.log('\n=== Checking FalkorDB for results ===');
   
-  const allReconNodes = await graph.findNodesByLabel('reconNode', {});
+  const allReconNodes = await graph.findNodesByLabel<ReconNode>('reconNode', {});
   
-  const ports = allReconNodes.filter(n => n.label === 'PortNode');
-  const endpoints = allReconNodes.filter(n => n.label === 'EndpointNode');
-  const components = allReconNodes.filter(n => n.label === 'ComponentNode');
-  const findings = allReconNodes.filter(n => n.label === 'FindingNode');
+  const ports = allReconNodes.filter((n: ReconNode) => n.label === 'PortNode');
+  const endpoints = allReconNodes.filter((n: ReconNode) => n.label === 'EndpointNode');
+  const components = allReconNodes.filter((n: ReconNode) => n.label === 'ComponentNode');
+  const findings = allReconNodes.filter((n: ReconNode) => n.label === 'FindingNode');
 
   console.log(`\nTotal reconNode count: ${allReconNodes.length}`);
   console.log(`PortNodes: ${ports.length}`);
-  ports.slice(0, 10).forEach(p => console.log(`  - ${p.target}:${p.port} (${p.protocol}) discovered_by=${p.discovered_by}`));
+  ports.slice(0, 10).forEach((p: ReconNode) => console.log(`  - ${p.target}:${p.port} (${p.protocol}) discovered_by=${p.discovered_by}`));
 
   console.log(`\nEndpointNodes: ${endpoints.length}`);
-  endpoints.slice(0, 10).forEach(e => console.log(`  - ${e.target}${e.path} [${e.discovered_by}]`));
+  endpoints.slice(0, 10).forEach((e: ReconNode) => console.log(`  - ${e.target}${e.path} [${e.discovered_by}]`));
 
   console.log(`\nComponentNodes: ${components.length}`);
-  components.slice(0, 10).forEach(c => console.log(`  - ${c.name} ${c.version || ''}`));
+  components.slice(0, 10).forEach((c: ReconNode) => console.log(`  - ${c.name} ${c.version || ''}`));
 
   console.log(`\nFindingNodes: ${findings.length}`);
-  findings.slice(0, 5).forEach(f => console.log(`  - ${f.evidence?.substring(0, 60)}`));
+  findings.slice(0, 5).forEach((f: ReconNode) => console.log(`  - ${f.evidence?.substring(0, 60)}`));
 
-  await alpha.stop();
+  alpha.stop?.();
   console.log('\n✓ Test complete');
 
   process.exit(0);

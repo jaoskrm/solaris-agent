@@ -155,7 +155,7 @@ export abstract class BaseAgent {
     }
   }
 
-  protected async start(): Promise<void> {
+  public async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
 
@@ -176,7 +176,7 @@ export abstract class BaseAgent {
     console.log(`[${this.agentId}] Agent started in ${initialState} state, polling every ${this.pollInterval}ms`);
   }
 
-  protected async stop(): Promise<void> {
+  public async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
 

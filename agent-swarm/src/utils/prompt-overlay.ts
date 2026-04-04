@@ -53,7 +53,7 @@ export function loadGeneratedPayload(exploitType: string): object | null {
         generatedCache.set(normalized, parsed);
         return parsed;
       } catch (e) {
-        console.warn(`[prompt-overlay] Failed to parse generated overlay ${variant}:`, e.message);
+        console.warn(`[prompt-overlay] Failed to parse generated overlay ${variant}:`, (e as Error).message);
       }
     }
   }
@@ -125,7 +125,7 @@ export function parseOverlayPayloads(
   const payloads: OverlayPayload[] = [];
   const lines = content.split('\n');
   let currentCategory = '';
-  let currentEscalation: 'baseline' = 'baseline';
+  let currentEscalation: string = 'baseline';
   let currentLines: string[] = [];
 
   for (const line of lines) {

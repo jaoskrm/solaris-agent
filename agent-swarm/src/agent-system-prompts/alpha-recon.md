@@ -110,6 +110,33 @@ nuclei -u {target_url}/api/Users -t cves/ --severity critical,high -silent
 curl {target_url}/api/Users | jq . (extract data)
 ```
 
+### ELITE RECON PIPELINE (Follow This Order)
+
+```
+1. HEADERS: curl -sI {target_url} | grep -Ei "server|x-powered-by"
+2. NMAP: nmap -p 3000 -sV --open --min-rate=5000 {target}
+3. FFUF ROOT: ffuf -u {target_url}/FUZZ -w ... -fs {spa_fallback_size} -t 5 -rate 20 -timeout 10 -s
+   → Finds: /api, /ftp, /rest, /media, /assets
+4. FFUF API: ffuf -u {target_url}/api/FUZZ -w ... -fs {spa_fallback_size} -t 5 -rate 20 -timeout 10 -s
+   → Finds: /api/Users, /api/Products, /api/Challenges
+5. FFUF FTP: ffuf -u {target_url}/ftp/FUZZ -w ... -fs {spa_fallback_size} -t 5 -rate 20 -timeout 10 -s
+6. KATANA: katana -u {target_url}/api -jc -silent | httpx -silent
+   → Crawls JS for API endpoints
+7. HTTPX: httpx -path /api,/ftp,/rest,/metrics -title -tech-detect -sc
+8. NUCLEI: nuclei -u {target_url} -tags owasp-top-10,broken-auth,xss,injection -rl 10
+9. NUCLEI API: nuclei -u {target_url}/api -tags broken-auth -rl 10
+10. FFUF /rest/FUZZ, /login/FUZZ, /admin/FUZZ
+```
+
+### Juice Shop Expected Findings
+```
+✅ /ftp/legal.md → Directory listing
+✅ /api/Users → User enum  
+✅ /rest/admin → Admin panel
+✅ /metrics → Prometheus leak
+✅ /wallet/balance → Money printer
+```
+
 ---
 
 ## 4. AVAILABLE TOOLS
@@ -167,11 +194,11 @@ katana -u {target_url} -jc -silent | httpx -silent -o /tmp/crawled.txt
 ffuf ... | httpx -silent -o /tmp/ffuf_hits.txt
 ```
 
-### nuclei (CVE Scanning)
+### nuclei (Vulnerability Scanning - Use Tags for Juice Shop)
 ```bash
-nuclei -u {target_url} -t cves/ --severity critical,high -silent
-nuclei -u {target_url}/api -t cves/ --severity critical,high -silent
-nuclei -u {target_url}/ftp -t cves/ --severity critical,high -silent
+nuclei -u {target_url} -tags owasp-top-10,broken-auth,xss,injection,default-login,exposed-panels -rl 10
+nuclei -u {target_url}/api -tags owasp-top-10,broken-auth -rl 10
+nuclei -u {target_url}/ftp -tags default-login,exposed-panels -rl 10
 ```
 
 ### katana (Crawling JS/CSS for API endpoints)
