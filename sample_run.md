@@ -1,5 +1,71 @@
-
-  Press Ctrl+C to stop
+$ cd /run/media/peburu/BIG\ DRIVE/Backup/Projects/Prawin/solaris/solaris-agent/agent-swarm && cat > /tmp/full-query.ts << 'EOF'
+import { createClient } from '@supabase/supabase-js';
+const supabaseUrl = 'https://nesjaodrrkefpmqdqtgv.supabase.co';
+const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5lc2phb2RycmtlZnBtcWRxdGd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzExMTg0MjcsImV4cCI6MjA4NjY5NDQyN30.zbEAwOcZ7Tn-LVfGC8KdQeh3D3xEyzghZ-Mfg0VgnfE';
+const supabase = createClient(supabaseUrl, anonKey);
+async function main() {
+  // Get all swarm_missions
+  const { data: missions } = await supabase
+    .from('swarm_missions')
+    .select('*')
+    .order('created_at', { ascending: false });
+  
+  console.log(`Total missions: ${missions?.length || 0}`);
+  console.log('\n=== Missions ===');
+  missions?.forEach(m => {
+    console.log(`${m.status.padEnd(15)} | ${m.target} | ${m.id}`);
+  });
+  // Get all swarm_findings
+  const { data: findings } = await supabase
+    .from('swarm_findings')
+    .select('*')
+    .order('created_at', { ascending: false });
+  
+  console.log(`\nTotal findings: ${findings?.length || 0}`);
+  
+  if (findings && findings.length > 0) {
+    console.log('\n=== Findings by Type ===');
+    const byType: Record<string, number> = {};
+    findings.forEach(f => {
+      byType[f.finding_type] = (byType[f.finding_type] || 0) + 1;
+    });
+    Object.entries(byType).sort((a, b) => b[1] - a[1]).forEach(([type, count]) => {
+      console.log(`  ${type}: ${count}`);
+    });
+    console.log('\n=== Findings by Severity ===');
+    const bySeverity: Record<string, number> = {};
+    findings.forEach(f => {
+      bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1;
+    });
+    Object.entries(bySeverity).sort((a, b) => b[1] - a[1]).forEach(([sev, count]) => {
+      console.log(`  ${sev}: ${count}`);
+    });
+    console.log('\n=== Sample Finding ===');
+    console.log(JSON.stringify(findings[0], null, 2));
+  }
+  // Check scan_queue
+  const { data: scanQueue } = await supabase
+    .from('scan_queue')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(20);
+  
+  console.log(`\n=== Scan Queue (${scanQueue?.length || 0}) ===`);
+  scanQueue?.forEach(s => {
+    console.log(`${s.status?.padEnd(15) || 'n/a'} | ${s.target_url?.substring(0, 50)} | ${s.id}`);
+  });
+  // Check swarm_agent_events
+  const { data: events } = await supabase
+    .from('swarm_agent_events')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(10);
+  
+  console.log(`\n=== Agent Events (${events?.length || 0}) ===`);
+}
+main().catch(console.error);
+EOF
+bun run /tmp/full-query.ts 2>&1
 
 [INFO] Checking for pending messages...
 14:52:00 [swarm_worker        ] INFO    Received mission: 1774948920967-0

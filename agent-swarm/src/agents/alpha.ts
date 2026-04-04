@@ -5,6 +5,7 @@ import { loadWordlistIndex, getWordlistPath } from '../utils/wordlist-index.js';
 import { LLMRouter } from '../core/llm-router.js';
 import type { LLMMessage } from '../core/providers/ollama.js';
 import { loadAgentPrompt } from '../utils/prompt-loader.js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 interface AlphaScanState {
   sessionId: string;
@@ -33,10 +34,17 @@ export class AlphaAgent extends BaseAgent {
   private llmRouter: LLMRouter;
   private lastMemoryPoll = 0;
   private readonly MEMORY_POLL_INTERVAL_MS = 1800000;
+  private supabase: SupabaseClient;
+  private llmSessionId: string | null = null;
+  private llmIterationCounter = 0;
 
   constructor(config: AlphaConfig) {
     super(config);
     this.llmRouter = new LLMRouter();
+    this.supabase = createClient(
+      process.env.SUPABASE_URL || 'https://nesjaodrrkefpmqdqtgv.supabase.co',
+      process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5lc2phb2RycmtlZnBtcWRxdGd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzExMTg0MjcsImV4cCI6MjA4NjY5NDQyN30.zbEAwOcZ7Tn-LVfGC8KdQeh3D3xEyzghZ-Mfg0VgnfE'
+    );
   }
 
   protected getSubscriptions(): SwarmEventType[] {
@@ -90,6 +98,10 @@ export class AlphaAgent extends BaseAgent {
 
     this.scanState.set(target, state);
     this.transitionTo('ACTIVE', 'scan started');
+
+    if (useLlmPlanning) {
+      await this.createLlmSession(state);
+    }
 
     try {
       await this.runScanLoop(target);
@@ -153,35 +165,183 @@ export class AlphaAgent extends BaseAgent {
   private async runLlmPlanningLoop(state: AlphaScanState): Promise<void> {
     const systemPrompt = loadAgentPrompt('alpha-recon');
     const targetContext = await this.pollMemoryForTarget(state.target, state.targetUrl);
-    let contextBudget = 5000;
+    let contextBudget = 8000;
     let llmIterations = 0;
-    const maxLlmIterations = 10;
+    const maxLlmIterations = 15;
+    let maxRetries = 2;
+    
+    // Conversation history for multi-turn LLM interaction
+    const conversationHistory: LLMMessage[] = [];
 
     while (state.scanSessionActive && llmIterations < maxLlmIterations && state.phase !== 'complete') {
       llmIterations++;
       console.log(`[${this.agentId}] LLM Planning Iteration ${llmIterations}/${maxLlmIterations} - Phase: ${state.phase}`);
 
-      const messages = this.buildLlmScanMessage(state, systemPrompt, targetContext);
+      const messages = this.buildLlmScanMessage(state, systemPrompt, targetContext, conversationHistory);
 
       try {
         const response = await this.llmRouter.complete('alpha', messages);
+        
+        // Validate LLM output format
         const parsed = this.parseLlmScanResponse(response);
-
+        
         if (!parsed.tool || !parsed.command) {
-          console.log(`[${this.agentId}] LLM did not return valid action, falling back to deterministic`);
-          await this.runDeterministicScanLoop(state.target);
+          console.log(`[${this.agentId}] LLM returned malformed output, retrying...`);
+          maxRetries--;
+          if (maxRetries <= 0) {
+            console.log(`[${this.agentId}] Max retries exceeded, falling back to deterministic`);
+            await this.runDeterministicScanLoop(state.target);
+            break;
+          }
+          // Feed back the malformed output and ask LLM to fix it
+          conversationHistory.push({ role: 'assistant', content: response });
+          conversationHistory.push({ 
+            role: 'user', 
+            content: `Your previous output was malformed. Please respond with ONLY valid XML tags:\n<reasoning>...</reasoning>\n<tool>...</tool>\n<command>...</command>\n\nCurrent state:\n- Phase: ${state.phase}\n- Discovered Ports: ${Array.from(state.discoveredPorts).join(', ') || 'none'}\n- Discovered Endpoints: ${Array.from(state.discoveredEndpoints).join(', ') || 'none'}` 
+          });
+          continue;
+        }
+
+        maxRetries = 2; // Reset retries on success
+        console.log(`[${this.agentId}] LLM reasoning: ${parsed.reasoning?.substring(0, 100) || 'N/A'}...`);
+        console.log(`[${this.agentId}] LLM decided: ${parsed.tool} ${parsed.command}`);
+        
+        // Increment iteration counter for this LLM turn
+        this.llmIterationCounter++;
+        
+        // Add LLM decision to conversation history
+        conversationHistory.push({ role: 'assistant', content: response });
+        
+        // Store LLM decision in Supabase
+        await this.storeLlmMessage({
+          iteration: this.llmIterationCounter,
+          sequence: 1,
+          role: 'assistant',
+          content: response,
+          toolName: parsed.tool,
+          command: parsed.command,
+          reasoning: parsed.reasoning,
+        });
+
+        // Execute tool
+        const toolArgs = this.parseToolArgs(parsed.tool, parsed.command);
+        console.log(`[${this.agentId}] Executing ${parsed.tool} with args:`, JSON.stringify(toolArgs));
+        
+        const startTime = Date.now();
+        const result = await this.executeTool(parsed.tool, toolArgs);
+        const durationMs = Date.now() - startTime;
+        
+        const toolOutput = result.stdout || result.stderr || '';
+        const outputPreview = toolOutput.substring(0, 2000); // Truncate for context
+        
+        console.log(`[${this.agentId}] Tool result: success=${result.success}, exit=${result.exit_code}, output_len=${toolOutput.length}`);
+        console.log(`[${this.agentId}] Tool output preview: ${outputPreview.substring(0, 300)}`);
+        
+        // Also parse findings and update state
+        const findings = this.parseToolOutput(parsed.tool, toolOutput);
+        const portsFound: string[] = [];
+        const endpointsFound: string[] = [];
+        const componentsFound: string[] = [];
+        
+        for (const finding of findings) {
+          await this.processFinding(state, finding);
+          
+          // Track findings and store to Supabase
+          if (finding.type === 'port') {
+            const portMatch = finding.evidence.match(/(\d+)/);
+            if (portMatch) {
+              portsFound.push(portMatch[1]!);
+              await this.storeDiscovery({
+                discoveryType: 'port',
+                identifier: portMatch[1]!,
+                detail: finding.detail,
+                evidence: finding.evidence,
+                sourceTool: parsed.tool!,
+                iterationDiscovered: this.llmIterationCounter,
+              });
+            }
+          } else if (finding.type === 'endpoint') {
+            const endpointMatch = finding.evidence.match(/\/[^\s]+/);
+            if (endpointMatch) {
+              endpointsFound.push(endpointMatch[0]!);
+              await this.storeDiscovery({
+                discoveryType: 'endpoint',
+                identifier: endpointMatch[0]!,
+                detail: finding.detail,
+                evidence: finding.evidence,
+                sourceTool: parsed.tool!,
+                iterationDiscovered: this.llmIterationCounter,
+              });
+            }
+          } else if (finding.type === 'component') {
+            const compMatch = finding.detail.match(/Detected (.+)/);
+            if (compMatch) {
+              componentsFound.push(compMatch[1]!.trim());
+              await this.storeDiscovery({
+                discoveryType: 'component',
+                identifier: compMatch[1]!.trim(),
+                detail: finding.detail,
+                evidence: finding.evidence,
+                sourceTool: parsed.tool!,
+                iterationDiscovered: this.llmIterationCounter,
+              });
+            }
+          }
+        }
+        
+        // Store tool execution in Supabase
+        await this.storeToolExecution({
+          iteration: this.llmIterationCounter,
+          toolName: parsed.tool!,
+          command: parsed.command!,
+          args: toolArgs,
+          stdout: result.stdout || '',
+          stderr: result.stderr || '',
+          exitCode: result.exit_code || 0,
+          timedOut: result.timed_out || false,
+          success: result.success || false,
+          durationMs,
+          portsDiscovered: portsFound,
+          endpointsDiscovered: endpointsFound,
+          componentsDiscovered: componentsFound,
+        });
+        
+        // Build a summary of what was discovered
+        let discoverySummary = '';
+        if (state.discoveredPorts.size > 0) {
+          discoverySummary += `\nDISCOVERED PORTS: ${Array.from(state.discoveredPorts).join(', ')}`;
+        }
+        if (state.discoveredEndpoints.size > 0) {
+          discoverySummary += `\nDISCOVERED ENDPOINTS: ${Array.from(state.discoveredEndpoints).join(', ')}`;
+        }
+        if (state.discoveredComponents.size > 0) {
+          discoverySummary += `\nDISCOVERED COMPONENTS: ${Array.from(state.discoveredComponents).join(', ')}`;
+        }
+        
+        // Feed tool output back to LLM for analysis
+        conversationHistory.push({ 
+          role: 'user', 
+          content: `Tool execution complete:
+
+STDOUT:
+${outputPreview}
+
+EXIT CODE: ${result.exit_code}
+TIMED OUT: ${result.timed_out}
+SUCCESS: ${result.success}${discoverySummary}
+
+Analyze the output. What was discovered? What should we do next?` 
+        });
+
+        // Check if LLM indicates done
+        if (response.includes('<done>true</done>') || response.includes('<done>1</done>')) {
+          console.log(`[${this.agentId}] LLM indicated scan complete`);
+          state.phase = 'complete';
           break;
         }
 
-        console.log(`[${this.agentId}] LLM decided: ${parsed.tool} ${parsed.command}`);
-        const result = await this.executeTool(parsed.tool, this.parseToolArgs(parsed.tool, parsed.command));
-
-        const findings = this.parseToolOutput(parsed.tool, result.stdout || result.stderr);
-        for (const finding of findings) {
-          await this.processFinding(state, finding);
-        }
-
-        contextBudget -= response.length;
+        // Update context budget
+        contextBudget -= response.length + outputPreview.length;
         if (contextBudget <= 0) {
           console.log(`[${this.agentId}] Context budget exceeded, emitting scan_initiated with resume=true`);
           await this.emit('scan_initiated', {
@@ -194,11 +354,24 @@ export class AlphaAgent extends BaseAgent {
           break;
         }
 
+        // Transition phases based on tool results and LLM analysis
         if (this.shouldTransitionPhase(state, parsed.tool)) {
-          state.phase = this.getNextPhase(state.phase);
+          const nextPhase = this.getNextPhase(state.phase);
+          console.log(`[${this.agentId}] Transitioning from ${state.phase} to ${nextPhase}`);
+          state.phase = nextPhase;
         }
+        
+        // Add phase transition to conversation context for next iteration
+        conversationHistory.push({ 
+          role: 'user', 
+          content: `Phase note: Now in ${state.phase} phase.` 
+        });
+        
       } catch (error) {
         console.error(`[${this.agentId}] LLM planning failed: ${error}, falling back to deterministic`);
+        if (state.useLlmPlanning) {
+          await this.updateLlmSessionStatus('failed', String(error));
+        }
         await this.runDeterministicScanLoop(state.target);
         break;
       }
@@ -226,9 +399,18 @@ export class AlphaAgent extends BaseAgent {
 
     if (tool === 'nmap') {
       const targetMatch = command.match(/(?:nmap\s+)?([\d.]+)/);
-      const portMatch = command.match(/-p[:\s]+(\d+-?\d*)/);
+      const portMatch = command.match(/-p[:\s]+(\d+[-\d,]*(?:\d+)?)/);
       args.target = targetMatch?.[1] || this.scanState.get(this.agentId)?.target;
-      if (portMatch) args.ports = portMatch[1];
+      if (portMatch) {
+        const ports = portMatch[1];
+        // Limit port ranges to prevent timeouts - only allow common web ports for safety
+        if (ports && ports.includes('-')) {
+          // Don't allow full range scans - limit to common ports
+          args.ports = '22,80,443,3000,3001,5000,8080,8443';
+        } else {
+          args.ports = ports;
+        }
+      }
     } else if (tool === 'ffuf' || tool === 'gobuster') {
       const urlMatch = command.match(/-u\s+([^\s]+)/);
       const wordlistMatch = command.match(/-w\s+([^\s]+)/);
@@ -236,10 +418,13 @@ export class AlphaAgent extends BaseAgent {
       args.wordlist = wordlistMatch?.[1];
       args.flags = '-mc 200 -ml 100 -t 5';
     } else if (tool === 'curl') {
-      const urlMatch = command.match(/curl[^\s]*\s+([^\s]+)/);
-      args.url = urlMatch?.[1];
+      // Extract URL from curl command - look for http:// or https:// in the command
+      const httpMatch = command.match(/(https?:\/\/[^\s'"]+)/);
+      if (httpMatch) {
+        args.url = httpMatch[1];
+      }
     } else if (tool === 'whatweb') {
-      const urlMatch = command.match(/whatweb[^\s]*\s+([^\s]+)/);
+      const urlMatch = command.match(/(https?:\/\/[^\s]+)/);
       args.url = urlMatch?.[1];
     } else if (tool === 'nuclei') {
       const urlMatch = command.match(/-u\s+([^\s]+)/);
@@ -276,7 +461,8 @@ export class AlphaAgent extends BaseAgent {
     const findings: Array<{ type: string; detail: string; evidence: string }> = [];
 
     if (tool === 'nmap') {
-      const ports = output.match(/^(\d+)\/(tcp|udp)\s+open/g);
+      // Use multiline flag /m to match ^ at start of each line
+      const ports = output.match(/^(\d+)\/(tcp|udp)\s+open/gm);
       if (ports) {
         for (const port of ports) {
           const match = port.match(/(\d+)\/(tcp|udp)/);
@@ -364,10 +550,12 @@ export class AlphaAgent extends BaseAgent {
   private async executePortScan(state: AlphaScanState): Promise<void> {
     console.log(`[${this.agentId}] Running port scan on ${state.target}`);
 
+    // Scan common web ports first
+    const commonPorts = '22,80,443,3000,3001,5000,8080,8443';
     const result = await this.executeTool('nmap', {
       target: state.target,
-      ports: '1-10000',
-      flags: '-sV --min-rate=1000',
+      ports: commonPorts,
+      flags: '-sV',
       timeout: 60000,
     });
 
@@ -405,7 +593,7 @@ export class AlphaAgent extends BaseAgent {
     const wordlistPath = getWordlistPath(wordlistEntry.path);
 
     const ffufResult = await this.executeTool('ffuf', {
-      url: state.targetUrl,
+      url: state.targetUrl + '/FUZZ',
       wordlist: wordlistPath,
       flags: '-mc 200 -ml 100 -t 10',
       timeout: 180000,
@@ -550,6 +738,10 @@ export class AlphaAgent extends BaseAgent {
       duration_ms: Date.now(),
     });
 
+    if (state.useLlmPlanning) {
+      await this.updateLlmSessionStatus('completed');
+    }
+
     this.scanState.delete(target);
     this.transitionTo('COOLDOWN', 'scan complete');
   }
@@ -564,6 +756,10 @@ export class AlphaAgent extends BaseAgent {
       status: 'failed',
       error: String(error),
     });
+
+    if (state.useLlmPlanning) {
+      await this.updateLlmSessionStatus('failed', String(error));
+    }
 
     this.scanState.delete(target);
     this.transitionTo('ERROR', String(error));
@@ -937,7 +1133,12 @@ export class AlphaAgent extends BaseAgent {
     return parts.pop() || 'unknown';
   }
 
-  private buildLlmScanMessage(state: AlphaScanState, systemPrompt: string, targetContext: string = ''): LLMMessage[] {
+  private buildLlmScanMessage(
+    state: AlphaScanState, 
+    systemPrompt: string, 
+    targetContext: string = '',
+    conversationHistory: LLMMessage[] = []
+  ): LLMMessage[] {
     const context = `
 Target: ${state.target}
 Base URL: ${state.targetUrl}
@@ -949,11 +1150,224 @@ Discovered Ports: ${Array.from(state.discoveredPorts).join(', ') || 'none'}
 Discovered Endpoints: ${Array.from(state.discoveredEndpoints).join(', ') || 'none'}
 Discovered Components: ${Array.from(state.discoveredComponents).join(', ') || 'none'}
 ${targetContext}
+
+Respond with XML tags only:
+<reasoning>What I'm scanning and why</reasoning>
+<tool>tool_name</tool>
+<command>exact command to execute</command>
 `.trim();
 
-    return [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: context },
-    ];
+    // Build messages: system prompt first, then conversation history, then current context
+    const messages: LLMMessage[] = [{ role: 'system', content: systemPrompt }];
+    
+    // Add conversation history (previous LLM outputs and tool results)
+    messages.push(...conversationHistory);
+    
+    // Add current context if no history (first turn) or as a fresh prompt
+    if (conversationHistory.length === 0) {
+      messages.push({ role: 'user', content: context });
+    } else {
+      // Already have context in history, just add current state summary WITH format reminder
+      messages.push({ 
+        role: 'user', 
+        content: `Current state:
+- Phase: ${state.phase}
+- Ports: ${Array.from(state.discoveredPorts).join(', ') || 'none'}
+- Endpoints: ${Array.from(state.discoveredEndpoints).join(', ') || 'none'}
+- Components: ${Array.from(state.discoveredComponents).join(', ') || 'none'}
+
+Based on the tool output above, decide next action.
+Respond with XML tags:
+<r>Analysis and next step</r>
+<t>tool_name</t>
+<c>command to execute</c>` 
+      });
+    }
+    
+    return messages;
+  }
+
+  private async createLlmSession(state: AlphaScanState): Promise<void> {
+    if (!this.supabase) return;
+
+    try {
+      const { data, error } = await this.supabase
+        .from('llm_sessions')
+        .insert({
+          agent_id: this.agentId,
+          agent_type: 'alpha',
+          target: state.target,
+          target_url: state.targetUrl,
+          mission_id: state.missionId,
+          scan_type: 'full',
+          status: 'active',
+        })
+        .select('id')
+        .single();
+
+      if (error) {
+        console.error(`[${this.agentId}] Failed to create LLM session: ${error.message}`);
+        return;
+      }
+
+      this.llmSessionId = data.id;
+      this.llmIterationCounter = 0;
+      console.log(`[${this.agentId}] Created LLM session: ${this.llmSessionId}`);
+    } catch (e) {
+      console.error(`[${this.agentId}] Error creating LLM session: ${e}`);
+    }
+  }
+
+  private async storeLlmMessage(params: {
+    iteration: number;
+    sequence: number;
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: string;
+    toolName?: string;
+    command?: string;
+    reasoning?: string;
+    toolOutput?: string;
+    exitCode?: number;
+    success?: boolean;
+  }): Promise<void> {
+    if (!this.supabase || !this.llmSessionId) return;
+
+    try {
+      const { error } = await this.supabase.from('llm_messages').insert({
+        session_id: this.llmSessionId,
+        iteration: params.iteration,
+        sequence: params.sequence,
+        role: params.role,
+        content: params.content,
+        tool_name: params.toolName,
+        command: params.command,
+        reasoning: params.reasoning,
+        tool_output: params.toolOutput,
+        exit_code: params.exitCode,
+        success: params.success,
+      });
+
+      if (error) {
+        console.error(`[${this.agentId}] Failed to store LLM message: ${error.message}`);
+      }
+    } catch (e) {
+      console.error(`[${this.agentId}] Error storing LLM message: ${e}`);
+    }
+  }
+
+  private async storeToolExecution(params: {
+    iteration: number;
+    toolName: string;
+    command: string;
+    args: Record<string, unknown>;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    timedOut: boolean;
+    success: boolean;
+    durationMs: number;
+    portsDiscovered: string[];
+    endpointsDiscovered: string[];
+    componentsDiscovered: string[];
+  }): Promise<void> {
+    if (!this.supabase || !this.llmSessionId) return;
+
+    try {
+      const findings = [];
+      if (params.portsDiscovered.length > 0) {
+        for (const port of params.portsDiscovered) {
+          findings.push({ type: 'port', detail: `Port ${port} open`, evidence: `${port}/tcp open` });
+        }
+      }
+      if (params.endpointsDiscovered.length > 0) {
+        for (const endpoint of params.endpointsDiscovered) {
+          findings.push({ type: 'endpoint', detail: `Found endpoint ${endpoint}`, evidence: endpoint });
+        }
+      }
+      if (params.componentsDiscovered.length > 0) {
+        for (const component of params.componentsDiscovered) {
+          findings.push({ type: 'component', detail: component, evidence: component });
+        }
+      }
+
+      const { error } = await this.supabase.from('llm_tool_executions').insert({
+        session_id: this.llmSessionId,
+        iteration: params.iteration,
+        tool_name: params.toolName,
+        command: params.command,
+        args: params.args,
+        stdout: params.stdout.substring(0, 50000),
+        stderr: params.stderr.substring(0, 10000),
+        exit_code: params.exitCode,
+        timed_out: params.timedOut,
+        success: params.success,
+        duration_ms: params.durationMs,
+        findings: findings.length > 0 ? findings : null,
+        ports_discovered: params.portsDiscovered,
+        endpoints_discovered: params.endpointsDiscovered,
+        components_discovered: params.componentsDiscovered,
+      });
+
+      if (error) {
+        console.error(`[${this.agentId}] Failed to store tool execution: ${error.message}`);
+      }
+    } catch (e) {
+      console.error(`[${this.agentId}] Error storing tool execution: ${e}`);
+    }
+  }
+
+  private async storeDiscovery(params: {
+    discoveryType: 'port' | 'endpoint' | 'component' | 'vulnerability';
+    identifier: string;
+    detail: string;
+    evidence: string;
+    sourceTool: string;
+    iterationDiscovered: number;
+    graphNodeId?: string;
+  }): Promise<void> {
+    if (!this.supabase || !this.llmSessionId) return;
+
+    try {
+      const { error } = await this.supabase.from('llm_discoveries').insert({
+        session_id: this.llmSessionId,
+        discovery_type: params.discoveryType,
+        identifier: params.identifier,
+        detail: params.detail,
+        evidence: params.evidence,
+        source_tool: params.sourceTool,
+        iteration_discovered: params.iterationDiscovered,
+        graph_node_id: params.graphNodeId,
+      });
+
+      if (error) {
+        console.error(`[${this.agentId}] Failed to store discovery: ${error.message}`);
+      }
+    } catch (e) {
+      console.error(`[${this.agentId}] Error storing discovery: ${e}`);
+    }
+  }
+
+  private async updateLlmSessionStatus(status: 'completed' | 'failed' | 'cancelled', errorMessage?: string): Promise<void> {
+    if (!this.supabase || !this.llmSessionId) return;
+
+    try {
+      const { error } = await this.supabase
+        .from('llm_sessions')
+        .update({
+          status,
+          ended_at: new Date().toISOString(),
+          total_iterations: this.llmIterationCounter,
+          error_message: errorMessage,
+        })
+        .eq('id', this.llmSessionId);
+
+      if (error) {
+        console.error(`[${this.agentId}] Failed to update LLM session status: ${error.message}`);
+      } else {
+        console.log(`[${this.agentId}] Updated LLM session status to: ${status}`);
+      }
+    } catch (e) {
+      console.error(`[${this.agentId}] Error updating LLM session status: ${e}`);
+    }
   }
 }

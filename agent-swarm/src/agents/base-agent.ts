@@ -52,6 +52,9 @@ export abstract class BaseAgent {
   }
 
   protected transitionTo(newState: AgentState, reason?: string): void {
+    if (this.state === newState) {
+      return;
+    }
     if (!canTransition(this.state, newState)) {
       console.warn(`[${this.agentId}] Invalid transition ${this.state}→${newState} (${reason || 'no reason'})`);
       return;
@@ -151,6 +154,7 @@ export abstract class BaseAgent {
     console.log(`[${this.agentId}] Starting ${this.agentType} agent...`);
 
     await this.graph.connect();
+    await toolRegistry.initialize();
 
     const initialState = AGENT_INITIAL_STATES[this.agentType] || 'DORMANT';
     this.transitionTo(initialState, 'initial');
