@@ -3,7 +3,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const INDEX_PATH = join(__dirname, '..', 'wordlists', 'INDEX.json');
+const WORDLISTS_DIR = join(__dirname, '..', '..', 'wordlists');
+const INDEX_PATH = join(WORDLISTS_DIR, 'INDEX.json');
 
 export interface WordlistEntry {
   path: string;
@@ -47,4 +48,8 @@ export function getWordlistsByStage(stage: string): Record<string, WordlistEntry
 
 export function clearWordlistCache(): void {
   cachedIndex = null;
+}
+
+export function getWordlistPath(relativePath: string): string {
+  return join(WORDLISTS_DIR, relativePath);
 }

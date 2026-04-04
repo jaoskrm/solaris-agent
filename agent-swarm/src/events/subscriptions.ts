@@ -32,7 +32,10 @@ export const AGENT_SUBSCRIPTIONS: Record<string, SwarmEventType[]> = {
     'mission_authorized',
     'validation_probe_requested',
   ],
-  alpha: [],
+  alpha: [
+    'scan_initiated',
+    'mission_authorized',
+  ],
   osint: [
     'mission_queued',
     'enrichment_requested',

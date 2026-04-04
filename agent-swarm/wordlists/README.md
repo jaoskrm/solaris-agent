@@ -1,74 +1,59 @@
 # Wordlists
 
-Structured wordlists for the Solaris-Agent swarm. Symlinked from external repos (SecLists, PayloadsAllTheThings) to avoid duplication.
+Structured wordlists for the Solaris-Agent swarm. Symlinked from external repos to avoid duplication.
+
+## Setup
+
+```bash
+# Clone external repos
+cd payloads
+git clone --depth 1 https://github.com/danielmiessler/SecLists.git
+git clone --depth 1 https://github.com/swisskyrepo/PayloadsAllTheThings.git
+```
 
 ## Structure
 
 ```
 wordlists/
-├── INDEX.json           # Auto-generated index
+├── INDEX.json              # Auto-generated index
 ├── README.md
 │
-├── recon/               # Directory/file/subdomain discovery
+├── recon/                  # Directory/file/subdomain discovery
 │   ├── directories/
 │   │   ├── raft-large-directories.txt   # 62K dirs
 │   │   ├── raft-medium-directories.txt  # 30K dirs
 │   │   └── raft-small-directories.txt   # 20K dirs
+│   ├── files/
+│   │   ├── raft-large-files.txt        # 37K files
+│   │   └── raft-medium-files.txt       # 17K files
 │   └── subdomains/
-│       └── top1mil.txt                  # Combined subdomain list
+│       └── subdomains-top1mil.txt      # 653K subdomains
 │
-├── exploit/             # Payload/attack wordlists
-│   ├── sql_injection/
-│   │   ├── Auth_Bypass.txt             # 79 auth bypass payloads
-│   │   ├── Auth_Bypass2.txt            # 122 additional bypasses
-│   │   ├── Generic_UnionSelect.txt
-│   │   ├── Generic_ErrorBased.txt
-│   │   ├── Generic_TimeBased.txt
-│   │   ├── FUZZDB_MySQL.txt
-│   │   ├── FUZZDB_MSSQL.txt
-│   │   ├── FUZZDB_Oracle.txt
-│   │   └── SQLi_Polyglots.txt
-│   ├── xss/
-│   │   ├── 1 - XSS Filter Bypass.md
-│   │   ├── 2 - XSS Polyglot.md
-│   │   ├── 3 - XSS Common WAF Bypass.md
-│   │   ├── 4 - CSP Bypass.md
-│   │   ├── 5 - XSS in Angular.md
-│   │   └── Polyglots.txt
-│   ├── command_injection/
-│   │   └── commix.txt                  # 8K+ command injection payloads
-│   └── jwt/
-│       ├── jwt.secrets.list
-│       └── JWT_sample.txt
+├── exploit/                # Exploit payloads
+│   └── command_injection/
+│       └── command-injection-commix.txt  # 8K payloads
 │
-├── fuzzing/             # General fuzzing vectors
-│   ├── naughty_strings.txt              # 699 fuzz strings
-│   ├── char.txt
-│   ├── alphanum.txt
-│   └── uri_hex.txt
-│
-└── post/                # Post-exploitation enumeration
-    ├── linux_enum.txt
-    └── passwords_top.txt
+└── fuzzing/               # General fuzzing
+    └── naughty_strings.txt  # 699 fuzz strings
+```
+
+## Rebuild Index
+
+```bash
+bun run scripts/build-wordlist-index.ts
 ```
 
 ## Usage
 
 ```typescript
-import { loadWordlistIndex } from './src/utils/wordlist-index';
+import { loadWordlistIndex, findWordlist } from '../src/utils/wordlist-index';
 
-const index = await loadWordlistIndex();
-// Find wordlist by stage and type
-const sqliBypass = index.stages.exploit.sql_injection.Auth_Bypass;
+const index = loadWordlistIndex();
+const wordlist = findWordlist('recon', 'raft-small-directories');
+// wordlist.path -> 'recon/directories/raft-small-directories.txt'
 ```
 
 ## Sources
 
 - **SecLists** - https://github.com/danielmiessler/SecLists
 - **PayloadsAllTheThings** - https://github.com/swisskyrepo/PayloadsAllTheThings
-
-## Building Index
-
-```bash
-bun run scripts/build-wordlist-index.ts
-```

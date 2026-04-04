@@ -6,16 +6,15 @@ export function buildNuclei(args: ToolArgs): string | null {
 
   const parts = ['nuclei', '-u', target];
 
-  if (args.templates) {
-    for (const t of args.templates) {
-      parts.push('-t', t);
-    }
+  if (args.templates && args.templates[0]) {
+    parts.push('-t', args.templates[0]);
+  } else {
+    parts.push('-severity', 'critical,high');
   }
-  if (args.severity) {
-    for (const s of args.severity) {
-      parts.push('-severity', s);
-    }
-  }
+
+  parts.push('-rate-limit', '5');
+  parts.push('-timeout', '5');
+
   if (args.flags) parts.push(...args.flags.split(' '));
 
   return parts.join(' ');

@@ -28,6 +28,8 @@ export type SwarmEventType =
   | "scan_initiated"
   | "port_discovered"
   | "service_identified"
+  | "endpoint_discovered"
+  | "component_detected"
   | "chain_planned"
   | "chain_extended"
   | "failure_analysis_complete"
@@ -77,6 +79,8 @@ export const EventTTL: Record<SwarmEventType, number | null> = {
   scan_initiated: 600000,
   port_discovered: 600000,
   service_identified: 600000,
+  endpoint_discovered: 600000,
+  component_detected: 600000,
   chain_planned: 600000,
   chain_extended: 600000,
   failure_analysis_complete: 600000,
