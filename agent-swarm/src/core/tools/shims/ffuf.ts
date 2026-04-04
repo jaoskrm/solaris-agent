@@ -7,7 +7,9 @@ export function buildFfuf(args: ToolArgs): string | null {
   const parts = ['ffuf', '-u', url];
 
   if (args.wordlist) parts.push('-w', args.wordlist);
-  if (args.threads) parts.push('-t', String(args.threads));
+  // Limit threads to prevent PC freeze - hardcode safe defaults
+  parts.push('-t', '5');
+  parts.push('-silent'); // Quiet output
   if (args.filters) parts.push(...args.filters.split(' '));
   if (args.flags) parts.push(...args.flags.split(' '));
 
@@ -18,7 +20,7 @@ export const ffufTool: ToolDefinition = {
   name: 'ffuf',
   description: 'Fast web fuzzer - discovers hidden files and directories',
   category: 'recon',
-  allowedRoles: ['alpha', 'gamma'],
+  allowedRoles: ['alpha', 'gamma'], // Re-enabled for Alpha with thread limits
   aliases: [],
   buildCommand: buildFfuf,
   validateArgs: (args) => {

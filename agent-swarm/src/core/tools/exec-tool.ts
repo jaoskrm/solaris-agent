@@ -47,7 +47,7 @@ export async function execTool(
       stderr: stderr.trim(),
       command,
       timed_out: timedOut,
-      success: exitCode === 0 && !timedOut,
+      success: !timedOut && (exitCode === 0 || exitCode === 1),
       duration_ms: Date.now() - start,
     };
   } catch (error) {

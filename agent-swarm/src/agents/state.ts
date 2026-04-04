@@ -22,7 +22,7 @@ export const AGENT_INITIAL_STATES: Record<string, AgentState> = {
   commander: 'STANDBY',
   verifier: 'STANDBY',
   gamma: 'DORMANT',
-  alpha: 'DORMANT',
+  alpha: 'STANDBY',
   osint: 'DORMANT',
   mcp: 'DORMANT',
   mission_planner: 'DORMANT',

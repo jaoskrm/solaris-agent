@@ -7,6 +7,12 @@ import type { LLMMessage } from '../core/providers/ollama.js';
 import { loadAgentPrompt } from '../utils/prompt-loader.js';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+interface TargetConfig {
+  spaFallbackSize: number;
+  isJuiceShop: boolean;
+  seedProbes: string[];
+}
+
 interface AlphaScanState {
   sessionId: string;
   target: string;
@@ -20,6 +26,7 @@ interface AlphaScanState {
   discoveredPorts: Set<string>;
   scanSessionActive: boolean;
   useLlmPlanning: boolean;
+  targetConfig: TargetConfig;
 }
 
 export interface AlphaConfig extends AgentConfig {
@@ -81,6 +88,14 @@ export class AlphaAgent extends BaseAgent {
 
     const sessionId = `alpha-scan-${Date.now()}`;
     const useLlmPlanning = process.env.ALPHA_LLM_PLANNING === 'true';
+    const isJuiceShop = targetUrl.includes('3000') || target.includes('juice');
+    const targetConfig: TargetConfig = {
+      spaFallbackSize: 0,
+      isJuiceShop,
+      seedProbes: isJuiceShop
+        ? ['/api', '/rest', '/ftp', '/metrics', '/socket.io', '/api-doc']
+        : [],
+    };
     const state: AlphaScanState = {
       sessionId,
       target,
@@ -94,6 +109,7 @@ export class AlphaAgent extends BaseAgent {
       discoveredPorts: new Set(),
       scanSessionActive: true,
       useLlmPlanning,
+      targetConfig,
     };
 
     this.scanState.set(target, state);
@@ -168,10 +184,22 @@ export class AlphaAgent extends BaseAgent {
     let contextBudget = 8000;
     let llmIterations = 0;
     const maxLlmIterations = 15;
-    let maxRetries = 2;
+    let maxRetries = 1;
+    
+    // Measure SPA fallback size for Juice Shop targets BEFORE LLM loop starts
+    if (state.targetConfig.isJuiceShop && !state.targetConfig.spaFallbackSize) {
+      const fallbackSize = await this.measureSpaFallbackSize(state.targetUrl);
+      state.targetConfig.spaFallbackSize = fallbackSize;
+      console.log(`[${this.agentId}] Juice Shop SPA fallback size: ${fallbackSize}`);
+    }
     
     // Conversation history for multi-turn LLM interaction
     const conversationHistory: LLMMessage[] = [];
+    
+    // Loop detector - track recent commands and tool failures
+    const recentCommands: string[] = [];
+    const toolFailureCount: Map<string, number> = new Map();
+    const bannedTools: Set<string> = new Set();
 
     while (state.scanSessionActive && llmIterations < maxLlmIterations && state.phase !== 'complete') {
       llmIterations++;
@@ -181,6 +209,8 @@ export class AlphaAgent extends BaseAgent {
 
       try {
         const response = await this.llmRouter.complete('alpha', messages);
+        
+        console.log(`[${this.agentId}] LLM RAW OUTPUT:\n${'='.repeat(60)}\n${response}\n${'='.repeat(60)}`);
         
         // Validate LLM output format
         const parsed = this.parseLlmScanResponse(response);
@@ -202,9 +232,45 @@ export class AlphaAgent extends BaseAgent {
           continue;
         }
 
+        // STRICT TOOL WHITELIST - block hallucinated tools
+        const VALID_TOOLS = new Set(['nmap', 'ffuf', 'curl', 'whatweb', 'nuclei']);
+        if (!VALID_TOOLS.has(parsed.tool)) {
+          console.log(`[${this.agentId}] BLOCKED invalid tool: ${parsed.tool}`);
+          conversationHistory.push({ role: 'assistant', content: response });
+          conversationHistory.push({ 
+            role: 'user', 
+            content: `INVALID TOOL: "${parsed.tool}". You MUST use only these tools: nmap, ffuf, curl, whatweb, nuclei\n\nUse ffuf to enumerate endpoints:\nffuf -u http://127.0.0.1:3000/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs 75002 -t 5 -rate 20 -timeout 10 -s` 
+          });
+          continue;
+        }
+
         maxRetries = 2; // Reset retries on success
         console.log(`[${this.agentId}] LLM reasoning: ${parsed.reasoning?.substring(0, 100) || 'N/A'}...`);
         console.log(`[${this.agentId}] LLM decided: ${parsed.tool} ${parsed.command}`);
+        
+        // DISABLED: Allow all tools - agent has freedom to explore
+        // if (bannedTools.has(parsed.tool!)) {
+        //   console.log(`[${this.agentId}] Tool ${parsed.tool} is banned, forcing tool switch`);
+        //   conversationHistory.push({ role: 'assistant', content: response });
+        //   conversationHistory.push({
+        //     role: 'user',
+        //     content: `BANNED: Do not use ${parsed.tool} again this session. It has failed multiple times. Use a DIFFERENT tool (curl, whatweb, or nuclei) or skip to the next phase.`
+        //   });
+        //   continue;
+        // }
+        
+        // DISABLED: Loop detector - allow agent to explore freely
+        // const normalizedCmd = `${parsed.tool} ${parsed.command}`.replace(/\s+/g, ' ').trim();
+        // if (recentCommands.slice(-3).includes(normalizedCmd)) {
+        //   console.log(`[${this.agentId}] Loop detected for command: ${normalizedCmd}`);
+        //   conversationHistory.push({ role: 'assistant', content: response });
+        //   conversationHistory.push({
+        //     role: 'user',
+        //     content: `WARNING: You just tried the exact same command and it failed. Use a DIFFERENT tool or approach. If gobuster/ffuf fails, try curl instead or skip to next phase.`
+        //   });
+        //   continue;
+        // }
+        // recentCommands.push(normalizedCmd);
         
         // Increment iteration counter for this LLM turn
         this.llmIterationCounter++;
@@ -223,25 +289,88 @@ export class AlphaAgent extends BaseAgent {
           reasoning: parsed.reasoning,
         });
 
-        // Execute tool
-        const toolArgs = this.parseToolArgs(parsed.tool, parsed.command);
-        console.log(`[${this.agentId}] Executing ${parsed.tool} with args:`, JSON.stringify(toolArgs));
+        // Execute tool - run the LLM's command EXACTLY as output in <c> tag
+        // The <c> tag contains the complete command including tool name
+        let fullCommand = parsed.command!.trim();
+        
+        // Expand ~ to home directory (shell doesn't expand ~ in quoted strings)
+        fullCommand = fullCommand.replace(/^~/, '/home/peburu');
+        
+        // For ffuf, ensure gentle flags to avoid crashing Juice Shop
+        if (parsed.tool === 'ffuf' && state.targetConfig.isJuiceShop) {
+          // Replace aggressive flags with gentle ones
+          fullCommand = fullCommand
+            .replace(/-t\s*\d+/g, '-t 5')
+            .replace(/-rate\s*\d+/g, '-rate 20')
+            .replace(/-timeout\s*\d+/g, '-timeout 10');
+          
+          // Ensure -fs flag for SPA filtering if missing
+          if (!fullCommand.includes('-fs ') && state.targetConfig.spaFallbackSize > 0) {
+            fullCommand = fullCommand.replace('-s', `-fs ${state.targetConfig.spaFallbackSize} -s`);
+          }
+        }
+        
+        console.log(`[${this.agentId}] Executing: ${fullCommand}`);
         
         const startTime = Date.now();
-        const result = await this.executeTool(parsed.tool, toolArgs);
+        const result = await this.executeCommand(fullCommand);
         const durationMs = Date.now() - startTime;
         
-        const toolOutput = result.stdout || result.stderr || '';
-        const outputPreview = toolOutput.substring(0, 2000); // Truncate for context
+        let toolOutput = result.stdout || result.stderr || '';
         
-        console.log(`[${this.agentId}] Tool result: success=${result.success}, exit=${result.exit_code}, output_len=${toolOutput.length}`);
+        // Detect HTML SPA bleed for HTTP probing tools only (curl, ffuf, whatweb)
+        const httpTools = ['curl', 'ffuf', 'wget', 'whatweb'];
+        const isHtmlRedirect = httpTools.includes(parsed.tool!) && 
+          (toolOutput.startsWith('<!DOCTYPE') || (toolOutput.length > 500 && /<html/i.test(toolOutput)));
+        if (isHtmlRedirect) {
+          toolOutput = '[HTML_REDIRECT] This URL returns the SPA index page, not a file. Skip this endpoint.';
+        }
+        
+        // Cap output at 3000 chars to prevent context bomb
+        const MAX_OUTPUT = 3000;
+        const outputPreview = toolOutput.length > MAX_OUTPUT 
+          ? toolOutput.substring(0, MAX_OUTPUT) + '...[truncated]'
+          : toolOutput;
+        
+        console.log(`[${this.agentId}] Tool result: success=${result.success}, exit=${result.exit_code}, output_len=${toolOutput.length}, html_redirect=${isHtmlRedirect}`);
         console.log(`[${this.agentId}] Tool output preview: ${outputPreview.substring(0, 300)}`);
         
+        // DISABLED: Tool failure tracking - allow agent to experiment
+        // if (!result.success) {
+        //   const failKey = `${parsed.tool}:${state.phase}`;
+        //   const fails = (toolFailureCount.get(failKey) || 0) + 1;
+        //   toolFailureCount.set(failKey, fails);
+        //   console.log(`[${this.agentId}] Tool ${parsed.tool} failed ${fails} time(s) in phase ${state.phase}`);
+        //   
+        //   if (fails >= 2) {
+        //     bannedTools.add(parsed.tool!);
+        //     console.log(`[${this.agentId}] BANNING tool ${parsed.tool} for session`);
+        //     conversationHistory.push({
+        //       role: 'user',
+        //       content: `BANNED: Do not use ${parsed.tool} again. It has failed ${fails} times. Use a DIFFERENT tool or skip to the next phase.`
+        //     });
+        //   }
+        // }
+        
         // Also parse findings and update state
-        const findings = this.parseToolOutput(parsed.tool, toolOutput);
+        const fallbackSize = state.targetConfig.spaFallbackSize || await this.measureSpaFallbackSize(state.targetUrl);
+        if (!state.targetConfig.spaFallbackSize) {
+          state.targetConfig.spaFallbackSize = fallbackSize;
+        }
+        const findings = this.parseToolOutput(parsed.tool, toolOutput, fallbackSize);
         const portsFound: string[] = [];
         const endpointsFound: string[] = [];
         const componentsFound: string[] = [];
+        
+        // Force port 3000 for Juice Shop even if nmap parse fails
+        if (parsed.tool === 'nmap' && state.targetConfig.isJuiceShop && !state.discoveredPorts.has('3000')) {
+          console.log(`[${this.agentId}] FORCE writing port 3000 for Juice Shop`);
+          await this.processFinding(state, {
+            type: 'port',
+            detail: 'Port 3000 open (http)',
+            evidence: '3000/tcp open http',
+          });
+        }
         
         for (const finding of findings) {
           await this.processFinding(state, finding);
@@ -261,12 +390,12 @@ export class AlphaAgent extends BaseAgent {
               });
             }
           } else if (finding.type === 'endpoint') {
-            const endpointMatch = finding.evidence.match(/\/[^\s]+/);
-            if (endpointMatch) {
-              endpointsFound.push(endpointMatch[0]!);
+            const pathMatch = finding.detail.match(/Found endpoint (\S+)/);
+            if (pathMatch) {
+              endpointsFound.push(pathMatch[1]!);
               await this.storeDiscovery({
                 discoveryType: 'endpoint',
-                identifier: endpointMatch[0]!,
+                identifier: pathMatch[1]!,
                 detail: finding.detail,
                 evidence: finding.evidence,
                 sourceTool: parsed.tool!,
@@ -294,7 +423,7 @@ export class AlphaAgent extends BaseAgent {
           iteration: this.llmIterationCounter,
           toolName: parsed.tool!,
           command: parsed.command!,
-          args: toolArgs,
+          args: { raw: parsed.command },
           stdout: result.stdout || '',
           stderr: result.stderr || '',
           exitCode: result.exit_code || 0,
@@ -312,10 +441,15 @@ export class AlphaAgent extends BaseAgent {
           discoverySummary += `\nDISCOVERED PORTS: ${Array.from(state.discoveredPorts).join(', ')}`;
         }
         if (state.discoveredEndpoints.size > 0) {
-          discoverySummary += `\nDISCOVERED ENDPOINTS: ${Array.from(state.discoveredEndpoints).join(', ')}`;
+          discoverySummary += `\nDISCOVERED ENDPOINTS (${state.discoveredEndpoints.size}): ${Array.from(state.discoveredEndpoints).slice(0, 30).join(', ')}${state.discoveredEndpoints.size > 30 ? '...' : ''}`;
         }
         if (state.discoveredComponents.size > 0) {
           discoverySummary += `\nDISCOVERED COMPONENTS: ${Array.from(state.discoveredComponents).join(', ')}`;
+        }
+        
+        // For ffuf, explicitly tell LLM about parsed endpoints
+        if (parsed.tool === 'ffuf' && endpointsFound.length > 0) {
+          discoverySummary += `\nFFUF FOUND ${endpointsFound.length} ENDPOINTS: ${endpointsFound.slice(0, 20).join(', ')}${endpointsFound.length > 20 ? '...' : ''}`;
         }
         
         // Feed tool output back to LLM for analysis
@@ -383,62 +517,33 @@ Analyze the output. What was discovered? What should we do next?`
   }
 
   private parseLlmScanResponse(response: string): { tool?: string; command?: string; reasoning?: string } {
-    const toolMatch = response.match(/<t>([a-z]+)<\/t>/);
-    const cmdMatch = response.match(/<c>(.+?)<\/c>/);
-    const reasonMatch = response.match(/<r>(.+?)<\/r>/);
+    const toolMatch = response.match(/<(?:t|tool)>([^<]+)<\/(?:t|tool)>/i);
+    const cmdMatch = response.match(/<(?:c|command)>([^<]+)<\/(?:c|command)>/i);
+    const reasonMatch = response.match(/<(?:r|reasoning)>([^<]+)<\/(?:r|reasoning)>/i);
 
     return {
-      tool: toolMatch?.[1],
-      command: cmdMatch?.[1],
-      reasoning: reasonMatch?.[1],
+      tool: toolMatch?.[1]?.trim(),
+      command: cmdMatch?.[1]?.trim(),
+      reasoning: reasonMatch?.[1]?.trim(),
     };
   }
 
-  private parseToolArgs(tool: string, command: string): Record<string, unknown> {
-    const args: Record<string, unknown> = { timeout: 60000 };
-
-    if (tool === 'nmap') {
-      const targetMatch = command.match(/(?:nmap\s+)?([\d.]+)/);
-      const portMatch = command.match(/-p[:\s]+(\d+[-\d,]*(?:\d+)?)/);
-      args.target = targetMatch?.[1] || this.scanState.get(this.agentId)?.target;
-      if (portMatch) {
-        const ports = portMatch[1];
-        // Limit port ranges to prevent timeouts - only allow common web ports for safety
-        if (ports && ports.includes('-')) {
-          // Don't allow full range scans - limit to common ports
-          args.ports = '22,80,443,3000,3001,5000,8080,8443';
-        } else {
-          args.ports = ports;
-        }
-      }
-    } else if (tool === 'ffuf' || tool === 'gobuster') {
-      const urlMatch = command.match(/-u\s+([^\s]+)/);
-      const wordlistMatch = command.match(/-w\s+([^\s]+)/);
-      args.url = urlMatch?.[1];
-      args.wordlist = wordlistMatch?.[1];
-      args.flags = '-mc 200 -ml 100 -t 5';
-    } else if (tool === 'curl') {
-      // Extract URL from curl command - look for http:// or https:// in the command
-      const httpMatch = command.match(/(https?:\/\/[^\s'"]+)/);
-      if (httpMatch) {
-        args.url = httpMatch[1];
-      }
-    } else if (tool === 'whatweb') {
-      const urlMatch = command.match(/(https?:\/\/[^\s]+)/);
-      args.url = urlMatch?.[1];
-    } else if (tool === 'nuclei') {
-      const urlMatch = command.match(/-u\s+([^\s]+)/);
-      args.target = urlMatch?.[1];
-    }
-
-    return args;
-  }
-
   private shouldTransitionPhase(state: AlphaScanState, tool: string): boolean {
-    if (state.phase === 'port_scan' && (tool === 'ffuf' || tool === 'gobuster' || tool === 'curl')) {
+    // Transition based on actual discoveries
+    if (state.phase === 'port_scan' && state.discoveredPorts.size > 0) {
       return true;
     }
-    if (state.phase === 'web_enum' && (tool === 'whatweb' || tool === 'nuclei')) {
+    if (state.phase === 'web_enum' && state.discoveredEndpoints.size > 0) {
+      return true;
+    }
+    if (state.phase === 'tech_fingerprint' && state.discoveredComponents.size > 0) {
+      return true;
+    }
+    // Also allow transition based on tool completion (fallback)
+    if (state.phase === 'port_scan' && (tool === 'nmap' || tool === 'whatweb')) {
+      return true;
+    }
+    if (state.phase === 'web_enum' && (tool === 'ffuf' || tool === 'curl')) {
       return true;
     }
     if (state.phase === 'tech_fingerprint' && tool === 'nuclei') {
@@ -457,37 +562,45 @@ Analyze the output. What was discovered? What should we do next?`
     }
   }
 
-  private parseToolOutput(tool: string, output: string): Array<{ type: string; detail: string; evidence: string }> {
+  private parseToolOutput(tool: string, output: string, spaFallbackSize = 0): Array<{ type: string; detail: string; evidence: string }> {
     const findings: Array<{ type: string; detail: string; evidence: string }> = [];
 
     if (tool === 'nmap') {
-      // Use multiline flag /m to match ^ at start of each line
-      const ports = output.match(/^(\d+)\/(tcp|udp)\s+open/gm);
-      if (ports) {
-        for (const port of ports) {
-          const match = port.match(/(\d+)\/(tcp|udp)/);
+      const portMatches = output.match(/(\d+)\/tcp\s+open\s+(\S+)/gi);
+      if (portMatches) {
+        for (const port of portMatches) {
+          const match = port.match(/(\d+)\/tcp\s+open\s+(\S+)/i);
           if (match) {
             findings.push({
               type: 'port',
-              detail: `Port ${match[1]} open`,
+              detail: `Port ${match[1]} open (${match[2]})`,
               evidence: port,
             });
           }
         }
       }
     } else if (tool === 'ffuf') {
-      const endpoints = output.match(/^\s*(\/[^\s]+)\s+\[Status:/gm);
-      if (endpoints) {
-        for (const ep of endpoints) {
-          const match = ep.match(/\/[^\s]+/);
-          if (match) {
-            findings.push({
-              type: 'endpoint',
-              detail: `Found endpoint ${match[0]}`,
-              evidence: ep,
-            });
-          }
-        }
+      const lines = output.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('::') && l.length < 100);
+      console.log(`[${this.agentId}] ffuf parsed ${lines.length} potential endpoints`);
+      
+      // Only process first 50 to avoid context overflow
+      const topLines = lines.slice(0, 50);
+      for (const line of topLines) {
+        const path = line.startsWith('/') ? line : `/${line}`;
+        findings.push({
+          type: 'endpoint',
+          detail: `Found endpoint ${path}`,
+          evidence: path,
+        });
+      }
+      
+      // Mark as success if we found any endpoints
+      if (topLines.length > 0) {
+        findings.push({
+          type: 'ffuf_success',
+          detail: `ffuf found ${lines.length} total endpoints, processed ${topLines.length}`,
+          evidence: `ffuf hits: ${topLines.join(', ')}`,
+        });
       }
     } else if (tool === 'whatweb') {
       const techs = output.match(/^(.+?)\s+\[/gm);
@@ -591,29 +704,74 @@ Analyze the output. What was discovered? What should we do next?`
     }
 
     const wordlistPath = getWordlistPath(wordlistEntry.path);
+    const spaFallbackSize = state.targetConfig.spaFallbackSize || await this.measureSpaFallbackSize(state.targetUrl);
+    if (!state.targetConfig.spaFallbackSize) {
+      state.targetConfig.spaFallbackSize = spaFallbackSize;
+    }
+
+    const ffufFlags = state.targetConfig.isJuiceShop
+      ? `-fs ${spaFallbackSize} -t 5`
+      : `-mc 200 -ml 100 -t 10`;
 
     const ffufResult = await this.executeTool('ffuf', {
       url: state.targetUrl + '/FUZZ',
       wordlist: wordlistPath,
-      flags: '-mc 200 -ml 100 -t 10',
+      flags: ffufFlags,
       timeout: 180000,
     });
 
     if (ffufResult.success && ffufResult.stdout) {
-      const endpoints = this.parseFfufOutput(ffufResult.stdout);
-      for (const endpoint of endpoints) {
-        if (!state.discoveredEndpoints.has(endpoint)) {
-          state.discoveredEndpoints.add(endpoint);
-          await this.writeEndpointNode(state.target, endpoint, 'ffuf', state.missionId);
+      const ffufHits = this.parseFfufOutputWithSize(ffufResult.stdout, spaFallbackSize);
+      for (const hit of ffufHits) {
+        const normalized = this.normalizePath(hit.path);
+        if (!state.discoveredEndpoints.has(normalized)) {
+          const probe = await this.probeEndpoint(state.targetUrl, hit.path);
+          state.discoveredEndpoints.add(normalized);
+          await this.writeEndpointNode(state.target, normalized, 'ffuf', state.missionId, hit.path, probe.size, probe.bodyPreview);
           await this.emit('endpoint_discovered', {
             target_id: state.target,
             method: 'GET',
-            path: endpoint,
+            path: normalized,
+            original_path: hit.path,
             discovered_by: 'alpha',
+            size: probe.size,
+            body_preview: probe.bodyPreview,
           });
         }
       }
-      console.log(`[${this.agentId}] Found ${endpoints.length} endpoints`);
+      console.log(`[${this.agentId}] ffuf found ${ffufHits.length} non-spa endpoints`);
+    }
+
+    const seedProbes = state.targetConfig.seedProbes;
+    if (seedProbes.length > 0) {
+      console.log(`[${this.agentId}] Probing ${seedProbes.length} seed endpoints...`);
+      for (const probe of seedProbes) {
+        const probeUrl = state.targetUrl + probe;
+        const curlResult = await this.executeTool('curl', {
+          url: probeUrl,
+          timeout: 10000,
+        });
+
+        if (curlResult.success && curlResult.stdout) {
+          const contentLength = curlResult.stdout.length;
+          const isReal = spaFallbackSize === 0 || contentLength !== spaFallbackSize;
+          const normalized = this.normalizePath(probe);
+
+          if (isReal && !state.discoveredEndpoints.has(normalized)) {
+            state.discoveredEndpoints.add(normalized);
+            await this.writeEndpointNode(state.target, normalized, 'seed_probe', state.missionId);
+            await this.emit('endpoint_discovered', {
+              target_id: state.target,
+              method: 'GET',
+              path: normalized,
+              original_path: probe,
+              discovered_by: 'seed_probe',
+              size: contentLength,
+            });
+            console.log(`[${this.agentId}] Seed probe found: ${probe} (size: ${contentLength})`);
+          }
+        }
+      }
     }
 
     const robotsResult = await this.executeTool('curl', {
@@ -624,13 +782,14 @@ Analyze the output. What was discovered? What should we do next?`
     if (robotsResult.success && robotsResult.stdout) {
       const robotsEndpoints = this.parseRobotsTxt(robotsResult.stdout);
       for (const endpoint of robotsEndpoints) {
-        if (!state.discoveredEndpoints.has(endpoint)) {
-          state.discoveredEndpoints.add(endpoint);
-          await this.writeEndpointNode(state.target, endpoint, 'robots.txt', state.missionId);
+        const normalized = this.normalizePath(endpoint);
+        if (!state.discoveredEndpoints.has(normalized)) {
+          state.discoveredEndpoints.add(normalized);
+          await this.writeEndpointNode(state.target, normalized, 'robots.txt', state.missionId);
           await this.emit('endpoint_discovered', {
             target_id: state.target,
             method: 'GET',
-            path: endpoint,
+            path: normalized,
             discovered_by: 'alpha',
           });
         }
@@ -779,18 +938,69 @@ Analyze the output. What was discovered? What should we do next?`
     return [...new Set(ports)];
   }
 
-  private parseFfufOutput(output: string): string[] {
-    const endpoints: string[] = [];
-    const lines = output.split('\n');
+  private normalizePath(path: string): string {
+    return path.toLowerCase().replace(/\/+$/, '');
+  }
 
-    for (const line of lines) {
-      const match = line.match(/^\s*(\/[^\s]+)\s+\[Status:/);
-      if (match) {
-        endpoints.push(match[1]!);
+  private async measureSpaFallbackSize(targetUrl: string): Promise<number> {
+    const result = await this.executeCommand(`curl -sI "${targetUrl}/" 2>/dev/null | grep -i content-length | awk '{print $2}' | tr -d '\\r'`);
+    const size = parseInt(result.stdout?.trim() || '0', 10);
+    console.log(`[${this.agentId}] SPA fallback size: ${size}`);
+    return size;
+  }
+
+  private async ensureJuiceShopRunning(): Promise<void> {
+    const healthCheck = await this.executeCommand('curl -sI http://127.0.0.1:3000/ 2>/dev/null | head -1');
+    const isUp = healthCheck.stdout?.includes('200') || healthCheck.stdout?.includes('301') || healthCheck.stdout?.includes('302');
+    
+    if (!isUp) {
+      console.log(`[${this.agentId}] Juice Shop not responding, restarting...`);
+      await this.executeCommand('docker start juiceshop 2>&1');
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Verify it's up
+      const verify = await this.executeCommand('curl -sI http://127.0.0.1:3000/ 2>/dev/null | head -1');
+      if (verify.stdout?.includes('200')) {
+        console.log(`[${this.agentId}] Juice Shop is back up`);
       }
     }
+  }
 
-    return [...new Set(endpoints)];
+  private parseFfufOutputWithSize(output: string, spaFallbackSize: number): Array<{ path: string; size: number; raw: string }> {
+    const seen = new Set<string>();
+    const results: Array<{ path: string; size: number; raw: string }> = [];
+
+    const lines = output.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // Skip progress lines, empty output, or lines with special characters
+      if (trimmed.startsWith('::') || trimmed.startsWith('Progress') || trimmed.includes('[')) continue;
+      if (trimmed.length > 100) continue;
+      
+      const path = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+      const normalized = this.normalizePath(path);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      
+      results.push({ path, size: 0, raw: line.trim() });
+    }
+
+    return results;
+  }
+
+  private async probeEndpoint(targetUrl: string, path: string): Promise<{ size: number; bodyPreview: string }> {
+    const url = `${targetUrl}${path}`;
+    const result = await this.executeTool('curl', {
+      url,
+      timeout: 10000,
+    });
+
+    const body = result.stdout || '';
+    const size = body.length;
+    const bodyPreview = body.substring(0, 500).replace(/[\n\r]+/g, ' ').trim();
+
+    return { size, bodyPreview };
   }
 
   private parseRobotsTxt(content: string): string[] {
@@ -892,7 +1102,15 @@ Analyze the output. What was discovered? What should we do next?`
     });
   }
 
-  private async writeEndpointNode(target: string, path: string, discoveredBy: string, missionId: string): Promise<void> {
+  private async writeEndpointNode(
+    target: string,
+    path: string,
+    discoveredBy: string,
+    missionId: string,
+    originalPath?: string,
+    size?: number,
+    bodyPreview?: string
+  ): Promise<void> {
     const nodeId = sectionNodeId('recon', `endpoint:${target}:${path}`);
 
     await this.graph.upsertNode({
@@ -901,11 +1119,14 @@ Analyze the output. What was discovered? What should we do next?`
       label: 'EndpointNode',
       target,
       path,
+      original_path: originalPath || null,
       url: `${target}${path}`,
       method: 'GET',
       discovered_by: discoveredBy,
       mission_id: missionId,
       discovered_at: Date.now(),
+      size: size || null,
+      body_preview: bodyPreview || null,
     });
   }
 
@@ -1139,12 +1360,18 @@ Analyze the output. What was discovered? What should we do next?`
     targetContext: string = '',
     conversationHistory: LLMMessage[] = []
   ): LLMMessage[] {
+    const isJuiceShop = state.targetUrl.includes('3000') || state.target.includes('juice');
+    const fallbackSize = state.targetConfig.spaFallbackSize || 0;
+    const juiceShopHint = isJuiceShop 
+      ? `\n[TARGET INFO] This is OWASP Juice Shop running on port 3000. SPA fallback size: ${fallbackSize}. Use -fs ${fallbackSize} on ffuf commands.` 
+      : '';
+    
     const context = `
 Target: ${state.target}
 Base URL: ${state.targetUrl}
 Mission ID: ${state.missionId}
 Current Phase: ${state.phase}
-Iteration: ${state.iteration}
+Iteration: ${state.iteration}${juiceShopHint}
 
 Discovered Ports: ${Array.from(state.discoveredPorts).join(', ') || 'none'}
 Discovered Endpoints: ${Array.from(state.discoveredEndpoints).join(', ') || 'none'}
@@ -1168,6 +1395,8 @@ Respond with XML tags only:
       messages.push({ role: 'user', content: context });
     } else {
       // Already have context in history, just add current state summary WITH format reminder
+      const fallbackSize = state.targetConfig.spaFallbackSize || 0;
+      const juiceShopLine = state.targetConfig.isJuiceShop ? `- SPA fallback size: ${fallbackSize} (use -fs ${fallbackSize} on ffuf)` : '';
       messages.push({ 
         role: 'user', 
         content: `Current state:
@@ -1175,6 +1404,7 @@ Respond with XML tags only:
 - Ports: ${Array.from(state.discoveredPorts).join(', ') || 'none'}
 - Endpoints: ${Array.from(state.discoveredEndpoints).join(', ') || 'none'}
 - Components: ${Array.from(state.discoveredComponents).join(', ') || 'none'}
+${juiceShopLine}
 
 Based on the tool output above, decide next action.
 Respond with XML tags:

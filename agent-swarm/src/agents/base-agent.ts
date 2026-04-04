@@ -4,6 +4,7 @@ import { getFalkorDB, type FalkorDBClient } from '../infra/falkordb.js';
 import type { SwarmEvent, SwarmEventType } from '../events/types.js';
 import { AgentState, AGENT_INITIAL_STATES, canTransition } from './state.js';
 import { toolRegistry } from '../core/tools/registry.js';
+import { execTool } from '../core/tools/exec-tool.js';
 import { loadAgentPrompt, type AgentPromptId } from '../utils/prompt-loader.js';
 import { loadOverlay } from '../utils/prompt-overlay.js';
 import type { ToolArgs, ExecResult } from '../core/tools/types.js';
@@ -63,6 +64,13 @@ export abstract class BaseAgent {
     this.state = newState;
     this.stateChangedAt = Date.now();
     console.log(`[${this.agentId}] State: ${oldState} → ${newState}${reason ? ` (${reason})` : ''}`);
+
+    if (oldState === 'DORMANT' && newState !== 'DORMANT' && !this.pollingTimer) {
+      console.log(`[${this.agentId}] Starting polling (${this.pollInterval}ms)`);
+      this.pollingTimer = setInterval(() => {
+        this.poll().catch(console.error);
+      }, this.pollInterval);
+    }
   }
 
   protected isStandby(): boolean {
@@ -190,7 +198,7 @@ export abstract class BaseAgent {
 
   protected async poll(): Promise<void> {
     try {
-      if (this.state === 'DORMANT' || this.state === 'ERROR') {
+      if (this.state === 'ERROR') {
         return;
       }
 
@@ -251,6 +259,10 @@ export abstract class BaseAgent {
   protected async executeTool(name: string, args: ToolArgs): Promise<ExecResult> {
     const role = this.agentType as AgentRole;
     return toolRegistry.executeForRole(role, name, args);
+  }
+
+  protected async executeCommand(command: string, timeout = 60000): Promise<ExecResult> {
+    return execTool(command, { timeout });
   }
 
   protected getSystemPrompt(exploitType?: string): string {

@@ -1,4 +1,4 @@
-export function generateMissionId(exploitType: string): string {
+export function generateMissionId(exploitType: string = 'alpha'): string {
   const timestamp = Date.now();
   const random = Math.random().toString(36).slice(2, 8);
   return `mission:${exploitType}-${timestamp}-${random}`;
