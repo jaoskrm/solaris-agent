@@ -485,6 +485,7 @@ export class AlphaAgent extends BaseAgent {
         if ((parsed.tool === 'katana' || parsed.tool === 'httpx' || parsed.tool === 'gau') && endpointsFound.length > 0) {
           discoverySummary += `\n${parsed.tool.toUpperCase()} FOUND ${endpointsFound.length} ENDPOINTS: ${endpointsFound.slice(0, 15).join(', ')}${endpointsFound.length > 15 ? '...' : ''}`;
           discoverySummary += `\nNEXT ACTION: Use nuclei -silent on promising paths, or ffuf for deeper enumeration.`;
+        }
         
         // Feed tool output back to LLM for analysis
         conversationHistory.push({ 
