@@ -52,7 +52,6 @@ async function main() {
   console.log('✓ Alpha agent started\n');
 
   const startTime = Date.now();
-  const MAX_WAIT_MS = 600000; // 10 minutes max
   let scanComplete = false;
   let completionResult: CompletionResult | null = null;
 
@@ -67,7 +66,7 @@ async function main() {
 
   // Poll for completion
   console.log('Waiting for scan to complete...');
-  while (!scanComplete && (Date.now() - startTime) < MAX_WAIT_MS) {
+  while (!scanComplete) {
     await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Check for MissionNode completion in graph
@@ -95,11 +94,7 @@ async function main() {
     }
 
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    console.log(`[WAIT] Still waiting... (${elapsed}s elapsed, max ${MAX_WAIT_MS / 1000}s)`);
-  }
-
-  if (!scanComplete) {
-    console.log('\n=== TIMEOUT: Scan did not complete within 10 minutes ===');
+    console.log(`[WAIT] Still waiting... (${elapsed}s elapsed)`);
   }
 
   // Always print summary

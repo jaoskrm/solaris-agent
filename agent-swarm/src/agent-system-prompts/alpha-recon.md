@@ -34,7 +34,7 @@ After enumeration, verify endpoints and gather data with MULTIPLE curl commands:
 
 ### ffuf → httpx (pipe chaining)
 ```bash
-ffuf -u http://127.0.0.1:3000/api/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs 75002 -t 5 -rate 50 -s | httpx -silent -title -tech-detect -status-code
+ffuf -u http://127.0.0.1:3000/api/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs 75002 -t 5 -rate 150 -s | httpx -silent -title -tech-detect -status-code
 ```
 
 ### katana → httpx (pipe chaining)
@@ -44,7 +44,7 @@ katana -u http://127.0.0.1:3000 -jc -kf all -silent | httpx -silent -title -tech
 
 ### ffuf (root fuzzing)
 ```bash
-ffuf -u http://127.0.0.1:3000/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs 75002 -t 5 -rate 50 -s
+ffuf -u http://127.0.0.1:3000/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs 75002 -t 5 -rate 150 -s
 ```
 
 ### curl (direct probing)
