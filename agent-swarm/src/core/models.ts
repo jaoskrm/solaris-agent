@@ -15,6 +15,7 @@ export interface AgentModelConfig {
   fallback: string;
   temperature: number;
   maxTokens?: number;
+  contextWindow?: number;
   provider: 'ollama' | 'groq' | 'cerebras' | 'openrouter' | 'anthropic' | 'google';
 }
 
@@ -54,10 +55,11 @@ export const AGENT_MODEL_CONFIG: Record<string, AgentModelConfig> = {
     provider: 'ollama',
   },
   alpha: {
-    primary: process.env.ALPHA_MODEL || 'qwen2.5-coder:7b-instruct-q4_K_M',
+    primary: process.env.ALPHA_MODEL || 'gemma4:e2b',
     fallback: process.env.ALPHA_MODEL_FALLBACK || 'moonshotai/kimi-k2-instruct',
     temperature: 0.65,
     maxTokens: 8192,
+    contextWindow: 32768,
     provider: 'ollama',
   },
   mcp: {

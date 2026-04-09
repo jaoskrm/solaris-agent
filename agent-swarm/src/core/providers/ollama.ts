@@ -8,6 +8,7 @@ export interface LLMCallOptions {
   messages: LLMMessage[];
   temperature?: number;
   maxTokens?: number;
+  contextWindow?: number;
   schema?: object;
   timeout?: number;
 }
@@ -51,16 +52,22 @@ export class OllamaProvider extends BaseLLMProvider {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), options.timeout || 120000);
 
+    const requestBody: Record<string, unknown> = {
+      model: options.model,
+      messages: options.messages.map(m => ({ role: m.role, content: m.content })),
+      temperature: options.temperature ?? 0.7,
+      stream: false,
+    };
+
+    if (options.contextWindow) {
+      requestBody.options = { num_ctx: options.contextWindow };
+    }
+
     try {
       const response = await fetch(`${this.baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: options.model,
-          messages: options.messages.map(m => ({ role: m.role, content: m.content })),
-          temperature: options.temperature ?? 0.7,
-          stream: false,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
 

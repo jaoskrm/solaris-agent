@@ -36,18 +36,19 @@ export class LLMRouter {
   async complete(
     agentType: AgentType,
     messages: LLMMessage[],
-    overrides?: Partial<{ temperature: number; maxTokens: number; schema: object }>
+    overrides?: Partial<{ temperature: number; maxTokens: number; contextWindow: number; schema: object }>
   ): Promise<string> {
     const config = AGENT_MODEL_CONFIG[agentType];
     if (!config) throw new Error(`Unknown agent type: ${agentType}`);
 
     const temperature = overrides?.temperature ?? config.temperature;
     const maxTokens = overrides?.maxTokens ?? config.maxTokens ?? 8192;
+    const contextWindow = overrides?.contextWindow ?? config.contextWindow;
 
     const primaryProvider = this.providers.get(config.provider);
     if (primaryProvider?.isAvailable()) {
       try {
-        return await this.callProvider(primaryProvider, config.primary, messages, temperature, maxTokens, overrides?.schema);
+        return await this.callProvider(primaryProvider, config.primary, messages, temperature, maxTokens, contextWindow, overrides?.schema);
       } catch (error) {
         console.warn(`[LLMRouter] Primary ${config.provider}/${config.primary} failed: ${error}`);
       }
@@ -59,7 +60,7 @@ export class LLMRouter {
       const provider = this.providers.get(providerName);
       if (provider?.isAvailable()) {
         try {
-          return await this.callProvider(provider, model, messages, temperature, maxTokens, overrides?.schema);
+          return await this.callProvider(provider, model, messages, temperature, maxTokens, contextWindow, overrides?.schema);
         } catch (error) {
           console.warn(`[LLMRouter] Cascade ${providerName}/${model} failed: ${error}`);
         }
@@ -69,7 +70,7 @@ export class LLMRouter {
     for (const [name, provider] of this.providers) {
       if (provider.isAvailable()) {
         try {
-          return await this.callProvider(provider, config.fallback, messages, temperature, maxTokens, overrides?.schema);
+          return await this.callProvider(provider, config.fallback, messages, temperature, maxTokens, contextWindow, overrides?.schema);
         } catch (error) {
           console.warn(`[LLMRouter] Fallback ${name}/${config.fallback} failed: ${error}`);
         }
@@ -85,6 +86,7 @@ export class LLMRouter {
     messages: LLMMessage[],
     temperature: number,
     maxTokens: number,
+    contextWindow?: number,
     schema?: object
   ): Promise<string> {
     const rateKey = `${provider.name}:${model}`;
@@ -97,6 +99,7 @@ export class LLMRouter {
       messages,
       temperature,
       maxTokens,
+      contextWindow,
       schema,
       timeout: 120000,
     };

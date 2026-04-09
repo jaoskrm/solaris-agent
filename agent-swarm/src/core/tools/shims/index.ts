@@ -5,7 +5,6 @@ export * from './rustscan.js';
 export * from './gobuster.js';
 export * from './ffuf.js';
 export * from './nikto.js';
-export * from './nuclei.js';
 export * from './dirsearch.js';
 export * from './whatweb.js';
 export * from './curl.js';

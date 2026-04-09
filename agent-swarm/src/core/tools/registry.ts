@@ -7,7 +7,6 @@ import { rustscanTool } from './shims/rustscan.js';
 import { gobusterTool } from './shims/gobuster.js';
 import { ffufTool } from './shims/ffuf.js';
 import { niktoTool } from './shims/nikto.js';
-import { nucleiTool } from './shims/nuclei.js';
 import { dirsearchTool } from './shims/dirsearch.js';
 import { whatwebTool } from './shims/whatweb.js';
 import { curlTool } from './shims/curl.js';
@@ -43,7 +42,6 @@ export class ToolRegistry {
     this.registerTool(gobusterTool);
     this.registerTool(ffufTool);
     this.registerTool(niktoTool);
-    this.registerTool(nucleiTool);
     this.registerTool(dirsearchTool);
     this.registerTool(whatwebTool);
     this.registerTool(curlTool);

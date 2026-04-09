@@ -6,6 +6,8 @@ import { LLMRouter } from '../core/llm-router.js';
 import type { LLMMessage } from '../core/providers/ollama.js';
 import { loadAgentPrompt } from '../utils/prompt-loader.js';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
 
 interface TargetConfig {
   spaFallbackSize: number;
@@ -27,6 +29,37 @@ interface AlphaScanState {
   scanSessionActive: boolean;
   useLlmPlanning: boolean;
   targetConfig: TargetConfig;
+}
+
+// Light RAG Types for Mission Status Document
+interface ToolOutputSummary {
+  tool: string;
+  command: string;
+  summary: string;
+  newEndpoints?: string[];
+  newPorts?: string[];
+  newComponents?: string[];
+  resultCount: number;
+  timestamp: number;
+}
+
+interface CommandHistoryEntry {
+  iteration: number;
+  tool: string;
+  command: string;
+  resultSummary: string;
+  timestamp: number;
+  objective: string;
+}
+
+interface LightRAGStatus {
+  mission_id: string;
+  target: string;
+  target_url: string;
+  objective: string;
+  phase: string;
+  iteration: number;
+  updated_at: number;
 }
 
 export interface AlphaConfig extends AgentConfig {
@@ -77,50 +110,67 @@ export class AlphaAgent extends BaseAgent {
   }
 
   private async handleScanInitiated(event: SwarmEvent): Promise<void> {
-    const { missionId, target, targetUrl, scanType } = event.payload as {
+    const { missionId, target, targetUrl, scanType, resume } = event.payload as {
       missionId: string;
       target: string;
       targetUrl: string;
       scanType?: 'full' | 'delta' | 'targeted';
+      resume?: boolean;
     };
 
-    console.log(`[${this.agentId}] Starting recon for ${target} (${targetUrl}) scanType=${scanType || 'full'}`);
+    console.log(`[${this.agentId}] Starting recon for ${target} (${targetUrl}) scanType=${scanType || 'full'} resume=${resume || false}`);
 
-    const sessionId = `alpha-scan-${Date.now()}`;
-    const useLlmPlanning = process.env.ALPHA_LLM_PLANNING === 'true';
-    const isJuiceShop = targetUrl.includes('3000') || target.includes('juice');
-    const targetConfig: TargetConfig = {
-      spaFallbackSize: 0,
-      isJuiceShop,
-      seedProbes: isJuiceShop
-        ? ['/api', '/rest', '/ftp', '/metrics', '/socket.io', '/api-doc']
-        : [],
-    };
-    const state: AlphaScanState = {
-      sessionId,
-      target,
-      targetUrl,
-      missionId,
-      phase: 'port_scan',
-      iteration: 0,
-      maxIterations: this.DEFAULT_MAX_ITERATIONS,
-      discoveredEndpoints: new Set(),
-      discoveredComponents: new Set(),
-      discoveredPorts: new Set(),
-      scanSessionActive: true,
-      useLlmPlanning,
-      targetConfig,
-    };
+    // Check if this is a resume - reuse existing state if available
+    let state = this.scanState.get(target);
+    let isResume = !!resume;
 
-    this.scanState.set(target, state);
-    this.transitionTo('ACTIVE', 'scan started');
+    if (isResume && state) {
+      // Reuse existing state for resume - don't overwrite discovered endpoints/ports
+      console.log(`[${this.agentId}] RESUMING existing mission ${state.missionId} - preserving discoveries`);
+      state.scanSessionActive = true;
+      state.phase = 'port_scan'; // Reset to start for LLM to pick up
+    } else if (isResume && !state) {
+      // Resume but no existing state - load from graph
+      console.log(`[${this.agentId}] RESUMING but no existing state - will load from graph`);
+      isResume = true;
+    }
 
-    if (useLlmPlanning) {
-      await this.createLlmSession(state);
+    if (!state) {
+      const sessionId = `alpha-scan-${Date.now()}`;
+      const useLlmPlanning = process.env.ALPHA_LLM_PLANNING === 'true';
+      const isJuiceShop = targetUrl.includes('3000') || target.includes('juice');
+      const targetConfig: TargetConfig = {
+        spaFallbackSize: 0,
+        isJuiceShop,
+        seedProbes: isJuiceShop
+          ? ['/api', '/rest', '/ftp', '/metrics', '/socket.io', '/api-doc']
+          : [],
+      };
+      state = {
+        sessionId,
+        target,
+        targetUrl,
+        missionId,
+        phase: 'port_scan',
+        iteration: 0,
+        maxIterations: this.DEFAULT_MAX_ITERATIONS,
+        discoveredEndpoints: new Set(),
+        discoveredComponents: new Set(),
+        discoveredPorts: new Set(),
+        scanSessionActive: true,
+        useLlmPlanning,
+        targetConfig,
+      };
+      this.scanState.set(target, state);
+      this.transitionTo('ACTIVE', 'scan started');
+
+      if (useLlmPlanning) {
+        await this.createLlmSession(state);
+      }
     }
 
     try {
-      await this.runScanLoop(target);
+      await this.runScanLoop(target, isResume);
     } catch (error) {
       console.error(`[${this.agentId}] Scan failed for ${target}:`, error);
       await this.handleScanError(target, error);
@@ -138,12 +188,12 @@ export class AlphaAgent extends BaseAgent {
     }
   }
 
-  private async runScanLoop(target: string): Promise<void> {
+  private async runScanLoop(target: string, isResume = false): Promise<void> {
     const state = this.scanState.get(target);
     if (!state) return;
 
     if (state.useLlmPlanning) {
-      await this.runLlmPlanningLoop(state);
+      await this.runLlmPlanningLoop(state, isResume);
     } else {
       await this.runDeterministicScanLoop(target);
     }
@@ -178,23 +228,40 @@ export class AlphaAgent extends BaseAgent {
     }
   }
 
-  private async runLlmPlanningLoop(state: AlphaScanState): Promise<void> {
+  private async runLlmPlanningLoop(state: AlphaScanState, isResume = false): Promise<void> {
     const systemPrompt = loadAgentPrompt('alpha-recon');
-    const targetContext = await this.pollMemoryForTarget(state.target, state.targetUrl);
-    let contextBudget = 8000;
+    const targetContext = await this.pollMemoryForTarget(state.target, state.targetUrl, isResume);
     let llmIterations = 0;
     const maxLlmIterations = 15;
     let maxRetries = 1;
     
-    // Measure SPA fallback size for Juice Shop targets BEFORE LLM loop starts
+    // Set SPA fallback size for Juice Shop targets
     if (state.targetConfig.isJuiceShop && !state.targetConfig.spaFallbackSize) {
-      const fallbackSize = await this.measureSpaFallbackSize(state.targetUrl);
-      state.targetConfig.spaFallbackSize = fallbackSize;
-      console.log(`[${this.agentId}] Juice Shop SPA fallback size: ${fallbackSize}`);
+      state.targetConfig.spaFallbackSize = 75002;
+      console.log(`[${this.agentId}] Juice Shop SPA fallback size: 75002 (hardcoded)`);
     }
     
     // Conversation history for multi-turn LLM interaction
     const conversationHistory: LLMMessage[] = [];
+    
+    // If resuming, load graph findings into state and inject context
+    if (isResume) {
+      console.log(`[${this.agentId}] RESUMING: Loading graph data into state...`);
+      const { mission: ragMission, findings: ragFindings } = await this.loadMissionContext(state.missionId);
+      
+      // Load graph findings into state Sets
+      for (const f of ragFindings) {
+        if (f.type === 'endpoint') state.discoveredEndpoints.add(f.value);
+        else if (f.type === 'port') state.discoveredPorts.add(f.value);
+        else if (f.type === 'component') state.discoveredComponents.add(f.value);
+      }
+      
+      if (ragMission) {
+        state.phase = ragMission.phase as AlphaScanState['phase'];
+      }
+      
+      console.log(`[${this.agentId}] Loaded ${ragFindings.length} findings into state - Endpoints: ${state.discoveredEndpoints.size}, Ports: ${state.discoveredPorts.size}`);
+    }
     
     // Intent vector tracking - to detect repetition and enforce diversity
     const recentIntents: string[] = [];
@@ -205,14 +272,35 @@ export class AlphaAgent extends BaseAgent {
     
     while (state.scanSessionActive && llmIterations < maxLlmIterations && state.phase !== 'complete') {
       llmIterations++;
+      this.llmIterationCounter++; // Pin iteration number early so logs are consistent
       console.log(`[${this.agentId}] LLM Planning Iteration ${llmIterations}/${maxLlmIterations} - Objective: ${currentObjective}`);
 
-      const messages = this.buildLlmScanMessage(state, systemPrompt, targetContext, conversationHistory);
+      // Query fresh graph context on EVERY iteration
+      const { mission: freshMission, findings: freshFindings, recentCommands: freshCmds } = await this.loadMissionContext(state.missionId);
+      
+      // Build banned tools list from failure counts
+      const toolFailureObj: Record<string, number> = {};
+      toolFailureCount.forEach((count, tool) => { toolFailureObj[tool] = count; });
+      
+      // Determine banned tools
+      const bannedTools: string[] = [];
+      if (toolFailureCount.get('katana') && toolFailureCount.get('katana')! >= 1) {
+        bannedTools.push('katana');
+      }
+      
+      const freshGraphContext = freshMission || freshFindings.length > 0
+        ? this.formatLightRAGContext(freshMission!, freshFindings, freshCmds, bannedTools)
+        : '';
+
+      const messages = this.buildLlmScanMessage(state, systemPrompt, targetContext, conversationHistory, freshGraphContext, recentCommands);
 
       try {
         const response = await this.llmRouter.complete('alpha', messages);
         
         console.log(`[${this.agentId}] LLM RAW OUTPUT:\n${'='.repeat(60)}\n${response}\n${'='.repeat(60)}`);
+        
+        // Log LLM interaction to /recon-reports/
+        await this.logLlmInteraction(state.missionId, this.llmIterationCounter, messages, response);
         
         // Validate LLM output format
         const parsed = this.parseLlmScanResponse(response);
@@ -236,22 +324,24 @@ export class AlphaAgent extends BaseAgent {
 
         // Check for exact command repetition (exact loop detector)
         const normalizedCmd = `${parsed.tool} ${parsed.command}`.replace(/\s+/g, ' ').trim();
-        if (recentCommands.slice(-2).includes(normalizedCmd)) {
-          console.log(`[${this.agentId}] EXACT LOOP DETECTED: ${parsed.tool} ${parsed.command}`);
+        const cmdCount = recentCommands.filter(c => c === normalizedCmd).length;
+        
+        if (cmdCount >= 1) { // Already seen this exact command
+          console.log(`[${this.agentId}] EXACT LOOP DETECTED: ${parsed.tool} ${parsed.command} (seen ${cmdCount + 1} times)`);
+          
+          // DON'T auto-execute - just tell the LLM to try something different
+          recentCommands.push(normalizedCmd);
+          if (recentCommands.length > 10) recentCommands.shift();
+          
           conversationHistory.push({ role: 'assistant', content: response });
           conversationHistory.push({ 
             role: 'user', 
-            content: `LOOP DETECTED: You just ran the exact same command again. STOP repeating.
-DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
-- If you ran ffuf /FUZZ, now run: ffuf /api/FUZZ OR ffuf /ftp/FUZZ OR katana OR nuclei
-- If ffuf finds /api,/ftp,/rest, chain to: katana -u ${state.targetUrl}/api -jc -silent
-- If stuck on enumeration, try: nuclei -u ${state.targetUrl} -tags owasp-top-10 -rl 10` 
+            content: `LOOP_DETECTED: Command "${parsed.tool} ${parsed.command}" was already run. Do NOT repeat it. Try a DIFFERENT tool or endpoint. For example: curl ${state.targetUrl}/api/Products or whatweb ${state.targetUrl} -v`
           });
-          recentIntents.push('LOOP_RECOVERY');
           continue;
         }
         
-        // Compute intent vector: tool + target path area (e.g., "ffuf /", "ffuf /api", "katana /api", "nuclei /")
+        // Compute intent vector: tool + target path area (e.g., "ffuf /", "ffuf /api", "katana /api")
         const intentMatch = parsed.command.match(/https?:\/\/[^\/]+(\/\S*)/);
         const intentPath = intentMatch ? intentMatch[1]?.split('/')[1] || '/' : '/';
         const intentVector = `${parsed.tool} /${intentPath}`;
@@ -271,10 +361,8 @@ DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
             'api_enum': `DIVERSITY REQUIRED: You over-focused on api_enum. Switch to tech_fingerprint:
 - curl -sI ${state.targetUrl}
 - whatweb ${state.targetUrl} -v`,
-            'tech_fingerprint': `DIVERSITY REQUIRED: You over-focused on tech_fingerprint. Move to vuln_probe:
-- nuclei -u ${state.targetUrl} -tags owasp-top-10,broken-auth,xss -rl 10
-- nuclei -u ${state.targetUrl}/api -tags broken-auth -rl 10`,
-            'vuln_probe': `DIVERSITY REQUIRED: vuln_probe phase. If no new vulns found, scan is complete.`,
+            'tech_fingerprint': `DIVERSITY REQUIRED: You over-focused on tech_fingerprint. If no new components found, scan is complete.`,
+            'vuln_probe': `DIVERSITY REQUIRED: vuln_probe phase. Scan is complete.`,
           };
           
           conversationHistory.push({ 
@@ -298,33 +386,6 @@ DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
         maxRetries = 2;
         console.log(`[${this.agentId}] LLM reasoning: ${parsed.reasoning?.substring(0, 100) || 'N/A'}...`);
         console.log(`[${this.agentId}] LLM decided: ${parsed.tool} ${parsed.command}`);
-        
-        // DISABLED: Allow all tools - agent has freedom to explore
-        // if (bannedTools.has(parsed.tool!)) {
-        //   console.log(`[${this.agentId}] Tool ${parsed.tool} is banned, forcing tool switch`);
-        //   conversationHistory.push({ role: 'assistant', content: response });
-        //   conversationHistory.push({
-        //     role: 'user',
-        //     content: `BANNED: Do not use ${parsed.tool} again this session. It has failed multiple times. Use a DIFFERENT tool (curl, whatweb, or nuclei) or skip to the next phase.`
-        //   });
-        //   continue;
-        // }
-        
-        // DISABLED: Loop detector - allow agent to explore freely
-        // const normalizedCmd = `${parsed.tool} ${parsed.command}`.replace(/\s+/g, ' ').trim();
-        // if (recentCommands.slice(-3).includes(normalizedCmd)) {
-        //   console.log(`[${this.agentId}] Loop detected for command: ${normalizedCmd}`);
-        //   conversationHistory.push({ role: 'assistant', content: response });
-        //   conversationHistory.push({
-        //     role: 'user',
-        //     content: `WARNING: You just tried the exact same command and it failed. Use a DIFFERENT tool or approach. If gobuster/ffuf fails, try curl instead or skip to next phase.`
-        //   });
-        //   continue;
-        // }
-        // recentCommands.push(normalizedCmd);
-        
-        // Increment iteration counter for this LLM turn
-        this.llmIterationCounter++;
         
         // Add LLM decision to conversation history
         conversationHistory.push({ role: 'assistant', content: response });
@@ -393,25 +454,12 @@ DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
               fullCommand = fullCommand.replace(/(\s+)(-s)(\s+)/, `$1-fs ${state.targetConfig.spaFallbackSize}$3`);
             }
           }
-          
-          if (!fullCommand.includes('-json')) {
-            fullCommand += ' -json';
-          }
-        }
-        
-        // Auto-fix nuclei: use tags for Juice Shop testing (owasp-top-10, broken-auth, xss, injection, exposed-panels)
-        if (parsed.tool === 'nuclei') {
-          if (!fullCommand.includes('-tags ')) {
-            fullCommand = fullCommand.replace(/-t\s+\S+/g, '');
-            fullCommand += ' -tags owasp-top-10,broken-auth,xss,injection,default-login,exposed-panels -rl 10';
-          }
-          fullCommand = fullCommand.replace(/-silent/g, '');
         }
         
         console.log(`[${this.agentId}] Executing: ${fullCommand}`);
         
         const startTime = Date.now();
-        const result = await this.executeCommand(fullCommand);
+        const result = await this.executeCommand(fullCommand, 120000);
         const durationMs = Date.now() - startTime;
         
         let toolOutput = result.stdout || result.stderr || '';
@@ -431,24 +479,13 @@ DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
           : toolOutput;
         
         console.log(`[${this.agentId}] Tool result: success=${result.success}, exit=${result.exit_code}, output_len=${toolOutput.length}, html_redirect=${isHtmlRedirect}`);
-        console.log(`[${this.agentId}] Tool output preview: ${outputPreview.substring(0, 300)}`);
+        console.log(`[${this.agentId}] Tool output (first 500 chars):\n${outputPreview.substring(0, 500)}`);
+        if (toolOutput.length > 500) {
+          console.log(`[${this.agentId}] ... [truncated, full output: ${toolOutput.length} chars]`);
+        }
         
-        // DISABLED: Tool failure tracking - allow agent to experiment
-        // if (!result.success) {
-        //   const failKey = `${parsed.tool}:${state.phase}`;
-        //   const fails = (toolFailureCount.get(failKey) || 0) + 1;
-        //   toolFailureCount.set(failKey, fails);
-        //   console.log(`[${this.agentId}] Tool ${parsed.tool} failed ${fails} time(s) in phase ${state.phase}`);
-        //   
-        //   if (fails >= 2) {
-        //     bannedTools.add(parsed.tool!);
-        //     console.log(`[${this.agentId}] BANNING tool ${parsed.tool} for session`);
-        //     conversationHistory.push({
-        //       role: 'user',
-        //       content: `BANNED: Do not use ${parsed.tool} again. It has failed ${fails} times. Use a DIFFERENT tool or skip to the next phase.`
-        //     });
-        //   }
-        // }
+        // Log tool output to /recon-reports/
+        await this.logToolOutput(state.missionId, this.llmIterationCounter, parsed.tool!, fullCommand, result.stdout || '');
         
         // Also parse findings and update state
         const fallbackSize = state.targetConfig.spaFallbackSize || await this.measureSpaFallbackSize(state.targetUrl);
@@ -459,6 +496,16 @@ DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
         const portsFound: string[] = [];
         const endpointsFound: string[] = [];
         const componentsFound: string[] = [];
+        
+        // Track katana success (if it found URLs, mark as succeeded)
+        if (parsed.tool === 'katana') {
+          if (endpointsFound.length > 0 || toolOutput.includes('http://') || toolOutput.includes('https://')) {
+            toolFailureCount.set('katana', 0);
+          } else {
+            const currentFails = toolFailureCount.get('katana') || 0;
+            toolFailureCount.set('katana', currentFails + 1);
+          }
+        }
         
         // Force port 3000 for Juice Shop even if nmap parse fails
         if (parsed.tool === 'nmap' && state.targetConfig.isJuiceShop && !state.discoveredPorts.has('3000')) {
@@ -555,9 +602,9 @@ DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
             if (normalizedEp === '/api') {
               chainHints.push('CHAIN /api → ffuf /api/FUZZ OR katana -u {url}/api -jc -silent');
             } else if (normalizedEp === '/ftp') {
-              chainHints.push('CHAIN /ftp → curl {url}/ftp/ OR nuclei -u {url}/ftp -silent');
+              chainHints.push('CHAIN /ftp → curl {url}/ftp/');
             } else if (normalizedEp === '/metrics') {
-              chainHints.push('CHAIN /metrics → curl {url}/metrics OR nuclei -u {url}/metrics -silent');
+              chainHints.push('CHAIN /metrics → curl {url}/metrics');
             } else if (normalizedEp === '/rest') {
               chainHints.push('CHAIN /rest → ffuf /rest/FUZZ OR katana -u {url}/rest -jc -silent');
             } else if (normalizedEp === '/login') {
@@ -582,19 +629,14 @@ DIVERSITY REQUIRED: Switch to a DIFFERENT tool or target.
 1. ffuf ${state.targetUrl}/api/FUZZ (enumerate API)
 2. ffuf ${state.targetUrl}/ftp/FUZZ (enumerate FTP)  
 3. katana -u ${state.targetUrl}/api -jc -silent | httpx -silent (crawl API JS)
-4. nuclei -u ${state.targetUrl}/api -tags broken-auth -rl 10 (scan API)`;
+4. curl ${state.targetUrl}/api/Users (probe API endpoint)`;
         }
         
         // For katana/httpx/gau, add specific chaining hints
         if ((parsed.tool === 'katana' || parsed.tool === 'httpx' || parsed.tool === 'gau') && endpointsFound.length > 0) {
           discoverySummary += `\n${parsed.tool.toUpperCase()} FOUND ${endpointsFound.length} ENDPOINTS: ${endpointsFound.slice(0, 15).join(', ')}${endpointsFound.length > 15 ? '...' : ''}`;
-          discoverySummary += `\n\nELITE CHAIN: Run nuclei on discovered endpoints:
-nuclei -u ${state.targetUrl} -tags owasp-top-10,broken-auth -rl 10`;
-          currentObjective = 'vuln_probe';
-        }
-        
-        // For nuclei, mark as vuln_probe
-        if (parsed.tool === 'nuclei') {
+          discoverySummary += `\n\nELITE CHAIN: Probe discovered endpoints with curl:
+curl ${state.targetUrl}/api/Users`;
           currentObjective = 'vuln_probe';
         }
         
@@ -603,47 +645,48 @@ nuclei -u ${state.targetUrl} -tags owasp-top-10,broken-auth -rl 10`;
           currentObjective = 'tech_fingerprint';
         }
         
-        // Feed tool output back to LLM for analysis
-        const objectiveGuidance: Record<string, string> = {
-          'port_discovery': `Next: nmap port scan if not done, else surface_enum with ffuf /FUZZ`,
-          'surface_enum': `Next: ffuf /FUZZ → found endpoints → chain to api_enum with ffuf /api/FUZZ, katana`,
-          'api_enum': `Next: katana /api -jc, ffuf /api/FUZZ, nuclei /api -tags broken-auth`,
-          'tech_fingerprint': `Next: curl -sI ${state.targetUrl}, whatweb, then vuln_probe with nuclei`,
-          'vuln_probe': `Next: nuclei on all discovered endpoints. If no new vulns, scan complete.`,
-        };
+        // Build concise summary via Light RAG
+        const toolSummary = this.summarizeToolOutput(
+          parsed.tool!,
+          parsed.command!,
+          result.stdout || '',
+          endpointsFound,
+          portsFound,
+          componentsFound
+        );
+        
+        // Update Light RAG mission status
+        await this.updateMissionStatus(state, toolSummary, currentObjective);
+        
+        // Build concise feedback using Light RAG context
+        const { mission: lightRAGStatus, findings: ragFindings, recentCommands: ragRecentCmds } = await this.loadMissionContext(state.missionId);
+        
+        // Build banned tools list from failure counts
+        const toolFailureObj: Record<string, number> = {};
+        toolFailureCount.forEach((count, tool) => { toolFailureObj[tool] = count; });
+        const bannedTools: string[] = [];
+        if (toolFailureCount.get('katana') && toolFailureCount.get('katana')! >= 1) bannedTools.push('katana');
+        
+        let feedback = '';
+        
+        if (lightRAGStatus) {
+          feedback = this.formatLightRAGContext(lightRAGStatus, ragFindings, ragRecentCmds, bannedTools);
+        } else {
+          feedback = 'SUMMARY: ' + toolSummary.summary + '\n';
+          feedback += 'PORTS: ' + state.discoveredPorts.size + ' | ENDPOINTS: ' + state.discoveredEndpoints.size + '\n';
+        }
+        
+        feedback += '\n[' + currentObjective.toUpperCase() + '] Choose next action:';
         
         conversationHistory.push({ 
           role: 'user', 
-          content: `Tool execution complete:
-
-STDOUT:
-${outputPreview}
-
-EXIT CODE: ${result.exit_code}
-TIMED OUT: ${result.timed_out}
-SUCCESS: ${result.success}${discoverySummary}
-
-[${currentObjective.toUpperCase()}] ${objectiveGuidance[currentObjective] || 'Continue.'}` 
+          content: feedback
         });
 
         // Check if LLM indicates done
         if (response.includes('<done>true</done>') || response.includes('<done>1</done>')) {
           console.log(`[${this.agentId}] LLM indicated scan complete`);
           state.phase = 'complete';
-          break;
-        }
-
-        // Update context budget
-        contextBudget -= response.length + outputPreview.length;
-        if (contextBudget <= 0) {
-          console.log(`[${this.agentId}] Context budget exceeded, emitting scan_initiated with resume=true`);
-          await this.emit('scan_initiated', {
-            target: state.target,
-            targetUrl: state.targetUrl,
-            missionId: state.missionId,
-            scanType: 'delta',
-            resume: true,
-          });
           break;
         }
 
@@ -672,6 +715,39 @@ SUCCESS: ${result.success}${discoverySummary}
 
     if (state.phase === 'complete') {
       await this.completeScan(state.target);
+    }
+  }
+
+  private async completeScan(target: string): Promise<void> {
+    const state = this.scanState.get(target);
+    if (!state) return;
+
+    console.log(`[${this.agentId}] Scan complete for ${target}:
+  - Ports: ${state.discoveredPorts.size}
+  - Endpoints: ${state.discoveredEndpoints.size}
+  - Components: ${state.discoveredComponents.size}`);
+
+    // Generate mission report before cleanup
+    await this.generateMissionReport(state.missionId, state);
+
+    await this.emit('recon_complete', {
+      target_id: target,
+      scan_type: 'full',
+      ports_found: state.discoveredPorts.size,
+      endpoints_found: state.discoveredEndpoints.size,
+      components_found: state.discoveredComponents.size,
+      duration_ms: Date.now(),
+    });
+
+    if (state.useLlmPlanning) {
+      await this.updateLlmSessionStatus('completed');
+    }
+
+    this.scanState.delete(target);
+    
+    // Only transition to COOLDOWN if still in ACTIVE state (avoid race with polling loop)
+    if (this.state === 'ACTIVE') {
+      this.transitionTo('COOLDOWN', 'scan complete');
     }
   }
 
@@ -705,7 +781,7 @@ SUCCESS: ${result.success}${discoverySummary}
     if (state.phase === 'web_enum' && (tool === 'ffuf' || tool === 'curl')) {
       return true;
     }
-    if (state.phase === 'tech_fingerprint' && tool === 'nuclei') {
+    if (state.phase === 'tech_fingerprint' && (tool === 'curl' || tool === 'whatweb')) {
       return true;
     }
     return false;
@@ -723,6 +799,12 @@ SUCCESS: ${result.success}${discoverySummary}
 
   private parseToolOutput(tool: string, output: string, _spaFallbackSize = 0): Array<{ type: string; detail: string; evidence: string }> {
     const findings: Array<{ type: string; detail: string; evidence: string }> = [];
+
+    // Skip HTML_REDIRECT - these are SPA routes, not real API endpoints
+    if (output.includes('[HTML_REDIRECT]')) {
+      console.log(`[${this.agentId}] Skipping HTML_REDIRECT output (SPA fallback, not a real endpoint)`);
+      return findings;
+    }
 
     if (tool === 'nmap') {
       const portMatches = output.match(/(\d+)\/tcp\s+open\s+(\S+)/gi);
@@ -1136,63 +1218,107 @@ SUCCESS: ${result.success}${discoverySummary}
   }
 
   private async executeSastIfAvailable(state: AlphaScanState): Promise<void> {
-    const repoPath = process.env.REPO_PATH;
-
-    if (!repoPath) {
-      console.log(`[${this.agentId}] No repo_path provided, skipping SAST`);
-      state.phase = 'complete';
-      return;
-    }
-
-    console.log(`[${this.agentId}] Running SAST scan on ${repoPath}`);
-
-    const nucleiResult = await this.executeTool('nuclei', {
-      target: state.targetUrl,
-      templates: ['/usr/share/nuclei-templates'],
-      timeout: 120000,
-    });
-
-    if (nucleiResult.success && nucleiResult.stdout) {
-      const findings = this.parseNucleiOutput(nucleiResult.stdout);
-      for (const finding of findings) {
-        await this.writeSastFinding(state.target, finding, state.missionId);
-        await this.emit('finding_written', {
-          target_id: state.target,
-          finding_type: 'sast_candidate',
-          evidence: finding,
-          source: 'alpha',
-        });
-      }
-      console.log(`[${this.agentId}] Found ${findings.length} SAST candidates`);
-    }
-
+    console.log(`[${this.agentId}] SAST phase skipped (nuclei disabled)`);
     state.phase = 'complete';
   }
 
-  private async completeScan(target: string): Promise<void> {
-    const state = this.scanState.get(target);
-    if (!state) return;
-
-    console.log(`[${this.agentId}] Scan complete for ${target}:
-  - Ports: ${state.discoveredPorts.size}
-  - Endpoints: ${state.discoveredEndpoints.size}
-  - Components: ${state.discoveredComponents.size}`);
-
-    await this.emit('recon_complete', {
-      target_id: target,
-      scan_type: 'full',
-      ports_found: state.discoveredPorts.size,
-      endpoints_found: state.discoveredEndpoints.size,
-      components_found: state.discoveredComponents.size,
-      duration_ms: Date.now(),
-    });
-
-    if (state.useLlmPlanning) {
-      await this.updateLlmSessionStatus('completed');
+  // Logging helper for ~/recon-reports/
+  private getReportDir(missionId: string): string {
+    const homeDir = process.env.HOME || '/tmp';
+    const reportDir = path.join(homeDir, 'recon-reports', missionId);
+    try {
+      fs.mkdirSync(reportDir, { recursive: true });
+    } catch (e) {
+      console.log(`[${this.agentId}] [LOG] Failed to create report dir: ${e}`);
     }
+    return reportDir;
+  }
 
-    this.scanState.delete(target);
-    this.transitionTo('COOLDOWN', 'scan complete');
+  private async logToolOutput(missionId: string, iteration: number, tool: string, command: string, output: string): Promise<void> {
+    try {
+      const reportDir = this.getReportDir(missionId);
+      const filename = `${reportDir}/${String(iteration).padStart(3, '0')}_${tool}.log`;
+      const content = `=== TOOL EXECUTION LOG ===
+Iteration: ${iteration}
+Tool: ${tool}
+Command: ${command}
+Timestamp: ${new Date().toISOString()}
+
+=== RAW OUTPUT ===
+${output}
+`;
+      fs.writeFileSync(filename, content);
+      console.log(`[${this.agentId}] [LOG] Written tool output to ${filename}`);
+    } catch (e) {
+      console.log(`[${this.agentId}] [LOG] Failed to write tool log: ${e}`);
+    }
+  }
+
+  private async logLlmInteraction(missionId: string, iteration: number, messages: LLMMessage[], response: string): Promise<void> {
+    try {
+      const reportDir = this.getReportDir(missionId);
+      const filename = `${reportDir}/${String(iteration).padStart(3, '0')}_llm.txt`;
+      let content = `=== LLM INTERACTION LOG ===
+Iteration: ${iteration}
+Timestamp: ${new Date().toISOString()}
+
+=== MESSAGES SENT ===
+`;
+      for (const msg of messages) {
+        content += `\n[${msg.role.toUpperCase()}]\n${msg.content}\n`;
+      }
+      content += `\n=== LLM RESPONSE ===
+${response}
+`;
+      fs.writeFileSync(filename, content);
+      console.log(`[${this.agentId}] [LOG] Written LLM interaction to ${filename}`);
+    } catch (e) {
+      console.log(`[${this.agentId}] [LOG] Failed to write LLM log: ${e}`);
+    }
+  }
+
+  private async generateMissionReport(missionId: string, state: AlphaScanState): Promise<void> {
+    try {
+      const reportDir = this.getReportDir(missionId);
+      const filename = `${reportDir}/report.md`;
+      
+      // Get findings from graph
+      const { findings, recentCommands } = await this.loadMissionContext(missionId);
+      const endpoints = findings.filter(f => f.type === 'endpoint');
+      
+      let content = `# Reconnaissance Mission Report
+Mission ID: ${missionId}
+Target: ${state.targetUrl}
+Completed: ${new Date().toISOString()}
+
+## Summary
+- Total Iterations: ${this.llmIterationCounter}
+- Phase: ${state.phase}
+- Discovered Ports: ${state.discoveredPorts.size}
+- Discovered Endpoints: ${state.discoveredEndpoints.size}
+- Discovered Components: ${state.discoveredComponents.size}
+
+## Discovered Ports
+${Array.from(state.discoveredPorts).map(p => `- ${p}`).join('\n') || 'None'}
+
+## Discovered Endpoints
+${endpoints.slice(0, 50).map(e => `- ${e.value}`).join('\n') || 'None'}
+
+## Discovered Components
+${Array.from(state.discoveredComponents).map(c => `- ${c}`).join('\n') || 'None'}
+
+## Tool Execution History
+${recentCommands.slice(0, 20).map((cmd, i) => `${i + 1}. [${cmd.objective}] ${cmd.tool}: ${cmd.resultSummary.substring(0, 100)}`).join('\n')}
+
+## Files
+- Tool logs: {iteration}_{tool}.log
+- LLM logs: {iteration}_llm.txt
+`;
+      fs.writeFileSync(filename, content);
+      console.log(`[${this.agentId}] [LOG] Written mission report to ${filename}`);
+    } catch (e) {
+      console.log(`[${this.agentId}] [LOG] Failed to write report: ${e}`);
+    }
   }
 
   private async handleScanError(target: string, error: unknown): Promise<void> {
@@ -1363,22 +1489,6 @@ SUCCESS: ${result.success}${discoverySummary}
     return tech;
   }
 
-  private parseNucleiOutput(output: string): string[] {
-    const findings: string[] = [];
-    const lines = output.split('\n');
-
-    for (const line of lines) {
-      if (line.includes('[infot')) {
-        const match = line.match(/\[infotamation\]\s+(.+)/);
-        if (match) {
-          findings.push(match[1]!.trim());
-        }
-      }
-    }
-
-    return findings;
-  }
-
   private async writePortNode(target: string, port: string, missionId: string): Promise<void> {
     const nodeId = sectionNodeId('recon', `port:${target}:${port}`);
 
@@ -1409,8 +1519,7 @@ SUCCESS: ${result.success}${discoverySummary}
 
     await this.graph.upsertNode({
       id: nodeId,
-      type: 'recon',
-      label: 'EndpointNode',
+      type: 'Endpoint',
       target,
       path,
       original_path: originalPath || null,
@@ -1440,31 +1549,266 @@ SUCCESS: ${result.success}${discoverySummary}
     });
   }
 
-  private async writeSastFinding(target: string, evidence: string, missionId: string): Promise<void> {
-    const findingId = `sast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const nodeId = sectionNodeId('recon', findingId);
+  // Light RAG Functions - Normalized Schema
+  // Node types: MissionNode, FindingNode (endpoint/port/component), ToolOutputNode, CommandNode
 
-    await this.graph.upsertNode({
-      id: nodeId,
-      type: 'recon',
-      label: 'FindingNode',
-      target,
-      evidence,
-      source: 'alpha+sast',
-      mission_id: missionId,
-      discovered_at: Date.now(),
-    });
+  private isMeaningfulOutput(toolOutput: ToolOutputSummary): boolean {
+    if (toolOutput.resultCount === 0) return false;
+    if (toolOutput.summary.includes('none detected')) return false;
+    if (toolOutput.summary.includes('no vulnerabilities found')) return false;
+    if (toolOutput.summary.includes('executed, returned 0 bytes')) return false;
+    return true;
   }
 
-  private async pollMemoryForTarget(target: string, targetUrl: string): Promise<string> {
+  private summarizeToolOutput(tool: string, command: string, stdout: string, endpointsFound: string[], portsFound: string[], componentsFound: string[]): ToolOutputSummary {
+    const timestamp = Date.now();
+    let summary = '';
+    
+    if (tool === 'nmap') {
+      const portMatches = stdout.match(/\d+\/tcp\s+open/g);
+      const ports = portMatches ? portMatches.map(p => p.replace('/tcp open', '')).join(', ') : '';
+      summary = ports ? 'nmap found: ' + ports : 'nmap found: none';
+    } else if (tool === 'ffuf') {
+      summary = 'ffuf found ' + endpointsFound.length + ' endpoints';
+      if (endpointsFound.length > 0) {
+        summary += ': ' + endpointsFound.slice(0, 5).join(', ') + (endpointsFound.length > 5 ? '...' : '');
+      }
+    } else if (tool === 'curl') {
+      if (stdout.includes('200 OK')) summary = 'curl returned 200 OK';
+      else if (stdout.includes('500')) summary = 'curl returned 500 error';
+      else if (stdout.includes('301') || stdout.includes('302')) summary = 'curl returned redirect';
+      else summary = 'curl returned ' + stdout.length + ' bytes';
+    } else if (tool === 'whatweb') {
+      const titleMatch = stdout.match(/Title:\s+([^\n]+)/);
+      summary = titleMatch && titleMatch[1] ? 'whatweb: ' + titleMatch[1].replace(/\[1m|\[22m|\[0m/g, '').trim() : 'whatweb: unknown';
+    } else if (tool === 'katana') {
+      summary = 'katana crawled ' + endpointsFound.length + ' URLs';
+    } else {
+      summary = stdout.length > 0 ? tool + ' executed, returned ' + stdout.length + ' bytes' : tool + ' executed, no output';
+    }
+    
+    return {
+      tool,
+      command,
+      summary,
+      newEndpoints: endpointsFound.length > 0 ? endpointsFound : undefined,
+      newPorts: portsFound.length > 0 ? portsFound : undefined,
+      newComponents: componentsFound.length > 0 ? componentsFound : undefined,
+      resultCount: endpointsFound.length || portsFound.length || componentsFound.length || 0,
+      timestamp,
+    };
+  }
+
+  // Write normalized Light RAG nodes - only meaningful findings
+  private async updateMissionStatus(state: AlphaScanState, toolOutput: ToolOutputSummary, currentObjective: string): Promise<void> {
+    if (!this.isMeaningfulOutput(toolOutput)) {
+      return; // Skip empty/no-op updates
+    }
+
+    try {
+      const timestamp = Date.now();
+
+      // Upsert MissionNode (single source of truth for mission)
+      const missionNodeId = 'mission:' + state.missionId;
+      await this.graph.upsertNode({
+        id: missionNodeId,
+        type: 'Mission',
+        mission_id: state.missionId,
+        target: state.target,
+        target_url: state.targetUrl,
+        objective: currentObjective,
+        phase: state.phase,
+        iteration: this.llmIterationCounter,
+        updated_at: timestamp,
+      });
+
+      // Write FindingNodes for new endpoints, ports, components
+      if (toolOutput.newEndpoints && toolOutput.newEndpoints.length > 0) {
+        for (const endpoint of toolOutput.newEndpoints) {
+          const findingId = 'finding:' + state.missionId + ':ep:' + endpoint.replace(/\//g, '_');
+          await this.graph.upsertNode({
+            id: findingId,
+            type: 'Finding',
+            mission_id: state.missionId,
+            finding_type: 'endpoint',
+            value: endpoint,
+            discovered_by: toolOutput.tool,
+            discovered_at: timestamp,
+          });
+        }
+      }
+
+      if (toolOutput.newPorts && toolOutput.newPorts.length > 0) {
+        for (const port of toolOutput.newPorts) {
+          const findingId = 'finding:' + state.missionId + ':port:' + port;
+          await this.graph.upsertNode({
+            id: findingId,
+            type: 'Finding',
+            mission_id: state.missionId,
+            finding_type: 'port',
+            value: port,
+            discovered_by: toolOutput.tool,
+            discovered_at: timestamp,
+          });
+        }
+      }
+
+      if (toolOutput.newComponents && toolOutput.newComponents.length > 0) {
+        for (const component of toolOutput.newComponents) {
+          const findingId = 'finding:' + state.missionId + ':comp:' + component.replace(/\s/g, '_');
+          await this.graph.upsertNode({
+            id: findingId,
+            type: 'Finding',
+            mission_id: state.missionId,
+            finding_type: 'component',
+            value: component,
+            discovered_by: toolOutput.tool,
+            discovered_at: timestamp,
+          });
+        }
+      }
+
+      // Write ToolOutputNode (minimized output summary)
+      const toolOutputId = 'tooloutput:' + state.missionId + ':' + this.llmIterationCounter;
+      await this.graph.upsertNode({
+        id: toolOutputId,
+        type: 'ToolOutput',
+        mission_id: state.missionId,
+        tool: toolOutput.tool,
+        command: toolOutput.command,
+        summary: toolOutput.summary,
+        result_count: toolOutput.resultCount,
+        iteration: this.llmIterationCounter,
+        timestamp,
+      });
+
+      // Write CommandNode (execution record)
+      const commandId = 'cmd:' + state.missionId + ':' + this.llmIterationCounter;
+      await this.graph.upsertNode({
+        id: commandId,
+        type: 'Command',
+        mission_id: state.missionId,
+        tool: toolOutput.tool,
+        command: toolOutput.command,
+        result_summary: toolOutput.summary,
+        iteration: this.llmIterationCounter,
+        objective: currentObjective,
+        timestamp,
+      });
+
+      console.log(`[${this.agentId}] [LightRAG] Persisted: ${toolOutput.summary}`);
+
+    } catch (e) {
+      console.log(`[${this.agentId}] [LightRAG] Error: ${e}`);
+    }
+  }
+
+  // Load mission context from normalized nodes - for rebuilding LLM context
+  private async loadMissionContext(missionId: string): Promise<{ mission: LightRAGStatus | null, findings: { type: string, value: string, discovered_by: string }[], recentCommands: CommandHistoryEntry[] }> {
+    try {
+      // Load MissionNode
+      const missionNodes = await this.graph.findNodesByLabel<LightRAGStatus>('MissionNode', { mission_id: missionId });
+      const mission = missionNodes[0] as LightRAGStatus | undefined;
+
+      // Load all FindingNodes for this mission
+      const findingNodes = await this.graph.findNodesByLabel<{ finding_type: string, value: string, discovered_by: string }>('FindingNode', { mission_id: missionId });
+      const findings = findingNodes.map(n => ({
+        type: n.finding_type,
+        value: n.value,
+        discovered_by: n.discovered_by,
+      }));
+
+      // Load recent CommandNodes (use raw node interface for snake_case properties)
+      const commandNodes = await this.graph.findNodesByLabel<{ iteration: number, tool: string, command: string, result_summary: string, timestamp: number, objective: string }>('CommandNode', { mission_id: missionId });
+      const recentCommands = commandNodes
+        .map(n => ({
+          iteration: n.iteration,
+          tool: n.tool,
+          command: n.command,
+          resultSummary: n.result_summary,
+          timestamp: n.timestamp,
+          objective: n.objective,
+        }))
+        .sort((a, b) => b.iteration - a.iteration)
+        .slice(0, 10);
+
+      return { mission: mission || null, findings, recentCommands };
+    } catch (e) {
+      console.log(`[${this.agentId}] [LightRAG] Load error: ${e}`);
+      return { mission: null, findings: [], recentCommands: [] };
+    }
+  }
+
+  // Format Light RAG context for LLM consumption
+  private formatLightRAGContext(
+    status: LightRAGStatus,
+    findings: { type: string, value: string, discovered_by?: string }[],
+    recentCommands: CommandHistoryEntry[],
+    bannedTools: string[] = []
+  ): string {
+    if (!status) {
+      return '';
+    }
+
+    const lines: string[] = [];
+    lines.push(`Target: ${status.target_url}`);
+    lines.push(`Iteration: ${this.llmIterationCounter}`);
+    lines.push('');
+
+    // Track tools run
+    const toolsRun = new Set<string>();
+    const commandsRun = new Set<string>();
+    for (const cmd of recentCommands) {
+      toolsRun.add(cmd.tool);
+      commandsRun.add(cmd.command);
+    }
+
+    // BANNED TOOLS
+    if (bannedTools.length > 0) {
+      lines.push('## BLOCKED TOOLS');
+      for (const tool of bannedTools) {
+        lines.push(`  - ${tool}`);
+      }
+      lines.push('');
+    }
+
+    if (findings.length > 0) {
+      const endpoints = findings.filter(f => f.type === 'endpoint');
+      const ports = findings.filter(f => f.type === 'port');
+      const components = findings.filter(f => f.type === 'component');
+
+      if (ports.length > 0) {
+        lines.push(`## PORTS: ${ports.map(p => p.value).join(', ')}`);
+      }
+      if (endpoints.length > 0) {
+        lines.push(`## ENDPOINTS: ${endpoints.map(e => e.value).join(', ')}`);
+      }
+      if (components.length > 0) {
+        lines.push(`## COMPONENTS: ${components.map(c => c.value).join(', ')}`);
+      }
+      lines.push('');
+    }
+
+    if (recentCommands.length > 0) {
+      lines.push('## RECENT COMMANDS (do NOT repeat these)');
+      for (const cmd of recentCommands.slice(0, 10)) {
+        lines.push(`  ${cmd.tool}: ${cmd.command.substring(0, 80)}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  private async pollMemoryForTarget(target: string, targetUrl: string, force = false): Promise<string> {
     const now = Date.now();
-    if (now - this.lastMemoryPoll < this.MEMORY_POLL_INTERVAL_MS && this.lastMemoryPoll > 0) {
+    if (!force && now - this.lastMemoryPoll < this.MEMORY_POLL_INTERVAL_MS && this.lastMemoryPoll > 0) {
       console.log(`[${this.agentId}] Skipping memory poll - polled recently`);
       return '';
     }
 
     this.lastMemoryPoll = now;
-    console.log(`[${this.agentId}] Polling memory for ${target}...`);
+    console.log(`[${this.agentId}] Polling memory for ${target} (force=${force})...`);
 
     let context = '\n\n## Known Intelligence (from FalkorDB):\n';
 
@@ -1520,12 +1864,12 @@ SUCCESS: ${result.success}${discoverySummary}
     let context = '\n\n## Known Vulnerabilities (from Supabase - Juice Shop):\n';
 
     try {
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabaseUrl = process.env.SUPABASE_URL || 'https://nesjaodrrkefpmqdqtgv.supabase.co';
-      const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5lc2phb2RycmtlZnBtcWRxdGd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzExMTg0MjcsImV4cCI6MjA4NjY5NDQyN30.zbEAwOcZ7Tn-LVfGC8KdQeh3D3xEyzghZ-Mfg0VgnfE';
-      const supabase = createClient(supabaseUrl, supabaseKey);
+      if (!this.supabase) {
+        console.log(`[${this.agentId}] Supabase client not initialized`);
+        return '';
+      }
 
-      const { data: vulnerabilities, error } = await supabase
+      const { data: vulnerabilities, error } = await this.supabase
         .from('vulnerabilities')
         .select('type, severity, category, title, file_path, line_start, confirmed, confidence_score')
         .limit(1000);
@@ -1652,59 +1996,71 @@ SUCCESS: ${result.success}${discoverySummary}
     state: AlphaScanState, 
     systemPrompt: string, 
     targetContext: string = '',
-    conversationHistory: LLMMessage[] = []
+    conversationHistory: LLMMessage[] = [],
+    freshGraphContext: string = '',
+    recentCommands: string[] = []
   ): LLMMessage[] {
     const isJuiceShop = state.targetUrl.includes('3000') || state.target.includes('juice');
-    const fallbackSize = state.targetConfig.spaFallbackSize || 0;
-    const juiceShopHint = isJuiceShop 
-      ? `\n[TARGET INFO] This is OWASP Juice Shop running on port 3000. SPA fallback size: ${fallbackSize}. Use -fs ${fallbackSize} on ffuf commands.` 
-      : '';
-    
-    const context = `
+    const fallbackSize = state.targetConfig.spaFallbackSize || 75002;
+
+    const ports = Array.from(state.discoveredPorts).join(', ') || 'none';
+    const endpoints = Array.from(state.discoveredEndpoints);
+    const endpointList = endpoints.join(', ') || 'none';
+    const components = Array.from(state.discoveredComponents).join(', ') || 'none';
+    const recentCmdList = recentCommands.length > 0 ? recentCommands.join('\n') : 'none';
+
+    const context = `<mission>
 Target: ${state.target}
 Base URL: ${state.targetUrl}
-Mission ID: ${state.missionId}
-Current Phase: ${state.phase}
-Iteration: ${state.iteration}${juiceShopHint}
+Iteration: ${this.llmIterationCounter}/${state.maxIterations}
+Phase: ${state.phase}
+${isJuiceShop ? `SPA fallback size: ${fallbackSize} (use -fs ${fallbackSize} with ffuf)` : ''}
+</mission>
 
-Discovered Ports: ${Array.from(state.discoveredPorts).join(', ') || 'none'}
-Discovered Endpoints: ${Array.from(state.discoveredEndpoints).join(', ') || 'none'}
-Discovered Components: ${Array.from(state.discoveredComponents).join(', ') || 'none'}
-${targetContext}
+<findings>
+PORTS: ${ports}
+ENDPOINTS (${endpoints.length}): ${endpointList}
+COMPONENTS: ${components}
+${freshGraphContext ? freshGraphContext : ''}
+${targetContext ? targetContext : ''}
+</findings>
 
-Respond with XML tags only:
-<reasoning>What I'm scanning and why</reasoning>
-<tool>tool_name</tool>
-<command>exact command to execute</command>
-`.trim();
+<commands_ran>
+${recentCmdList}
+</commands_ran>
 
-    // Build messages: system prompt first, then conversation history, then current context
+<tools_available>
+nmap, ffuf, katana, httpx, curl, whatweb, gau
+</tools_available>
+
+Choose the single best next command. Chain from discoveries. Do NOT repeat commands above. Output XML:
+<reasoning>...</reasoning>
+<tool>...</tool>
+<command>...</command>`;
+
     const messages: LLMMessage[] = [{ role: 'system', content: systemPrompt }];
-    
-    // Add conversation history (previous LLM outputs and tool results)
     messages.push(...conversationHistory);
     
-    // Add current context if no history (first turn) or as a fresh prompt
     if (conversationHistory.length === 0) {
       messages.push({ role: 'user', content: context });
     } else {
-      // Already have context in history, just add current state summary WITH format reminder
-      const fallbackSize = state.targetConfig.spaFallbackSize || 0;
-      const juiceShopLine = state.targetConfig.isJuiceShop ? `- SPA fallback size: ${fallbackSize} (use -fs ${fallbackSize} on ffuf)` : '';
       messages.push({ 
         role: 'user', 
-        content: `Current state:
-- Phase: ${state.phase}
-- Ports: ${Array.from(state.discoveredPorts).join(', ') || 'none'}
-- Endpoints: ${Array.from(state.discoveredEndpoints).join(', ') || 'none'}
-- Components: ${Array.from(state.discoveredComponents).join(', ') || 'none'}
-${juiceShopLine}
+        content: `<findings>
+PORTS: ${ports}
+ENDPOINTS (${endpoints.length}): ${endpointList}
+COMPONENTS: ${components}
+${freshGraphContext ? freshGraphContext : ''}
+</findings>
 
-Based on the tool output above, decide next action.
-Respond with XML tags:
-<r>Analysis and next step</r>
-<t>tool_name</t>
-<c>command to execute</c>` 
+<commands_ran>
+${recentCmdList}
+</commands_ran>
+
+Based on the tool output above, decide the single best next command. Chain intelligently. Output XML:
+<reasoning>...</reasoning>
+<tool>...</tool>
+<command>...</command>`
       });
     }
     

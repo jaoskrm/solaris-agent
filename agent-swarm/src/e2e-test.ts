@@ -18,8 +18,16 @@ interface ReconNode {
   evidence?: string;
 }
 
+interface CompletionResult {
+  target: string;
+  portsFound: number;
+  endpointsFound: number;
+  componentsFound: number;
+  durationMs: number;
+}
+
 async function main() {
-  console.log('=== Alpha Agent E2E Test (Direct Scan) ===\n');
+  console.log('=== Alpha Agent E2E Test (Event-Driven Scan) ===\n');
 
   const graph = new FalkorDBClient({
     host: process.env.FALKORDB_HOST || 'caboose.proxy.rlwy.net',
@@ -43,6 +51,11 @@ async function main() {
   await alpha.start();
   console.log('✓ Alpha agent started\n');
 
+  const startTime = Date.now();
+  const MAX_WAIT_MS = 600000; // 10 minutes max
+  let scanComplete = false;
+  let completionResult: CompletionResult | null = null;
+
   console.log('Emitting scan_initiated event...');
   await bus.emit('scan_initiated', {
     missionId,
@@ -52,13 +65,48 @@ async function main() {
   }, 'alpha-e2e-test');
   console.log('✓ Event emitted\n');
 
-  console.log('Waiting 300 seconds for scan to complete...');
-  await new Promise(resolve => setTimeout(resolve, 300000));
+  // Poll for completion
+  console.log('Waiting for scan to complete...');
+  while (!scanComplete && (Date.now() - startTime) < MAX_WAIT_MS) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
+    // Check for MissionNode completion in graph
+    try {
+      const missionNodes = await graph.findNodesByLabel<{ phase: string }>('MissionNode', { mission_id: missionId });
+      const firstMission = missionNodes[0];
+      if (missionNodes.length > 0 && firstMission && firstMission.phase === 'complete') {
+        console.log('\n[POLL] Detected mission phase=complete in graph');
+        scanComplete = true;
+        // Get the counts from graph
+        const allNodes = await graph.findNodesByLabel<ReconNode>('reconNode', {});
+        const ports = allNodes.filter((n: ReconNode) => n.label === 'PortNode');
+        const endpoints = allNodes.filter((n: ReconNode) => n.label === 'EndpointNode');
+        const components = allNodes.filter((n: ReconNode) => n.label === 'ComponentNode');
+        completionResult = {
+          target: '127.0.0.1',
+          portsFound: ports.length,
+          endpointsFound: endpoints.length,
+          componentsFound: components.length,
+          durationMs: Date.now() - startTime,
+        };
+      }
+    } catch {
+      // Ignore polling errors
+    }
+
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    console.log(`[WAIT] Still waiting... (${elapsed}s elapsed, max ${MAX_WAIT_MS / 1000}s)`);
+  }
+
+  if (!scanComplete) {
+    console.log('\n=== TIMEOUT: Scan did not complete within 10 minutes ===');
+  }
+
+  // Always print summary
   console.log('\n=== Checking FalkorDB for results ===');
-  
+
   const allReconNodes = await graph.findNodesByLabel<ReconNode>('reconNode', {});
-  
+
   const ports = allReconNodes.filter((n: ReconNode) => n.label === 'PortNode');
   const endpoints = allReconNodes.filter((n: ReconNode) => n.label === 'EndpointNode');
   const components = allReconNodes.filter((n: ReconNode) => n.label === 'ComponentNode');
@@ -77,10 +125,32 @@ async function main() {
   console.log(`\nFindingNodes: ${findings.length}`);
   findings.slice(0, 5).forEach((f: ReconNode) => console.log(`  - ${f.evidence?.substring(0, 60)}`));
 
+  // Print completion report if available
+  if (completionResult) {
+    console.log('\n=== SCAN COMPLETION REPORT ===');
+    console.log(`Duration: ${Math.floor(completionResult.durationMs / 1000)}s`);
+    console.log(`Ports: ${completionResult.portsFound}`);
+    console.log(`Endpoints: ${completionResult.endpointsFound}`);
+    console.log(`Components: ${completionResult.componentsFound}`);
+  }
+
+  // Check for mission report
+  try {
+    const reportDir = `/recon-reports/${missionId}`;
+    const fs = await import('fs');
+    if (fs.existsSync(reportDir)) {
+      const files = fs.readdirSync(reportDir);
+      console.log(`\n=== RECON REPORTS (${reportDir}) ===`);
+      files.forEach(f => console.log(`  - ${f}`));
+    }
+  } catch {
+    // Ignore
+  }
+
   alpha.stop?.();
   console.log('\n✓ Test complete');
 
-  process.exit(0);
+  process.exit(scanComplete ? 0 : 1);
 }
 
 main().catch(async (err) => {
