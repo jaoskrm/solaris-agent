@@ -23,6 +23,10 @@ const envSchema = z.object({
   OLLAMA_MODEL: z.string().default('qwen2.5-coder:14b'),
   OLLAMA_ENABLED: z.enum(['true', 'false']).default('false'),
   
+  // Minimax
+  MINIMAX_API_KEY: z.string().optional(),
+  MINIMAX_BASE_URL: z.string().default('https://api.minimax.io/v1'),
+  
   // OSINT APIs
   TAVILY_API_KEY: z.string().optional(),
   NVD_API_KEY: z.string().optional(),

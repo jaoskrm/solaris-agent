@@ -6,6 +6,7 @@ import { CerebrasProvider } from './providers/cerebras.js';
 import { OpenRouterProvider } from './providers/openrouter.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { GoogleProvider } from './providers/google.js';
+import { MinimaxProvider } from './providers/minimax.js';
 
 interface RateLimitEntry {
   count: number;
@@ -30,6 +31,7 @@ export class LLMRouter {
       ['openrouter', new OpenRouterProvider()],
       ['anthropic', new AnthropicProvider()],
       ['google', new GoogleProvider()],
+      ['minimax', new MinimaxProvider()],
     ]);
   }
 

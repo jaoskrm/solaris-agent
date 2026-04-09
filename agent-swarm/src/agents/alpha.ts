@@ -6,6 +6,7 @@ import { LLMRouter } from '../core/llm-router.js';
 import type { LLMMessage } from '../core/providers/ollama.js';
 import { loadAgentPrompt } from '../utils/prompt-loader.js';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { AGENT_MODEL_CONFIG } from '../core/models.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -20,9 +21,11 @@ interface AlphaScanState {
   target: string;
   targetUrl: string;
   missionId: string;
-  phase: 'port_scan' | 'web_enum' | 'tech_fingerprint' | 'sast' | 'complete';
+  phase: 'port_scan' | 'web_enum' | 'tech_fingerprint' | 'curl_probe' | 'sast' | 'complete';
   iteration: number;
   maxIterations: number;
+  enumIterations: number;  // count of ffuf/katana iterations
+  curlIterations: number;  // count of curl probe iterations
   discoveredEndpoints: Set<string>;
   discoveredComponents: Set<string>;
   discoveredPorts: Set<string>;
@@ -81,6 +84,11 @@ export class AlphaAgent extends BaseAgent {
   constructor(config: AlphaConfig) {
     super(config);
     this.llmRouter = new LLMRouter();
+    
+    // Log model configuration
+    const alphaConfig = AGENT_MODEL_CONFIG['alpha'];
+    console.log(`[${config.agentId}] Model: ${alphaConfig?.primary} (${alphaConfig?.provider}) | Context: ${alphaConfig?.contextWindow} | Max Tokens: ${alphaConfig?.maxTokens}`);
+    
     this.supabase = createClient(
       process.env.SUPABASE_URL || 'https://nesjaodrrkefpmqdqtgv.supabase.co',
       process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5lc2phb2RycmtlZnBtcWRxdGd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzExMTg0MjcsImV4cCI6MjA4NjY5NDQyN30.zbEAwOcZ7Tn-LVfGC8KdQeh3D3xEyzghZ-Mfg0VgnfE'
@@ -154,6 +162,8 @@ export class AlphaAgent extends BaseAgent {
         phase: 'port_scan',
         iteration: 0,
         maxIterations: this.DEFAULT_MAX_ITERATIONS,
+        enumIterations: 0,
+        curlIterations: 0,
         discoveredEndpoints: new Set(),
         discoveredComponents: new Set(),
         discoveredPorts: new Set(),
@@ -232,8 +242,10 @@ export class AlphaAgent extends BaseAgent {
     const systemPrompt = loadAgentPrompt('alpha-recon');
     const targetContext = await this.pollMemoryForTarget(state.target, state.targetUrl, isResume);
     let llmIterations = 0;
-    const maxLlmIterations = 15;
+    const maxLlmIterations = 25; // 10 enum + 10 curl + 5 transitions
     let maxRetries = 1;
+    state.enumIterations = 0;
+    state.curlIterations = 0;
     
     // Set SPA fallback size for Juice Shop targets
     if (state.targetConfig.isJuiceShop && !state.targetConfig.spaFallbackSize) {
@@ -268,7 +280,7 @@ export class AlphaAgent extends BaseAgent {
     const recentCommands: string[] = [];
     const toolFailureCount: Map<string, number> = new Map();
     
-        let currentObjective = 'port_discovery';
+    let currentObjective = 'port_discovery';
     
     while (state.scanSessionActive && llmIterations < maxLlmIterations && state.phase !== 'complete') {
       llmIterations++;
@@ -387,6 +399,16 @@ export class AlphaAgent extends BaseAgent {
         console.log(`[${this.agentId}] LLM reasoning: ${parsed.reasoning?.substring(0, 100) || 'N/A'}...`);
         console.log(`[${this.agentId}] LLM decided: ${parsed.tool} ${parsed.command}`);
         
+        // Track iterations by phase
+        if (state.phase === 'web_enum' && (parsed.tool === 'ffuf' || parsed.tool === 'katana')) {
+          state.enumIterations++;
+          console.log(`[${this.agentId}] Enum iteration ${state.enumIterations}/10`);
+        }
+        if (state.phase === 'curl_probe' && parsed.tool === 'curl') {
+          state.curlIterations++;
+          console.log(`[${this.agentId}] Curl iteration ${state.curlIterations}/10`);
+        }
+        
         // Add LLM decision to conversation history
         conversationHistory.push({ role: 'assistant', content: response });
         
@@ -453,6 +475,91 @@ export class AlphaAgent extends BaseAgent {
             } else {
               fullCommand = fullCommand.replace(/(\s+)(-s)(\s+)/, `$1-fs ${state.targetConfig.spaFallbackSize}$3`);
             }
+          }
+        }
+        
+        // Multi-command execution for curl_probe phase
+        if (state.phase === 'curl_probe' && parsed.commands && parsed.commands.length > 1) {
+          console.log(`[${this.agentId}] Executing ${parsed.commands.length} curl commands in parallel...`);
+          
+          // Validate all commands first
+          const validCommands: string[] = [];
+          for (const cmd of parsed.commands) {
+            let fullCmd = cmd.trim();
+            fullCmd = fullCmd.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$2');
+            fullCmd = fullCmd.replace(/^~/, '/home/peburu');
+            fullCmd = fullCmd.replace(/^(\w+)\s+\1\s*/, '$1 ');
+            fullCmd = fullCmd
+              .replace(/\{target_url\}/gi, state.targetUrl)
+              .replace(/\{target\}/gi, state.target)
+              .replace(/\{base_url\}/gi, state.targetUrl)
+              .replace(/\{TARGET_URL\}/gi, state.targetUrl)
+              .replace(/TARGET/gi, state.target);
+            
+            if (fullCmd.includes(state.targetUrl) && !/\{[^{}]+\}/.test(fullCmd)) {
+              validCommands.push(fullCmd);
+            }
+          }
+          
+          if (validCommands.length > 0) {
+            // Execute in parallel
+            const results = await Promise.all(
+              validCommands.map(cmd => this.executeCommand(cmd, 30000))
+            );
+            
+            // Process all results
+            let combinedOutput = '';
+            const endpointsFound: string[] = [];
+            
+            for (let i = 0; i < results.length; i++) {
+              const result = results[i];
+              if (!result) continue;
+              const cmd = validCommands[i];
+              let toolOutput = result.stdout || result.stderr || '';
+              
+              if (toolOutput.startsWith('<!DOCTYPE') || (toolOutput.length > 500 && /<html/i.test(toolOutput))) {
+                toolOutput = '[HTML_REDIRECT]';
+              }
+              
+              combinedOutput += `\n=== ${cmd} ===\n${toolOutput}\n`;
+              console.log(`[${this.agentId}] [${i+1}/${results.length}] ${cmd}: exit=${result.exit_code}, len=${toolOutput.length}`);
+              
+              // Parse findings
+              const findings = this.parseToolOutput('curl', toolOutput, state.targetConfig.spaFallbackSize || 75002);
+              for (const finding of findings) {
+                await this.processFinding(state, finding);
+                if (finding.type === 'endpoint') {
+                  const pathMatch = finding.detail.match(/Found endpoint (\S+)/);
+                  if (pathMatch) endpointsFound.push(pathMatch[1]!);
+                }
+              }
+            }
+            
+            // Log combined output
+            await this.logToolOutput(state.missionId, this.llmIterationCounter, 'curl', validCommands.join('\n'), combinedOutput);
+            
+            console.log(`[${this.agentId}] Multi-curl completed: ${validCommands.length} commands, ${endpointsFound.length} new endpoints`);
+            console.log(`[${this.agentId}] Tool output:\n${combinedOutput.substring(0, 1000)}`);
+            
+            // Add to conversation
+            conversationHistory.push({ role: 'assistant', content: response });
+            conversationHistory.push({ 
+              role: 'user', 
+              content: `MULTI_CURL RESULT: Ran ${validCommands.length} curl commands in parallel. Found ${endpointsFound.length} endpoints. Combined output:\n${combinedOutput.substring(0, 2000)}\n\nContinue with next action.`
+            });
+            
+            // Update Light RAG
+            const multiCurlSummary: ToolOutputSummary = {
+              tool: 'curl',
+              command: validCommands.join(' || '),
+              summary: `Multi-curl probe: ${validCommands.length} commands, ${endpointsFound.length} endpoints found`,
+              newEndpoints: endpointsFound,
+              resultCount: endpointsFound.length,
+              timestamp: Date.now(),
+            };
+            await this.updateMissionStatus(state, multiCurlSummary, 'curl_probe');
+            
+            continue; // Skip single command execution
           }
         }
         
@@ -692,8 +799,20 @@ curl ${state.targetUrl}/api/Users`;
 
         // Transition phases based on tool results and LLM analysis
         if (this.shouldTransitionPhase(state, parsed.tool)) {
+          const prevPhase = state.phase;
           const nextPhase = this.getNextPhase(state.phase);
-          console.log(`[${this.agentId}] Transitioning from ${state.phase} to ${nextPhase}`);
+          console.log(`[${this.agentId}] Transitioning from ${prevPhase} to ${nextPhase}`);
+          
+          // Generate intermediate report after enum phase
+          if (prevPhase === 'web_enum' && nextPhase === 'curl_probe') {
+            console.log(`[${this.agentId}] Generating intermediate enum report...`);
+            await this.generateMissionReport(state.missionId, state);
+            conversationHistory.push({ 
+              role: 'user', 
+              content: `ENUM REPORT GENERATED: Found ${state.discoveredEndpoints.size} endpoints. Now entering CURL PROBE phase - generate 10+ curl commands to verify endpoints and gather more data.`
+            });
+          }
+          
           state.phase = nextPhase;
         }
         
@@ -751,15 +870,27 @@ curl ${state.targetUrl}/api/Users`;
     }
   }
 
-  private parseLlmScanResponse(response: string): { tool?: string; command?: string; reasoning?: string } {
+  private parseLlmScanResponse(response: string): { tool?: string; command?: string; reasoning?: string; commands?: string[] } {
     const toolMatch = response.match(/<(?:t|tool)>([^<]+)<\/(?:t|tool)>/i);
-    const cmdMatch = response.match(/<(?:c|command)>([^<]+)<\/(?:c|command)>/i);
     const reasonMatch = response.match(/<(?:r|reasoning)>([^<]+)<\/(?:r|reasoning)>/i);
+
+    // Check for multiple commands (for curl_probe phase)
+    const cmdMatches = response.match(/<command>([^<]+)<\/command>/gi);
+    const commands: string[] = [];
+    if (cmdMatches) {
+      for (const match of cmdMatches) {
+        const cmd = match.replace(/<\/?command>/gi, '').trim();
+        if (cmd) commands.push(cmd);
+      }
+    }
+    
+    const cmdMatch = response.match(/<(?:c|command)>([^<]+)<\/(?:c|command)>/i);
 
     return {
       tool: toolMatch?.[1]?.trim(),
       command: cmdMatch?.[1]?.trim(),
       reasoning: reasonMatch?.[1]?.trim(),
+      commands: commands.length > 0 ? commands : undefined,
     };
   }
 
@@ -774,6 +905,10 @@ curl ${state.targetUrl}/api/Users`;
     if (state.phase === 'tech_fingerprint' && state.discoveredComponents.size > 0) {
       return true;
     }
+    // Transition to curl_probe after 10 enum iterations
+    if (state.phase === 'web_enum' && state.enumIterations >= 10) {
+      return true;
+    }
     // Also allow transition based on tool completion (fallback)
     if (state.phase === 'port_scan' && (tool === 'nmap' || tool === 'whatweb')) {
       return true;
@@ -784,13 +919,18 @@ curl ${state.targetUrl}/api/Users`;
     if (state.phase === 'tech_fingerprint' && (tool === 'curl' || tool === 'whatweb')) {
       return true;
     }
+    // Transition to complete after 10 curl iterations
+    if (state.phase === 'curl_probe' && state.curlIterations >= 10) {
+      return true;
+    }
     return false;
   }
 
   private getNextPhase(current: AlphaScanState['phase']): AlphaScanState['phase'] {
     switch (current) {
       case 'port_scan': return 'web_enum';
-      case 'web_enum': return 'tech_fingerprint';
+      case 'web_enum': return 'curl_probe';
+      case 'curl_probe': return 'complete';
       case 'tech_fingerprint': return 'sast';
       case 'sast': return 'complete';
       default: return 'complete';
