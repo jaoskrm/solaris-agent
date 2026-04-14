@@ -254,27 +254,11 @@ export class AlphaAgent extends BaseAgent {
       console.log(`[${this.agentId}] Juice Shop SPA fallback size: ${state.targetConfig.spaFallbackSize} (measured)`);
     }
     
+    // Run port scan FIRST before LLM planning begins
+    await this.executePortScan(state);
+    
     // Conversation history for multi-turn LLM interaction
     const conversationHistory: LLMMessage[] = [];
-    
-    // If resuming, load graph findings into state and inject context
-    if (isResume) {
-      console.log(`[${this.agentId}] RESUMING: Loading graph data into state...`);
-      const { mission: ragMission, findings: ragFindings } = await this.loadMissionContext(state.missionId);
-      
-      // Load graph findings into state Sets
-      for (const f of ragFindings) {
-        if (f.type === 'endpoint') state.discoveredEndpoints.add(f.value);
-        else if (f.type === 'port') state.discoveredPorts.add(f.value);
-        else if (f.type === 'component') state.discoveredComponents.add(f.value);
-      }
-      
-      if (ragMission) {
-        state.phase = ragMission.phase as AlphaScanState['phase'];
-      }
-      
-      console.log(`[${this.agentId}] Loaded ${ragFindings.length} findings into state - Endpoints: ${state.discoveredEndpoints.size}, Ports: ${state.discoveredPorts.size}`);
-    }
     
     // Command tracking - to detect repetition
     const recentCommands: string[] = [];
