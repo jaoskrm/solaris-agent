@@ -243,7 +243,6 @@ export class AlphaAgent extends BaseAgent {
     const targetContext = await this.pollMemoryForTarget(state.target, state.targetUrl, isResume);
     let llmIterations = 0;
     const maxLlmIterations = 25; // 10 enum + 10 curl + 5 transitions
-    let maxRetries = 1;
     state.enumIterations = 0;
     state.curlIterations = 0;
     
@@ -306,17 +305,13 @@ export class AlphaAgent extends BaseAgent {
         
         if (!parsed.tool || !parsed.command) {
           console.log(`[${this.agentId}] LLM returned malformed output, retrying...`);
-          maxRetries--;
-          if (maxRetries <= 0) {
-            console.log(`[${this.agentId}] Max retries exceeded, falling back to deterministic`);
-            await this.runDeterministicScanLoop(state.target);
-            break;
-          }
           conversationHistory.push({ role: 'assistant', content: response });
           conversationHistory.push({ 
             role: 'user', 
             content: `Your previous output was malformed. Respond with ONLY valid XML:
-<reasoning>...</reasoning>\n<tool>...</tool>\n<command>...</command>` 
+<reasoning>...</reasoning>
+<tool>...</tool>
+<command>...</command>` 
           });
           continue;
         }
@@ -371,7 +366,6 @@ export class AlphaAgent extends BaseAgent {
         const failCount = (toolFailureCount.get(parsed.tool!) || 0) + 1;
         toolFailureCount.set(parsed.tool!, failCount);
 
-        maxRetries = 2;
         console.log(`[${this.agentId}] LLM reasoning: ${parsed.reasoning?.substring(0, 100) || 'N/A'}...`);
         
         // Add LLM decision to conversation history
@@ -954,11 +948,15 @@ curl ${state.targetUrl}/api/Users`;
   }
 
   private parseLlmScanResponse(response: string): { tool?: string; command?: string; reasoning?: string; commands?: string[] } {
-    const toolMatch = response.match(/<(?:t|tool)>([^<]+)<\/(?:t|tool)>/i);
-    const reasonMatch = response.match(/<(?:r|reasoning)>([^<]+)<\/(?:r|reasoning)>/i);
+    // Strip markdown code blocks if present
+    const stripped = response.replace(/^```xml\n?/, '').replace(/\n?```$/, '').trim();
+    
+    // Match tool/reasoning/command tags - use [\s\S] to match across newlines
+    const toolMatch = stripped.match(/<(?:t|tool)>([\s\S]*?)<\/(?:t|tool)>/i);
+    const reasonMatch = stripped.match(/<(?:r|reasoning)>([\s\S]*?)<\/(?:r|reasoning)>/i);
 
     // Check for multiple commands (for curl_probe phase)
-    const cmdMatches = response.match(/<command>([^<]+)<\/command>/gi);
+    const cmdMatches = stripped.match(/<command>([\s\S]*?)<\/command>/gi);
     const commands: string[] = [];
     if (cmdMatches) {
       for (const match of cmdMatches) {
@@ -967,7 +965,7 @@ curl ${state.targetUrl}/api/Users`;
       }
     }
     
-    const cmdMatch = response.match(/<(?:c|command)>([^<]+)<\/(?:c|command)>/i);
+    const cmdMatch = stripped.match(/<(?:c|command)>([\s\S]*?)<\/(?:c|command)>/i);
 
     return {
       tool: toolMatch?.[1]?.trim(),
