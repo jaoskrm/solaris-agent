@@ -469,10 +469,19 @@ export class AlphaAgent extends BaseAgent {
               .replace(/\{TARGET_URL\}/gi, state.targetUrl)
               .replace(/TARGET/gi, state.target);
             
-            if (fullCmd.includes(state.targetUrl) && !/\{[^{}]+\}/.test(fullCmd)) {
-              validCommands.push(fullCmd);
-              normalizedToRaw.set(fullCmd.replace(/\s+/g, ' ').trim(), fullCmd);
+            // Check for remaining placeholders BEFORE variable substitution
+            // Only treat {var} as placeholder if it appears OUTSIDE of quoted strings or -w flags
+            const cmdForPlaceholderCheck = fullCmd
+              .replace(/['"][^'"]*$/, '')  // remove trailing quoted strings
+              .replace(/-w\s+['"][^'"]*['"]/, '')  // remove -w "format" flags
+              .replace(/\{[^{}]*\}/g, '');  // remove {placeholder} patterns
+            
+            if (fullCmd.includes(state.targetUrl) && /\{[^{}]+\}/.test(cmdForPlaceholderCheck)) {
+              continue; // skip commands with unfilled placeholders
             }
+            
+            validCommands.push(fullCmd);
+            normalizedToRaw.set(fullCmd.replace(/\s+/g, ' ').trim(), fullCmd);
           }
           
           if (validCommands.length > 0) {
@@ -507,15 +516,33 @@ export class AlphaAgent extends BaseAgent {
               const isExactSpaSize = rawOutput.length === spaFallbackSize;
               const hasSpaMarkers = /ng-app|angular|vue\.js|webpack|chunk-[A-Z]/i.test(rawOutput);
               const hasErrorMarkers = /UnauthorizedError|Not Found|403 Forbidden|500 Internal|Error:|error:/i.test(rawOutput);
+              
+              // Extract the URL path from the command to check for SPA routes
+              const cmdStr = cmd || '';
+              const urlPathMatch = cmdStr.match(/http[as]+:\/\/[^\/]+\/(\S*)/);
+              const urlPath = urlPathMatch?.[1] || '';
+              const isKnownSpaRoute = /^(login|register|signup|signin|profile|admin|account|settings|dashboard|home|index|search|cart|checkout|logout|oauth|callback)/i.test(urlPath);
+              
+              // HTML redirect applies to truly non-existent paths, not to known SPA routes
+              const isLikelyNonexistent = isExactSpaSize && !isKnownSpaRoute && (
+                urlPath.includes('doesnotexist') || 
+                urlPath.includes('invalid') || 
+                urlPath.includes('nonexistent') ||
+                urlPath.match(/^[a-z]+\d+$/i) // random-looking paths like 'abc123'
+              );
+              
               const isHtmlRedirect = rawOutput.startsWith('<!DOCTYPE html>') || 
-                (isExactSpaSize && rawOutput.includes('<html')) ||
-                (rawOutput.length > 500 && hasSpaMarkers && !hasErrorMarkers);
+                (isExactSpaSize && rawOutput.includes('<html') && !isKnownSpaRoute && (hasSpaMarkers || isLikelyNonexistent)) ||
+                (rawOutput.length > 500 && hasSpaMarkers && !hasErrorMarkers && !isKnownSpaRoute);
               
               // Check for binary content (video, images, binary files)
               const isBinary = this.isBinaryOutput(rawOutput);
               
+              // For known SPA routes, don't mark as redirect - they need to be explored with katana/browser
+              const shouldSkip = (isHtmlRedirect || isBinary) && !isKnownSpaRoute;
+              
               // Now replace with placeholder if needed
-              if (isHtmlRedirect || isBinary) {
+              if (shouldSkip) {
                 toolOutput = isBinary ? '[BINARY_CONTENT]' : '[HTML_REDIRECT]';
               }
               
@@ -961,15 +988,12 @@ curl ${state.targetUrl}/api/Users`;
     if (state.phase === 'tech_fingerprint' && state.discoveredComponents.size > 0) {
       return true;
     }
-    // Transition to curl_probe after 10 enum iterations
-    if (state.phase === 'web_enum' && state.enumIterations >= 10) {
+    // Transition to curl_probe ONLY after at least 1 successful ffuf/katana enumeration
+    if (state.phase === 'web_enum' && state.enumIterations >= 1) {
       return true;
     }
     // Also allow transition based on tool completion (fallback)
     if (state.phase === 'port_scan' && (tool === 'nmap' || tool === 'whatweb')) {
-      return true;
-    }
-    if (state.phase === 'web_enum' && (tool === 'ffuf' || tool === 'curl')) {
       return true;
     }
     if (state.phase === 'tech_fingerprint' && (tool === 'curl' || tool === 'whatweb')) {
@@ -996,35 +1020,27 @@ curl ${state.targetUrl}/api/Users`;
   private isBinaryOutput(output: string): boolean {
     if (!output || output.length === 0) return false;
     
-    // Check for null bytes (binary file indicator)
+    // Check for null bytes (definitive binary indicator)
     if (output.includes('\0')) return true;
     
-    // Check for binary content indicators in first 1000 chars
-    const sample = output.substring(0, 1000);
-    
-    // Count non-printable ASCII chars (excluding common whitespace)
-    const nonPrintable = sample.split('').filter(c => {
-      const code = c.charCodeAt(0);
-      return (code < 32 && code !== 9 && code !== 10 && code !== 13) || code > 126;
-    }).length;
-    
-    // If > 10% non-printable, likely binary
-    if (nonPrintable / sample.length > 0.10) return true;
-    
-    // Check for video/image binary signatures
-    if (/\.(jpg|jpeg|png|gif|mp4|webm|avi|mov|flv|swf)/i.test(output.substring(0, 100))) return true;
-    
-    // Check for binary file headers
+    // Check for binary file headers (definitive binary)
     if (/^(RIFF|JFIF|PNG|\x89PNG|\xff\xd8\xff|GIF87a|GIF89a)/.test(output)) return true;
     
     // Check if output is excessively large (likely video/binary)
     if (output.length > 500000) return true; // 500KB threshold
     
-    // Check for video player or media player indicators
-    if (output.includes('video/') || output.includes('image/') || output.includes('application/octet-stream')) return true;
+    // Check Content-Type indicators in headers portion
+    const headerEnd = output.indexOf('\r\n\r\n');
+    const headers = headerEnd > 0 ? output.substring(0, headerEnd) : output.substring(0, 500);
+    if (/^Content-Type:\s*(video|audio|image|application\/octet-stream)/mi.test(headers)) return true;
     
-    // Check for HTML5 video binary chunks
-    if (/mp4|webm|ogg|vorbis|theora/i.test(output.substring(0, 500)) && output.length > 10000) return true;
+    // Check for binary signatures anywhere in first 2000 chars (more permissive)
+    const sample = output.substring(0, 2000);
+    if (/\.(jpg|jpeg|png|gif|mp4|webm|avi|mov|flv|swf|woff2?|ttf|otf|eot)/i.test(sample)) return true;
+    
+    // Conservative: HTML and JSON are never binary
+    const firstChar = output.trim()[0];
+    if (firstChar === '<' || firstChar === '{' || firstChar === '[') return false;
     
     return false;
   }
@@ -1101,6 +1117,73 @@ curl ${state.targetUrl}/api/Users`;
           detail: `ffuf found ${endpoints.length} total endpoints`,
           evidence: `ffuf hits: ${endpoints.slice(0, 50).join(', ')}`,
         });
+      }
+    } else if (tool === 'curl') {
+      const lines = output.split('\n');
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        
+        if (trimmed.startsWith('<')) {
+          const urlMatch = trimmed.match(/https?:\/\/[^\s<>"]+(\/\S*)?/);
+          if (urlMatch?.[1]) {
+            const path = urlMatch[1];
+            if (path && path !== '/' && path.length < 200) {
+              findings.push({
+                type: 'endpoint',
+                detail: `Found endpoint ${path}`,
+                evidence: path,
+              });
+            }
+          }
+          
+          if (trimmed.includes('UnauthorizedError') || trimmed.includes('No Authorization')) {
+            findings.push({
+              type: 'auth_required',
+              detail: 'Endpoint requires authentication',
+              evidence: trimmed.substring(0, 100),
+            });
+          }
+          
+          if (trimmed.includes('SQLITE_ERROR') || trimmed.includes('sql')) {
+            findings.push({
+              type: 'potential_sqli',
+              detail: 'SQL error detected in response',
+              evidence: trimmed.substring(0, 100),
+            });
+          }
+        } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          try {
+            const json = JSON.parse(trimmed);
+            if (json.data && Array.isArray(json.data)) {
+              findings.push({
+                type: 'endpoint',
+                detail: `API endpoint returned ${json.data.length} items`,
+                evidence: trimmed.substring(0, 200),
+              });
+            } else if (json.user !== undefined) {
+              findings.push({
+                type: 'session_endpoint',
+                detail: 'Session/whoami endpoint',
+                evidence: trimmed.substring(0, 100),
+              });
+            } else if (json.rating !== undefined || json.Feedbacks) {
+              findings.push({
+                type: 'endpoint',
+                detail: 'Feedbacks endpoint',
+                evidence: trimmed.substring(0, 100),
+              });
+            } else if (json.status === 'success') {
+              findings.push({
+                type: 'api_success',
+                detail: `API success response: ${JSON.stringify(json).substring(0, 100)}`,
+                evidence: trimmed.substring(0, 200),
+              });
+            }
+          } catch {
+          }
+        }
       }
     } else if (tool === 'whatweb') {
       const techs = output.match(/^(.+?)\s+\[/gm);
