@@ -1020,6 +1020,9 @@ curl ${state.targetUrl}/api/Users`;
   private isBinaryOutput(output: string): boolean {
     if (!output || output.length === 0) return false;
     
+    // Very small outputs (< 100 bytes) cannot be real binary files
+    if (output.length < 100) return false;
+    
     // Check for null bytes (definitive binary indicator)
     if (output.includes('\0')) return true;
     
@@ -1119,81 +1122,83 @@ curl ${state.targetUrl}/api/Users`;
         });
       }
     } else if (tool === 'curl') {
-      const lines = output.split('\n');
+      // Multi-curl output format: "=== command ===\noutput\n=== command ===\noutput\n"
+      // Split by "=== " separator
+      const entries = output.split(/\n=== /);
       
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
+      for (const entry of entries) {
+        if (!entry.trim()) continue;
         
-        if (trimmed.startsWith('<')) {
-          const urlMatch = trimmed.match(/https?:\/\/[^\s<>"]+(\/\S*)?/);
-          if (urlMatch?.[1]) {
-            const path = urlMatch[1];
-            if (path && path !== '/' && path.length < 200) {
-              findings.push({
-                type: 'endpoint',
-                detail: `Found endpoint ${path}`,
-                evidence: path,
-              });
-            }
-          }
-          
-          if (trimmed.includes('UnauthorizedError') || trimmed.includes('No Authorization')) {
-            findings.push({
-              type: 'auth_required',
-              detail: 'Endpoint requires authentication',
-              evidence: trimmed.substring(0, 100),
-            });
-          }
-          
-          if (trimmed.includes('SQLITE_ERROR') || trimmed.includes('sql')) {
-            findings.push({
-              type: 'potential_sqli',
-              detail: 'SQL error detected in response',
-              evidence: trimmed.substring(0, 100),
-            });
-          }
-        } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        const lines = entry.split('\n');
+        if (lines.length < 2 || !lines[0]) continue;
+        
+        // First line is command, extract URL
+        const cmdLine = lines[0]!.replace(/^=== /, '');
+        const urlMatch = cmdLine.match(/https?:\/\/[^\/]+\/(\S*)/);
+        const path = urlMatch?.[1] || '';
+        
+        // Remaining lines are output
+        const outputLines = lines.slice(1).join('\n').trim();
+        
+        if (!outputLines) continue;
+        
+        // Check if output is just a status code (e.g., "200", "401", "500")
+        const statusCodeMatch = outputLines.match(/^(\d{3})$/);
+        if (statusCodeMatch) {
+          const status = statusCodeMatch[1]!;
+          findings.push({
+            type: 'endpoint',
+            detail: `Endpoint ${path} returned status ${status}`,
+            evidence: `${path}: ${status}`,
+          });
+          continue;
+        }
+        
+        // Handle JSON responses
+        if (outputLines.startsWith('{') || outputLines.startsWith('[')) {
           try {
-            const json = JSON.parse(trimmed);
+            const json = JSON.parse(outputLines);
             if (json.data && Array.isArray(json.data)) {
               findings.push({
                 type: 'endpoint',
-                detail: `API endpoint returned ${json.data.length} items`,
-                evidence: trimmed.substring(0, 200),
+                detail: `API endpoint ${path} returned ${json.data.length} items`,
+                evidence: outputLines.substring(0, 200),
               });
             } else if (json.user !== undefined) {
               findings.push({
                 type: 'session_endpoint',
-                detail: 'Session/whoami endpoint',
-                evidence: trimmed.substring(0, 100),
-              });
-            } else if (json.rating !== undefined || json.Feedbacks) {
-              findings.push({
-                type: 'endpoint',
-                detail: 'Feedbacks endpoint',
-                evidence: trimmed.substring(0, 100),
+                detail: `Session endpoint ${path}`,
+                evidence: outputLines.substring(0, 100),
               });
             } else if (json.status === 'success') {
               findings.push({
                 type: 'api_success',
-                detail: `API success response: ${JSON.stringify(json).substring(0, 100)}`,
-                evidence: trimmed.substring(0, 200),
+                detail: `API success: ${path}`,
+                evidence: outputLines.substring(0, 200),
               });
             }
           } catch {
           }
+          continue;
         }
-      }
-    } else if (tool === 'whatweb') {
-      const techs = output.match(/^(.+?)\s+\[/gm);
-      if (techs) {
-        for (const tech of techs) {
-          findings.push({
-            type: 'component',
-            detail: `Detected ${tech.trim()}`,
-            evidence: tech,
-          });
+        
+        // Handle HTML responses
+        if (outputLines.startsWith('<')) {
+          if (outputLines.includes('UnauthorizedError') || outputLines.includes('No Authorization')) {
+            findings.push({
+              type: 'auth_required',
+              detail: `Endpoint ${path} requires authentication`,
+              evidence: path,
+            });
+          }
+          
+          if (outputLines.includes('SQLITE_ERROR') || outputLines.includes('sql')) {
+            findings.push({
+              type: 'potential_sqli',
+              detail: `SQL error in ${path}`,
+              evidence: outputLines.substring(0, 100),
+            });
+          }
         }
       }
     } else if (tool === 'katana') {
