@@ -34,7 +34,10 @@ After enumeration, verify endpoints and gather data with MULTIPLE curl commands:
 
 ### ffuf → httpx (pipe chaining)
 ```bash
-ffuf -u http://127.0.0.1:3000/api/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs 75002 -t 5 -rate 150 -s | httpx -silent -title -tech-detect -status-code
+# FIRST: Probe for baseline noise under the prefix
+curl -s -w "SIZE:%{size_download}" -o /dev/null "http://127.0.0.1:3000/api/doesnotexist_999999"
+# Use the returned SIZE value in -fs flag
+ffuf -u http://127.0.0.1:3000/api/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs <BASELINE_SIZE> -t 5 -rate 100 -json | httpx -silent -title -tech-detect -status-code
 ```
 
 ### katana → httpx (pipe chaining)
@@ -44,7 +47,10 @@ katana -u http://127.0.0.1:3000 -jc -kf all -silent | httpx -silent -title -tech
 
 ### ffuf (root fuzzing)
 ```bash
-ffuf -u http://127.0.0.1:3000/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs 75002 -t 5 -rate 150 -s
+# FIRST: Probe for baseline noise
+curl -s -w "SIZE:%{size_download}" -o /dev/null "http://127.0.0.1:3000/doesnotexist_999999"
+# Use the returned SIZE value in -fs flag
+ffuf -u http://127.0.0.1:3000/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs <BASELINE_SIZE> -t 5 -rate 100 -json
 ```
 
 ### curl (direct probing)
@@ -69,7 +75,9 @@ whatweb http://127.0.0.1:3000 -a 3 -v
 ## Key Rules
 
 1. **ALWAYS use target URL**: Every command MUST contain `http://127.0.0.1:3000`
-2. **SPA filtering**: Juice Shop returns 75002 bytes for non-existent routes. Use `-fs 75002` with ffuf
+2. **SPA filtering**: BEFORE running ffuf on any prefix, probe for baseline noise:
+   - `curl -s -w "SIZE:%{size_download}" -o /dev/null "http://127.0.0.1:3000/<prefix>/doesnotexist_999999"`
+   - Use the SIZE from output in `-fs <SIZE>` flag for ffuf
 3. **Chain with pipes**: `tool1 | tool2` not `tool1 -l file.txt`
 4. **Never repeat**: Do not run commands in RECENT COMMANDS
 5. **Adapt on failure**: Skip failing tools, choose differently

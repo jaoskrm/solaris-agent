@@ -247,10 +247,11 @@ export class AlphaAgent extends BaseAgent {
     state.enumIterations = 0;
     state.curlIterations = 0;
     
-    // Set SPA fallback size for Juice Shop targets
+    // Set SPA fallback size for Juice Shop targets (probe to measure, don't hardcode)
     if (state.targetConfig.isJuiceShop && !state.targetConfig.spaFallbackSize) {
-      state.targetConfig.spaFallbackSize = 75002;
-      console.log(`[${this.agentId}] Juice Shop SPA fallback size: 75002 (hardcoded)`);
+      const measured = await this.measureSpaFallbackSize(state.targetUrl);
+      state.targetConfig.spaFallbackSize = measured > 0 ? measured : 75002;
+      console.log(`[${this.agentId}] Juice Shop SPA fallback size: ${state.targetConfig.spaFallbackSize} (measured)`);
     }
     
     // Conversation history for multi-turn LLM interaction
