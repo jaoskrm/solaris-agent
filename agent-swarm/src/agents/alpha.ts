@@ -14,6 +14,8 @@ interface TargetConfig {
   spaFallbackSize: number;
   isJuiceShop: boolean;
   seedProbes: string[];
+  wordlistPath: string;
+  availableWordlists: string;
 }
 
 interface AlphaScanState {
@@ -153,6 +155,8 @@ export class AlphaAgent extends BaseAgent {
         seedProbes: isJuiceShop
           ? ['/api', '/rest', '/ftp', '/metrics', '/socket.io', '/api-doc']
           : [],
+        wordlistPath: '',
+        availableWordlists: '',
       };
       state = {
         sessionId,
@@ -240,7 +244,8 @@ export class AlphaAgent extends BaseAgent {
 
   private async runLlmPlanningLoop(state: AlphaScanState, isResume = false): Promise<void> {
     const systemPrompt = loadAgentPrompt('alpha-recon');
-    const targetContext = await this.pollMemoryForTarget(state.target, state.targetUrl, isResume);
+    // Poll memory for target context (no longer used directly - sessionCommands tracks everything)
+    await this.pollMemoryForTarget(state.target, state.targetUrl, isResume);
     let llmIterations = 0;
     const maxLlmIterations = 25; // 10 enum + 10 curl + 5 transitions
     state.enumIterations = 0;
@@ -259,8 +264,8 @@ export class AlphaAgent extends BaseAgent {
     // Conversation history for multi-turn LLM interaction
     const conversationHistory: LLMMessage[] = [];
     
-    // Command tracking - to detect repetition
-    const recentCommands: string[] = [];
+    // Command tracking - store ALL commands run in this session (simple array, no graph needed)
+    const sessionCommands: Array<{ iteration: number; tool: string; command: string }> = [];
     const toolFailureCount: Map<string, number> = new Map();
     let currentObjective = 'port_discovery';
     
@@ -268,13 +273,6 @@ export class AlphaAgent extends BaseAgent {
       llmIterations++;
       this.llmIterationCounter++; // Pin iteration number early so logs are consistent
       console.log(`[${this.agentId}] LLM Planning Iteration ${llmIterations}/${maxLlmIterations} - Objective: ${currentObjective}`);
-
-      // Query fresh graph context on EVERY iteration
-      const { mission: freshMission, findings: freshFindings, recentCommands: freshCmds } = await this.loadMissionContext(state.missionId);
-      
-      // Build banned tools list from failure counts
-      const toolFailureObj: Record<string, number> = {};
-      toolFailureCount.forEach((count, tool) => { toolFailureObj[tool] = count; });
       
       // Determine banned tools
       const bannedTools: string[] = [];
@@ -282,15 +280,15 @@ export class AlphaAgent extends BaseAgent {
         bannedTools.push('katana');
       }
       
-      const freshGraphContext = freshMission || freshFindings.length > 0
-        ? this.formatLightRAGContext(freshMission!, freshFindings, freshCmds, bannedTools)
-        : '';
-      
       // Read comprehensive report and last tool outputs
       const findingsReport = await this.readFindingsReport(state.missionId);
       const lastToolOutput = await this.readLastToolOutput(state.missionId);
+      const rawOutputs = await this.readRawOutputs(state.missionId);
       
-      const messages = this.buildLlmScanMessage(state, systemPrompt, targetContext, conversationHistory, freshGraphContext, recentCommands, findingsReport, lastToolOutput);
+      // Convert sessionCommands to string[] for buildLlmScanMessage
+      const allCommands = sessionCommands.map(c => `[Iter ${c.iteration}] ${c.tool}: ${c.command}`);
+      
+      const messages = this.buildLlmScanMessage(state, systemPrompt, '', conversationHistory, '', allCommands, findingsReport, lastToolOutput, rawOutputs);
 
       try {
         const response = await this.llmRouter.complete('alpha', messages);
@@ -334,10 +332,11 @@ export class AlphaAgent extends BaseAgent {
         // Check for already-run commands and filter
         const commandsToRun: string[] = [];
         const alreadyRan: string[] = [];
+        const sessionCommandSet = new Set(sessionCommands.map(c => normalizeCommand(c.command)));
         
         for (const cmd of allCommands) {
           const normalizedCmd = normalizeCommand(cmd);
-          if (recentCommands.includes(normalizedCmd)) {
+          if (sessionCommandSet.has(normalizedCmd)) {
             alreadyRan.push(normalizedCmd);
           } else {
             commandsToRun.push(cmd);
@@ -474,6 +473,12 @@ export class AlphaAgent extends BaseAgent {
               continue; // skip commands with unfilled placeholders
             }
             
+            // Reject curl commands that discard body content (only get status codes)
+            if (fullCmd.includes('curl') && (fullCmd.includes('-o /dev/null') || fullCmd.includes('-o NUL')) && fullCmd.includes('-w ')) {
+              console.log(`[${this.agentId}] REJECTED curl command that discards body: ${fullCmd}`);
+              continue;
+            }
+            
             validCommands.push(fullCmd);
             normalizedToRaw.set(fullCmd.replace(/\s+/g, ' ').trim(), fullCmd);
           }
@@ -543,42 +548,51 @@ export class AlphaAgent extends BaseAgent {
               combinedOutput += `\n=== ${cmd} ===\n${toolOutput}\n`;
               console.log(`[${this.agentId}] [${i+1}/${results.length}] exit=${result.exit_code} len=${toolOutput.length} binary=${isBinary}`);
             }
+            
+            // Add each curl command to session commands list
             for (const cmd of validCommands) {
-              const normalized = cmd.replace(/\s+/g, ' ').trim();
-              if (!recentCommands.includes(normalized)) {
-                recentCommands.push(normalized);
-                if (recentCommands.length > 10) recentCommands.shift();
-              }
+              sessionCommands.push({
+                iteration: this.llmIterationCounter,
+                tool: 'curl',
+                command: cmd
+              });
             }
             
             // Increment curlIterations
             state.curlIterations++;
             console.log(`[${this.agentId}] Curl iteration ${state.curlIterations}/10`);
             
+            // Store each curl command to Supabase
+            for (const cmd of validCommands) {
+              await this.storeToolExecution({
+                iteration: this.llmIterationCounter,
+                toolName: 'curl',
+                command: cmd,
+                args: { multi: true },
+                stdout: '',
+                stderr: '',
+                exitCode: 0,
+                timedOut: false,
+                success: true,
+                durationMs: 0,
+                portsDiscovered: [],
+                endpointsDiscovered: [],
+                componentsDiscovered: [],
+              });
+            }
+            
             // Log combined output
             await this.logToolOutput(state.missionId, this.llmIterationCounter, 'curl', validCommands.join('\n'), combinedOutput);
             
-            // Append non-redirect, non-binary outputs to findings file
-            // combinedOutput format: "\n=== {cmd} ===\n{output}\n"
-            // Filter out entries where the output (not the header) contains placeholders
-            const entries = combinedOutput.split(/\n=== /).slice(1); // skip empty first element
-            const filteredEntries = entries.filter(entry => {
-              // Each entry is: "command ===\noutput\n"
-              const outputStart = entry.indexOf('\n') + 1;
-              const output = entry.substring(outputStart);
-              return !output.includes('[HTML_REDIRECT]') && !output.includes('[BINARY_CONTENT]');
-            });
+            // Write raw combined output to raw_outputs.md (append ALL outputs including filtered ones)
+            // The LLM will parse through and extract what matters
+            await this.appendToolOutputToFindingsFile(state.missionId, this.llmIterationCounter, 'curl', `${validCommands.length} commands`, combinedOutput);
             
-            let filteredOutput = '';
-            if (filteredEntries.length > 0) {
-              filteredOutput = filteredEntries.join('\n=== ');
-              await this.appendToolOutputToFindingsFile(state.missionId, this.llmIterationCounter, 'curl', `${validCommands.length} commands`, filteredOutput);
-            }
-            
-            // Generate comprehensive report
+            // Generate comprehensive report - pass ALL previous raw outputs so LLM can analyze everything
             const previousReport = await this.readFindingsReport(state.missionId);
-            const toolOutput = filteredOutput || combinedOutput;
-            await this.generateComprehensiveReport(state.missionId, previousReport, toolOutput);
+            const rawOutputs = await this.readRawOutputs(state.missionId);
+            const toolOutput = combinedOutput; // Use full combined output for the report
+            await this.generateComprehensiveReport(state.missionId, previousReport, toolOutput, rawOutputs);
             
             console.log(`[${this.agentId}] Multi-curl completed: ${validCommands.length} commands, ${endpointsFound.length} endpoints`);
             console.log(`[${this.agentId}] Tool output:\n${combinedOutput.substring(0, 1000)}`);
@@ -620,6 +634,9 @@ export class AlphaAgent extends BaseAgent {
         
         // Check for binary content
         const isBinary = httpTools.includes(parsed.tool!) && this.isBinaryOutput(toolOutput);
+        if (toolOutput.length < 100) {
+          console.log(`[${this.agentId}] [BINARY_CHECK] tool="${toolOutput.substring(0, 50)}" len=${toolOutput.length} isBinary=${isBinary}`);
+        }
         
         if (isHtmlRedirect) {
           toolOutput = '[HTML_REDIRECT] This URL returns the SPA index page, not a file. Skip this endpoint.';
@@ -627,12 +644,13 @@ export class AlphaAgent extends BaseAgent {
           toolOutput = '[BINARY_CONTENT] Binary/video content detected, skipping.';
         }
         
-        // Add to recentCommands
+        // Add to sessionCommands
         const normalizedCmd = fullCommand.replace(/\s+/g, ' ').trim();
-        if (!recentCommands.includes(normalizedCmd)) {
-          recentCommands.push(normalizedCmd);
-          if (recentCommands.length > 10) recentCommands.shift();
-        }
+        sessionCommands.push({
+          iteration: this.llmIterationCounter,
+          tool: parsed.tool || 'unknown',
+          command: normalizedCmd
+        });
         
         // Track curl iterations in curl_probe phase
         if (state.phase === 'curl_probe' && parsed.tool === 'curl') {
@@ -897,7 +915,8 @@ curl ${state.targetUrl}/api/Users`;
         // Generate comprehensive report after command execution
         const previousReport = await this.readFindingsReport(state.missionId);
         const lastToolOutput = await this.readLastToolOutput(state.missionId);
-        await this.generateComprehensiveReport(state.missionId, previousReport, lastToolOutput);
+        const rawOutputs = await this.readRawOutputs(state.missionId);
+        await this.generateComprehensiveReport(state.missionId, previousReport, lastToolOutput, rawOutputs);
         
       } catch (error) {
         console.error(`[${this.agentId}] LLM planning failed: ${error}, falling back to deterministic`);
@@ -986,8 +1005,8 @@ curl ${state.targetUrl}/api/Users`;
     if (state.phase === 'tech_fingerprint' && state.discoveredComponents.size > 0) {
       return true;
     }
-    // Transition to curl_probe ONLY after at least 1 successful ffuf/katana enumeration
-    if (state.phase === 'web_enum' && state.enumIterations >= 1) {
+    // Transition to curl_probe ONLY after at least 6 successful ffuf/katana enumeration
+    if (state.phase === 'web_enum' && state.enumIterations >= 6) {
       return true;
     }
     // Also allow transition based on tool completion (fallback)
@@ -1019,7 +1038,12 @@ curl ${state.targetUrl}/api/Users`;
     if (!output || output.length === 0) return false;
     
     // Very small outputs (< 100 bytes) cannot be real binary files
-    if (output.length < 100) return false;
+    if (output.length < 100) {
+      return false;
+    }
+    
+    // Check for null bytes (definitive binary indicator)
+    if (output.includes('\0')) return true;
     
     // Check for null bytes (definitive binary indicator)
     if (output.includes('\0')) return true;
@@ -1350,6 +1374,14 @@ curl ${state.targetUrl}/api/Users`;
     }
 
     const wordlistPath = getWordlistPath(wordlistEntry.path);
+    state.targetConfig.wordlistPath = wordlistPath;
+    
+    // Build list of all available wordlists
+    const allWordlists = Object.entries(index.stages).flatMap(([stage, wordlists]) =>
+      Object.entries(wordlists).map(([name, entry]) => `${stage}/${name}: ${getWordlistPath(entry.path)}`)
+    ).join('\n');
+    state.targetConfig.availableWordlists = allWordlists;
+    
     let spaFallbackSize = state.targetConfig.spaFallbackSize;
     if (!spaFallbackSize) {
       spaFallbackSize = await this.measureSpaFallbackSize(state.targetUrl);
@@ -1375,9 +1407,9 @@ curl ${state.targetUrl}/api/Users`;
 
     const ffufFlags = state.targetConfig.isJuiceShop
       ? baseline 
-        ? `-fs ${baseline.size} -t 5 -rate 100 -timeout 10 -json`
-        : `-fs ${spaFallbackSize} -t 5 -rate 100 -timeout 10 -json`
-      : `-mc 200 -ml 100 -t 5 -rate 100 -json`;
+        ? `-fs ${baseline.size} -t 5 -rate 100 -timeout 10`
+        : `-fs ${spaFallbackSize} -t 5 -rate 100 -timeout 10`
+      : `-mc 200 -ml 100 -t 5 -rate 100`;
 
     console.log(`[${this.agentId}] [web_enum] Running ffuf...`);
     
@@ -1391,7 +1423,7 @@ curl ${state.targetUrl}/api/Users`;
     console.log(`[${this.agentId}] [web_enum] ffuf completed - success=${ffufResult.success}, stdout_len=${ffufResult.stdout?.length ?? 0}`);
 
     if (ffufResult.success && ffufResult.stdout) {
-      const ffufHits = this.parseFfufJsonOutput(ffufResult.stdout, baseline?.size);
+      const ffufHits = this.parseFfufTextOutput(ffufResult.stdout, baseline?.size);
       console.log(`[${this.agentId}] [web_enum] Parsed ${ffufHits.length} ffuf hits`);
       
       const prioritizedHits = ffufHits.sort((a, b) => {
@@ -1599,15 +1631,16 @@ ${truncatedOutput}
   private async appendToolOutputToFindingsFile(missionId: string, iteration: number, tool: string, command: string, output: string): Promise<void> {
     try {
       const reportDir = this.getReportDir(missionId);
-      const filename = `${reportDir}/tool_outputs.md`;
-      const entry = `\n## Iteration ${iteration} - ${tool}\n**Command:** ${command}\n\n\`\`\`\n${output}\n\`\`\`\n`;
-      fs.writeFileSync(filename, entry);
+      const filename = `${reportDir}/raw_outputs.md`;
+      const timestamp = new Date().toISOString();
+      const entry = `\n## ${timestamp} - Iteration ${iteration} - ${tool}\n**Command:** ${command}\n\n\`\`\`\n${output}\n\`\`\`\n`;
+      fs.appendFileSync(filename, entry);
     } catch (e) {
       console.log(`[${this.agentId}] [LOG] Failed to write tool outputs: ${e}`);
     }
   }
 
-  private async generateComprehensiveReport(missionId: string, previousReport: string, lastToolOutput: string): Promise<string> {
+  private async generateComprehensiveReport(missionId: string, previousReport: string, lastToolOutput: string, rawOutputs: string = ''): Promise<string> {
     try {
       const iteration = this.llmIterationCounter;
       const reportSystemPrompt = `You are ReconReportGPT, an automated security reporting assistant that turns raw reconnaissance data into a clear, structured, accurate penetration-testing style report for human operators.
@@ -1617,6 +1650,7 @@ Your primary goals:
 2. Identify and classify potential security issues with realistic severities.
 3. Distinguish CTF/training artifacts from real-world vulnerabilities.
 4. Never hallucinate evidence. Do not invent endpoints, responses, technologies, or exploits that are not explicitly present in the input.
+5. PRESERVE ALL data: Every secret, email, token, credential, user ID, API key, or sensitive piece of data discovered must be included in the report. Do NOT summarize away or omit any findings from previous iterations.
 
 You generate one comprehensive report per invocation, using only the data provided in the user message (command outputs, JSON, tables, notes, etc.).
 
@@ -1726,17 +1760,22 @@ If the input does not contain enough evidence to justify a severity, either lowe
 #### 3.6 Interesting Data / Potential Secrets
 Include a consolidated section for "loot" surfaced by recon, such as:
 - OAuth client IDs and redirect URIs
-- Internal email addresses / contacts
+- Internal email addresses / contacts (EXTRACT ALL EMAILS - they are critical for security assessment)
 - Filenames / paths (.bak, .env, .md, etc.)
-- Security configuration values, hashes, tokens
+- Security configuration values, hashes, tokens, API keys
 - Internal hostnames or IPs
 - Security question/answer pairs, secret hints, etc.
+- User IDs, session IDs, JWT tokens, Bearer tokens
+- Credentials, passwords, authentication tokens
+
+CRITICAL: Preserve ALL findings from previous iterations. This section should GROW with each iteration, never shrink. Include every email, token, secret, and piece of data discovered across ALL iterations.
 
 Present as small tables grouped by type.
 
 Rules:
 - Only include values present in the input.
 - Do not label something a "secret" if it is clearly just a client ID or non-sensitive identifier, but you may still classify it as "interesting".
+- MASK sensitive values when displaying (e.g., show only first 4 chars: abcd****EFGH)
 
 #### 3.7 Errors / Limitations / Gaps
 Explicitly list:
@@ -1777,22 +1816,52 @@ Your priority is to generate an accurate, evidence-based, structured security re
 
       const reportUserPrompt = `Generate a comprehensive reconnaissance report for this iteration.
 
-## Previous Report (carry forward all information):
+## Previous Report (carry forward ALL information from previous reports - do not omit or summarize away any previous findings):
 ${previousReport || 'First iteration - no previous report.'}
 
 ## Last Iteration Tool Outputs:
-${lastToolOutput || 'No tool outputs this iteration.'}`;
+${lastToolOutput || 'No tool outputs this iteration.'}
+
+${rawOutputs ? `## ALL Previous Raw Tool Outputs (extract ALL data - emails, tokens, endpoints, credentials, secrets, etc. and include in report):
+\`\`\`
+${rawOutputs.substring(Math.max(0, rawOutputs.length - 30000))}
+\`\`\`` : ''}`;
+
+      // Log the report generation input for debugging
+      console.log(`[${this.agentId}] [REPORT_GEN] Input lengths: previousReport=${previousReport.length}, lastToolOutput=${lastToolOutput.length}, rawOutputs=${rawOutputs.length}`);
+      const reportInputFile = `${this.getReportDir(missionId)}/report_input_${iteration}.txt`;
+      fs.writeFileSync(reportInputFile, `=== REPORT GENERATION INPUT ===\nIteration: ${iteration}\n\n--- PREVIOUS REPORT (${previousReport.length} chars) ---\n${previousReport}\n\n--- LAST TOOL OUTPUT (${lastToolOutput.length} chars) ---\n${lastToolOutput}\n\n--- RAW OUTPUTS (${rawOutputs.length} chars, last 30000) ---\n${rawOutputs.substring(Math.max(0, rawOutputs.length - 30000))}\n`);
+      console.log(`[${this.agentId}] [REPORT_GEN] Input saved to ${reportInputFile}`);
 
       const response = await this.llmRouter.complete('alpha', [
         { role: 'system', content: reportSystemPrompt },
         { role: 'user', content: reportUserPrompt }
       ]);
       
+      // Validate response before overwriting - reject placeholder/empty responses
+      const isPlaceholderResponse = 
+        response.length < 500 ||
+        /no new (data|findings|endpoints)/i.test(response) ||
+        /\(no iteration/i.test(response) ||
+        /no previous report/i.test(response) ||
+        !response.includes('##');
+      
+      if (isPlaceholderResponse) {
+        console.log(`[${this.agentId}] [REPORT_GEN] WARNING: LLM produced placeholder response (${response.length} chars). Keeping previous report.`);
+        // Save the placeholder to a separate file for debugging
+        const placeholderFile = `${this.getReportDir(missionId)}/placeholder_report_${iteration}.md`;
+        fs.writeFileSync(placeholderFile, `# Placeholder Report – Iteration ${iteration}\n\n${response}\n`);
+        return previousReport; // Keep the previous report
+      }
+      
       const reportDir = this.getReportDir(missionId);
       const filename = `${reportDir}/findings_report.md`;
       const reportContent = `# Comprehensive Reconnaissance Report – Iteration ${iteration}\n\n${response}\n`;
       fs.writeFileSync(filename, reportContent);
       console.log(`[${this.agentId}] [LOG] Generated comprehensive report (${response.length} chars)`);
+      
+      // Store report to Supabase
+      await this.storeMissionReport(missionId, iteration, response, rawOutputs);
       
       return response;
     } catch (e) {
@@ -1823,6 +1892,19 @@ ${lastToolOutput || 'No tool outputs this iteration.'}`;
       }
     } catch (e) {
       console.log(`[${this.agentId}] [LOG] Failed to read tool outputs: ${e}`);
+    }
+    return '';
+  }
+
+  private async readRawOutputs(missionId: string): Promise<string> {
+    try {
+      const reportDir = this.getReportDir(missionId);
+      const filename = `${reportDir}/raw_outputs.md`;
+      if (fs.existsSync(filename)) {
+        return fs.readFileSync(filename, 'utf-8');
+      }
+    } catch (e) {
+      console.log(`[${this.agentId}] [LOG] Failed to read raw outputs: ${e}`);
     }
     return '';
   }
@@ -2008,7 +2090,7 @@ ${recentCommands.slice(0, 20).map((cmd, i) => `${i + 1}. [${cmd.objective}] ${cm
     return sanePatterns.some(p => p.test(path));
   }
 
-  private parseFfufJsonOutput(output: string, baselineSize?: number): string[] {
+  private parseFfufTextOutput(output: string, baselineSize?: number): string[] {
     const seen = new Set<string>();
     const results: string[] = [];
     const allHits: Array<{ url: string; status: number; size: number; lines: number; words: number }> = [];
@@ -2019,57 +2101,40 @@ ${recentCommands.slice(0, 20).map((cmd, i) => `${i + 1}. [${cmd.objective}] ${cm
         const trimmed = line.trim();
         if (!trimmed) continue;
         
-        if (trimmed.startsWith('::') || trimmed.startsWith('{') === false) continue;
+        // Skip ffuf header/info lines
+        if (trimmed.startsWith('::') || trimmed.startsWith('ffuf') || trimmed.startsWith('___') || trimmed.startsWith('Progress')) continue;
         
-        let obj;
-        try {
-          obj = JSON.parse(trimmed);
-        } catch {
-          continue;
-        }
-        
-        if (obj.result && obj.result.length > 0) {
-          for (const hit of obj.result) {
-            if (hit.url) {
-              const urlStr = typeof hit.url === 'string' ? hit.url : JSON.stringify(hit.url);
-              const match = urlStr.match(/^https?:\/\/[^\/]+\/(\S*)/);
-              if (match?.[1]) {
-                const path = match[1].startsWith('/') ? match[1] : `/${match[1]}`;
-                const normalized = this.normalizePath(path);
-                if (normalized && normalized !== '/' && !seen.has(normalized)) {
-                  const status = hit.status || 0;
-                  const size = hit.length || 0;
-                  const lines = hit.lines || 0;
-                  const words = hit.words || 0;
-                  
-                  if (baselineSize !== undefined && size === baselineSize) {
-                    continue;
-                  }
-                  
-                  seen.add(normalized);
-                  results.push(path);
-                  allHits.push({ url: path, status, size, lines, words });
-                }
-              }
-            }
+        // Parse lines like: "api                     [Status: 200, Size: 3051, Words: 220, Lines: 45]"
+        // The line may end with Duration info: "..., Lines: 45, Duration: 0ms]"
+        const match = trimmed.match(/^(\S+)\s+\[Status:\s*(\d+),\s*Size:\s*(\d+),\s*Words:\s*(\d+),\s*Lines:\s*(\d+)/);
+        if (match && match[1] && match[2] && match[3] && match[4] && match[5]) {
+          const path = match[1]!.trim();
+          const status = parseInt(match[2]!, 10);
+          const size = parseInt(match[3]!, 10);
+          
+          if (baselineSize !== undefined && size === baselineSize) {
+            continue;
+          }
+          
+          const normalized = this.normalizePath(path.startsWith('/') ? path : `/${path}`);
+          if (normalized && normalized !== '/' && !seen.has(normalized)) {
+            seen.add(normalized);
+            results.push(normalized);
+            allHits.push({ url: normalized, status, size, lines: parseInt(match[5]!, 10), words: parseInt(match[4]!, 10) });
           }
         }
       }
     } catch (e) {
-      console.log(`[${this.agentId}] [parseFfufJsonOutput] JSON parse error: ${e}`);
+      console.log(`[${this.agentId}] [parseFfufTextOutput] Parse error: ${e}`);
     }
 
-    const clusters = this.clusterResponses(allHits);
-    if (clusters.size > 0) {
-      console.log(`[${this.agentId}] [parseFfufJsonOutput] Response clusters: ${clusters.size}`);
-      for (const [key, cluster] of clusters) {
-        if (cluster.count > 1) {
-          console.log(`[${this.agentId}] [parseFfufJsonOutput] Cluster [${key}]: ${cluster.count} hits, representative: ${cluster.representative}`);
-        }
-      }
+    if (allHits.length > 0) {
+      const clusters = this.clusterResponses(allHits);
+      console.log(`[${this.agentId}] [parseFfufTextOutput] Found ${results.length} unique endpoints, ${clusters.size} response clusters`);
+    } else {
+      console.log(`[${this.agentId}] [parseFfufTextOutput] No endpoints found`);
     }
 
-    console.log(`[${this.agentId}] [parseFfufJsonOutput] Found ${results.length} unique endpoints`);
     return results;
   }
 
@@ -2368,7 +2433,7 @@ ${recentCommands.slice(0, 20).map((cmd, i) => `${i + 1}. [${cmd.objective}] ${cm
         discovered_by: n.discovered_by,
       }));
 
-      // Load recent CommandNodes (use raw node interface for snake_case properties)
+      // Load ALL CommandNodes for this mission (not just last 10)
       const commandNodes = await this.graph.findNodesByLabel<{ iteration: number, tool: string, command: string, result_summary: string, timestamp: number, objective: string }>('CommandNode', { mission_id: missionId });
       const recentCommands = commandNodes
         .map(n => ({
@@ -2379,8 +2444,8 @@ ${recentCommands.slice(0, 20).map((cmd, i) => `${i + 1}. [${cmd.objective}] ${cm
           timestamp: n.timestamp,
           objective: n.objective,
         }))
-        .sort((a, b) => b.iteration - a.iteration)
-        .slice(0, 10);
+        .sort((a, b) => b.iteration - a.iteration);
+        // Return ALL commands - no slice limit
 
       return { mission: mission || null, findings, recentCommands };
     } catch (e) {
@@ -2440,9 +2505,9 @@ ${recentCommands.slice(0, 20).map((cmd, i) => `${i + 1}. [${cmd.objective}] ${cm
     }
 
     if (recentCommands.length > 0) {
-      lines.push('## RECENT COMMANDS (do NOT repeat these)');
-      for (const cmd of recentCommands.slice(0, 10)) {
-        lines.push(`  ${cmd.tool}: ${cmd.command.substring(0, 80)}`);
+      lines.push('## ALL COMMANDS RAN (do NOT repeat these - check this list before running new commands)');
+      for (const cmd of recentCommands) {
+        lines.push(`  [Iter ${cmd.iteration}] ${cmd.tool}: ${cmd.command.substring(0, 120)}`);
       }
       lines.push('');
     }
@@ -2650,7 +2715,8 @@ ${recentCommands.slice(0, 20).map((cmd, i) => `${i + 1}. [${cmd.objective}] ${cm
     _freshGraphContext: string = '',
     recentCommands: string[] = [],
     findingsReport: string = '',
-    lastToolOutput: string = ''
+    lastToolOutput: string = '',
+    rawOutputs: string = ''
   ): LLMMessage[] {
     const isJuiceShop = state.targetUrl.includes('3000') || state.target.includes('juice');
     const fallbackSize = state.targetConfig.spaFallbackSize || 75002;
@@ -2693,7 +2759,11 @@ ENDPOINTS (${endpoints.length}): ${endpointList}
 COMPONENTS: ${components}
 </discovered>
 
-${findingsSection}
+${rawOutputs ? `<raw_outputs>
+${rawOutputs.substring(Math.max(0, rawOutputs.length - 15000))}
+</raw_outputs>
+
+` : ''}${findingsSection}
 ${toolOutputSection}
 
 <commands_ran>
@@ -2704,7 +2774,7 @@ ${recentCmdList}
 nmap, ffuf, katana, httpx, curl, whatweb, gau
 </tools_available>
 
-<ffuf_rules>
+<<ffuf_rules>
 When fuzzing a directory/endpoint with ffuf (e.g., /api/, /rest/, /ftp/):
 1. FIRST probe for a non-existent path under that prefix to establish baseline noise:
    curl -s -w "SIZE:%{size_download}" -o /dev/null "{targetUrl}/api/doesnotexist_999999"
@@ -2714,7 +2784,12 @@ When fuzzing a directory/endpoint with ffuf (e.g., /api/, /rest/, /ftp/):
 Example workflow for /api/ fuzzing:
   curl -s -w "SIZE:%{size_download}" -o /dev/null "http://127.0.0.1:3000/api/doesnotexist_999999"
   (note the baseline SIZE for later filtering)
-  ffuf -u http://127.0.0.1:3000/api/FUZZ -w wordlist.txt -fs <baseline_size> -json
+  ffuf -u http://127.0.0.1:3000/api/FUZZ -w /home/peburu/wordlists/recon/directories/raft-small-directories.txt -fs <baseline_size>
+
+Wordlists - use FULL PATH, not placeholders:
+- /home/peburu/wordlists/recon/directories/raft-small-directories.txt
+- /home/peburu/wordlists/recon/directories/raft-large-directories.txt
+- /home/peburu/wordlists/recon/files/raft-medium-files.txt
 </ffuf_rules>
 
 Choose the single best next command. Chain from discoveries. Do NOT repeat commands above. Output XML:
@@ -2885,6 +2960,35 @@ Choose the single best next command. Chain from discoveries. Do NOT repeat comma
       }
     } catch (e) {
       console.error(`[${this.agentId}] Error storing discovery: ${e}`);
+    }
+  }
+
+  private async storeMissionReport(missionId: string, iteration: number, report: string, rawOutputs: string): Promise<void> {
+    if (!this.supabase || !this.llmSessionId) return;
+
+    try {
+      // Extract key metrics from report for querying
+      const portsMatch = report.match(/PORTS:\s*([^\n]+)/);
+      const endpointsMatch = report.match(/ENDPOINTS\s*\(([^)]+)\):\s*([^\n]+)/);
+      
+      const { error } = await this.supabase.from('mission_reports').insert({
+        session_id: this.llmSessionId,
+        mission_id: missionId,
+        iteration,
+        report_content: report.substring(0, 100000), // Limit size
+        raw_outputs: rawOutputs.substring(0, 50000),
+        ports_found: portsMatch?.[1]?.trim() || null,
+        endpoints_summary: endpointsMatch?.[2]?.substring(0, 2000) || null,
+        endpoints_count: endpointsMatch?.[1] ? parseInt(endpointsMatch[1]) || 0 : 0,
+      });
+
+      if (error) {
+        console.error(`[${this.agentId}] Failed to store mission report: ${error.message}`);
+      } else {
+        console.log(`[${this.agentId}] Stored mission report to Supabase (iteration ${iteration})`);
+      }
+    } catch (e) {
+      console.error(`[${this.agentId}] Error storing mission report: ${e}`);
     }
   }
 

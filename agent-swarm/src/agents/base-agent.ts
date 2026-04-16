@@ -167,11 +167,9 @@ export abstract class BaseAgent {
     const initialState = AGENT_INITIAL_STATES[this.agentType] || 'DORMANT';
     this.transitionTo(initialState, 'initial');
 
-    if (initialState !== 'DORMANT') {
-      this.pollingTimer = setInterval(() => {
-        this.poll().catch(console.error);
-      }, this.pollInterval);
-    }
+    this.pollingTimer = setInterval(() => {
+      this.poll().catch(console.error);
+    }, this.pollInterval);
 
     console.log(`[${this.agentId}] Agent started in ${initialState} state, polling every ${this.pollInterval}ms`);
   }
@@ -202,13 +200,23 @@ export abstract class BaseAgent {
         return;
       }
 
+      const subscriptions = this.getSubscriptions();
+      console.log(`[${this.agentId}] poll: calling consume for ${subscriptions.join(',')}`);
       const events = await this.eventBus.consume(
         this.agentId,
-        this.getSubscriptions()
+        subscriptions
       );
+      console.log(`[${this.agentId}] poll: got ${events.length} events (state=${this.state})`);
 
-      if (events.length > 0 && this.state === 'STANDBY') {
-        this.transitionTo('ACTIVE');
+      if (events.length > 0) {
+        if (this.state === 'DORMANT') {
+          this.transitionTo('STANDBY');
+        }
+        if (this.state === 'STANDBY') {
+          this.transitionTo('ACTIVE');
+        }
+      } else if (this.state === 'ACTIVE') {
+        return;
       }
 
       for (const event of events) {

@@ -48,11 +48,12 @@ export const AGENT_MODEL_CONFIG: Record<string, AgentModelConfig> = {
   // as fallback for reliable JSON generation.
   
   gamma: {
-    primary: process.env.GAMMA_MODEL || 'llama3-groq-tool-use:8b-q4_K_M',
-    fallback: process.env.GAMMA_MODEL_FALLBACK || 'moonshotai/kimi-k2-instruct',
-    temperature: 0.85,
+    primary: process.env.GAMMA_MODEL || 'MiniMax-M2.7',
+    fallback: process.env.GAMMA_MODEL_FALLBACK || 'gemma4:e2b',
+    temperature: 0.75,
     maxTokens: 8192,
-    provider: 'ollama',
+    contextWindow: 32768,
+    provider: 'minimax',
   },
   alpha: {
     primary: process.env.ALPHA_MODEL || 'MiniMax-M2.7',

@@ -1,138 +1,49 @@
-# Solaris-Agent Graph Network Infrastructure
+<html>
+  <head>
+    <meta charset='utf-8'> 
+    <title>Error: ENOENT: no such file or directory, stat &#39;/juice-shop/ftp/README.md&#39;</title>
+    <style>* {
+  margin: 0;
+  padding: 0;
+  outline: 0;
+}
 
-Graph-based memory and event infrastructure for the Solaris-Agent swarm system.
-
-## Quick Start
-
-### 1. Install Dependencies
-
-```bash
-cd agent-swarm
-bun install
-```
-
-### 2. Configure Environment
-
-```bash
-# Copy example env and edit with your values
-cp .env.example .env
-```
-
-**Railway FalkorDB (Production):**
-```env
-FALKORDB_HOST=your-falkordb-host.railway.app
-FALKORDB_PORT=6379
-FALKORDB_USERNAME=falkordb
-FALKORDB_PASSWORD=your-password
-```
-
-**Local Development (Alternative):**
-```bash
-docker-compose up -d
-# Then in .env:
-# FALKORDB_HOST=localhost
-# FALKORDB_PASSWORD=falkordb_dev_password
-```
-
-### 3. Initialize FalkorDB
-
-```bash
-bun run falkordb:init
-```
-
-### 4. Run Tests
-
-```bash
-bun test
-```
-
-### 5. Start Development
-
-```bash
-bun run dev
-```
-
-## Project Structure
-
-```
-agent-swarm/
-├── src/
-│   ├── config/          # Environment configuration (Zod validation)
-│   ├── graph/           # Graph schema, edges, missions
-│   ├── events/           # SQLite event bus
-│   ├── infra/           # FalkorDB client
-│   └── index.ts         # Main exports
-├── tests/
-│   └── unit/            # Unit tests
-├── docker-compose.yml   # Local dev infrastructure
-└── package.json
-```
-
-## Core Components
-
-### FalkorDB Client (`src/infra/falkordb.ts`)
-
-Graph database client using Redis protocol:
-
-```typescript
-import { getFalkorDB } from './infra/falkordb';
-
-const graph = getFalkorDB();
-await graph.connect();
-
-// Create nodes
-await graph.createNode('Target', 'target:api.example.com', {
-  name: 'Example API',
-  base_url: 'https://api.example.com',
-});
-
-// Query nodes
-const targets = await graph.findNodesByLabel('Target', { status: 'active' });
-
-// Create relationships
-await graph.createEdge(fromId, toId, 'PART_OF');
-
-// Atomic mission claiming
-const missionId = await graph.claimMission('gamma', 'gamma-1');
-```
-
-### Event Bus (`src/events/bus.ts`)
-
-SQLite-based event system for agent communication:
-
-```typescript
-import { EventBus } from './events/bus';
-
-const eventBus = new EventBus();
-
-// Emit events
-await eventBus.emit('mission_queued', { mission_id: 'm-001' }, 'planner');
-
-// Consume events (with subscription filter)
-const events = await eventBus.consume('gamma-1', ['mission_authorized']);
-```
-
-### Graph Schema (`src/graph/schema.ts`)
-
-Zod-validated node types:
-
-- `TargetNode`, `EndpointNode`, `ComponentNode`
-- `CredentialNode`, `VulnerabilityNode`, `UserNode`
-- `MissionNode`, `ExploitNode`, `FindingNode`
-- `ChainNode`, `LessonNode`, `IntelNode`
-- Plus Phase 2+ types: `BeliefNode`, `GammaHandoffNode`, `WafDuelNode`
-
-## Scripts
-
-| Command | Description |
-|---------|-------------|
-| `bun run dev` | Start development server |
-| `bun run build` | Compile TypeScript |
-| `bun run test` | Run all tests |
-| `bun run typecheck` | TypeScript type checking |
-| `bun run lint` | Run ESLint |
-| `bun run falkordb:init` | Initialize FalkorDB indexes |
-
-## Documentation
-
-See `docs/SOLARIS_AGENT_MVP_GRAPH_NETWORK.md` for the full implementation plan.
+body {
+  padding: 80px 100px;
+  font: 13px "Helvetica Neue", "Lucida Grande", "Arial";
+  background: #ECE9E9 -webkit-gradient(linear, 0% 0%, 0% 100%, from(#fff), to(#ECE9E9));
+  background: #ECE9E9 -moz-linear-gradient(top, #fff, #ECE9E9);
+  background-repeat: no-repeat;
+  color: #555;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2 {
+  font-size: 22px;
+  color: #343434;
+}
+h1 em, h2 em {
+  padding: 0 5px;
+  font-weight: normal;
+}
+h1 {
+  font-size: 60px;
+}
+h2 {
+  margin-top: 10px;
+}
+ul li {
+  list-style: none;
+}
+#stacktrace {
+  margin-left: 60px;
+}
+</style>
+  </head>
+  <body>
+    <div id="wrapper">
+      <h1>OWASP Juice Shop (Express ^4.22.1)</h1>
+      <h2><em>404</em> Error: ENOENT: no such file or directory, stat &#39;/juice-shop/ftp/README.md&#39;</h2>
+      <ul id="stacktrace"></ul>
+    </div>
+  </body>
+</html>

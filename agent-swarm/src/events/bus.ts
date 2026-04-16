@@ -1,12 +1,40 @@
 import { Database } from 'bun:sqlite';
 import type { SwarmEvent, SwarmEventType } from './types.js';
 
+let sharedDb: Database | null = null;
+let sharedInstance: EventBus | null = null;
+
 export class EventBus {
-  private db: Database;
+  public db: Database;
   
   constructor(dbPath?: string) {
-    this.db = new Database(dbPath || './solaris-events.db');
+    if (sharedInstance && !dbPath) {
+      this.db = sharedInstance.db;
+      Object.setPrototypeOf(this, sharedInstance);
+      return;
+    }
+
+    const resolvedPath = dbPath || process.env.SQLITE_EVENTS_PATH || './solaris-events.db';
+
+    if (sharedDb) {
+      this.db = sharedDb;
+    } else {
+      this.db = new Database(resolvedPath);
+      sharedDb = this.db;
+    }
+
+    if (!sharedInstance) {
+      sharedInstance = this;
+    }
+
     this.initialize();
+  }
+
+  static getInstance(): EventBus {
+    if (!sharedInstance) {
+      sharedInstance = new EventBus();
+    }
+    return sharedInstance;
   }
   
   private initialize(): void {

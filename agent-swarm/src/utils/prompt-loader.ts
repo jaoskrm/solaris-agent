@@ -3,7 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROMPTS_DIR = join(__dirname, '..', 'agent-system-prompts');
+const PROMPTS_DIR = join(__dirname, '..', '..', 'src', 'agent-system-prompts');
 
 const promptCache = new Map<string, string>();
 

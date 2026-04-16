@@ -4,8 +4,7 @@ import { tavilySearch, nvdCveFetch, searchCisaKev } from '../utils/osint/index.j
 import { sectionNodeId } from '../infra/falkordb.js';
 import { LLMRouter } from '../core/llm-router.js';
 import type { LLMMessage } from '../core/providers/ollama.js';
-import { loadAgentPrompt } from '../utils/prompt-loader.js';
-import { loadOverlay, parseOverlayPayloads } from '../utils/prompt-overlay.js';
+import { parseOverlayPayloads } from '../utils/prompt-overlay.js';
 
 export interface OsintConfig extends AgentConfig {
   agentType: 'osint';
@@ -210,6 +209,7 @@ private async generateExploitBrief(
             exploitType,
             targetEndpoint,
             researchContext,
+            '',
             briefSchema
           );
 
