@@ -16,6 +16,7 @@ export interface LLMCallOptions {
 export interface LLMProvider {
   name: string;
   chat(options: LLMCallOptions): Promise<string>;
+  chatStream?(options: LLMCallOptions): AsyncGenerator<string, void, unknown>;
   isAvailable(): boolean;
 }
 

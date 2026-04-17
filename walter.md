@@ -280,4 +280,6 @@ echo "           live.txt crawled.txt nuclei.txt js_secrets.txt"
 echo "           juiceshop_probe.txt wayback.txt"s
 
 
-$ cd /run/media/peburu/BIG\ DRIVE/Backup/Projects/Prawin/solaris/solaris-agent/agent-swarm && ALPHA_LLM_PLANNING=true timeout 1200 npx bun run src/e2e-test.ts 2>&1
+cd /run/media/peburu/BIG\ DRIVE/Backup/Projects/Prawin/solaris/solaris-agent/agent-swarm && ALPHA_LLM_PLANNING=true timeout 1200 npx bun run src/e2e-test.ts 2>&1
+cd /run/media/peburu/BIG\ DRIVE/Backup/Projects/Prawin/solaris/solaris-agent/agent-swarm && timeout 600 bun run dist/e2e-gamma.js 2>&1
+
