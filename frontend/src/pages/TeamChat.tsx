@@ -8,6 +8,8 @@ import { PulsatingButton } from '../components/ui/pulsating-button';
 import { TeamChatMessage, Message } from '../components/TeamChatMessage';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
+export default TeamChat;
+
 const RED_TEAM_AGENTS = ['RECON', 'EXPLOIT', 'SOCIAL', 'COMMANDER'];
 const BLUE_TEAM_AGENTS = ['LINTER', 'DEPCHECK', 'COMPLEXITY'];
 

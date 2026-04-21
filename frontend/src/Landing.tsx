@@ -501,3 +501,5 @@ export function Landing() {
     </SmoothScrollProvider>
   );
 }
+
+export default Landing;

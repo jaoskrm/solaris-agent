@@ -7,6 +7,8 @@ import { ScanProgress } from '../components/ScanProgress';
 import { triggerScan, getScanStatus, getScanResults, listScans } from '../lib/api';
 import type { ScanStatusResponse, ScanReportResponse, VulnerabilityFinding } from '../types';
 
+export default Pipeline;
+
 // Helper function to extract vulnerability type from finding
 function getVulnerabilityType(finding: VulnerabilityFinding): string {
     // First check vuln_type
@@ -916,7 +918,7 @@ export function Pipeline() {
                                             <div className="flex items-center gap-2">
                                                 <span className="text-xs text-gray-500">Sort by:</span>
                                                 <select
-                                                    className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                                                    className="bg-[var(--swarm-card)] border border-[var(--swarm-border)] rounded px-2 py-1 text-xs text-[var(--swarm-text)] focus:border-[var(--swarm-accent)] outline-none"
                                                     onChange={(e) => {
                                                         const sorted = [...scanReport.findings];
                                                         if (e.target.value === 'severity') {

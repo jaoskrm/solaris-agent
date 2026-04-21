@@ -1,10 +1,12 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto:wght@300;400;500;700&family=DM+Mono:wght@300;400;500&display=swap');
+
 @import "tailwindcss";
 @import "tw-animate-css";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Playfair Display", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+  --font-serif: "Roboto", ui-serif, system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --color-primary: #ffffff;
 }
 
@@ -14,6 +16,49 @@
   --primary: #ffffff;
   --muted: #18181b;
   color-scheme: dark;
+
+  /* Default Swarm Theme (Light / Cream) */
+  --swarm-accent: #D97706;
+  --swarm-accent-rgb: 217,119,6;
+  --swarm-sidebar-accent: #d69a7c;
+  --swarm-bg: #F6F2EC;
+  --swarm-sidebar: #15120F;
+  --swarm-canvas: #FFFFFF;
+  --swarm-card: #FFFFFF;
+  --swarm-border: rgba(26,23,20,0.1);
+  --swarm-text: #1A1714;
+  --swarm-text-muted: #6B6560;
+  --swarm-bright: #1A1714;
+}
+
+:root[data-swarm-theme="charcoal"] {
+  /* Charcoal Dark Theme with Peach Accents */
+  --swarm-accent: #d69a7c;
+  --swarm-accent-rgb: 214,154,124;
+  --swarm-sidebar-accent: #d69a7c;
+  --swarm-bg: #1a1a1a;
+  --swarm-sidebar: #212121;
+  --swarm-canvas: #262626;
+  --swarm-card: #262626;
+  --swarm-border: #333333;
+  --swarm-text: #e5e5e5;
+  --swarm-text-muted: #888888;
+  --swarm-bright: #e5e5e5;
+}
+
+:root[data-swarm-theme="black"] {
+  /* Pitch Black Hacker Theme */
+  --swarm-accent: #D97706;
+  --swarm-accent-rgb: 217,119,6;
+  --swarm-sidebar-accent: #d69a7c;
+  --swarm-bg: #000000;
+  --swarm-sidebar: #000000;
+  --swarm-canvas: #0a0a0a;
+  --swarm-card: #111111;
+  --swarm-border: #27272a;
+  --swarm-text: #ffffff;
+  --swarm-text-muted: #a1a1aa;
+  --swarm-bright: #ffffff;
 }
 
 body {
