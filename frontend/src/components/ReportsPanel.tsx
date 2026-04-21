@@ -155,7 +155,7 @@ export const ReportsPanel = () => {
 
   useGSAP(() => {
     gsap.from(".report-card", {
-      y: 20, opacity: 0, duration: 0.5, stagger: 0.1, ease: "power2.out", clearProps: "all"
+      y: 15, opacity: 0, duration: 0.4, stagger: 0.08, ease: "power3.out", clearProps: "all"
     });
   }, { scope: containerRef });
 
@@ -238,10 +238,10 @@ export const ReportsPanel = () => {
                   tick={{ fill: 'var(--swarm-text-muted)', fontSize: 11, fontFamily: 'monospace' }} 
                 />
                 <Tooltip content={<CustomTooltip />} />
-                <Area type="monotone" dataKey="Recon" stroke="#3B82F6" strokeWidth={2} fillOpacity={1} fill="url(#colorRecon)" stackId="1" isAnimationActive={true} animationDuration={1500} />
-                <Area type="monotone" dataKey="OSINT" stroke="#10B981" strokeWidth={2} fillOpacity={1} fill="url(#colorOSINT)" stackId="1" isAnimationActive={true} animationDuration={1500} />
-                <Area type="monotone" dataKey="Exploit" stroke="#DC2626" strokeWidth={2} fillOpacity={1} fill="url(#colorExploit)" stackId="1" isAnimationActive={true} animationDuration={1500} />
-                <Area type="monotone" dataKey="Orchestrator" stroke="#D97706" strokeWidth={2} fillOpacity={1} fill="url(#colorOrch)" stackId="1" isAnimationActive={true} animationDuration={1500} />
+                <Area type="monotone" dataKey="Recon" stroke="#3B82F6" strokeWidth={2} fillOpacity={1} fill="url(#colorRecon)" stackId="1" isAnimationActive={true} animationDuration={800} />
+                <Area type="monotone" dataKey="OSINT" stroke="#10B981" strokeWidth={2} fillOpacity={1} fill="url(#colorOSINT)" stackId="1" isAnimationActive={true} animationDuration={800} />
+                <Area type="monotone" dataKey="Exploit" stroke="#DC2626" strokeWidth={2} fillOpacity={1} fill="url(#colorExploit)" stackId="1" isAnimationActive={true} animationDuration={800} />
+                <Area type="monotone" dataKey="Orchestrator" stroke="#D97706" strokeWidth={2} fillOpacity={1} fill="url(#colorOrch)" stackId="1" isAnimationActive={true} animationDuration={800} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -271,7 +271,7 @@ export const ReportsPanel = () => {
                   width={55}
                 />
                 <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="value" barSize={24} radius={[0, 4, 4, 0]} isAnimationActive={true} animationDuration={1500} animationBegin={400} animationEasing="ease-out">
+                <Bar dataKey="value" barSize={24} radius={[0, 4, 4, 0]} isAnimationActive={true} animationDuration={800} animationBegin={200} animationEasing="ease-out">
                   {severityData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
